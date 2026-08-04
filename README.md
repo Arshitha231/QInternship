@@ -62,6 +62,8 @@ changes when `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` show up later.
 ```bash
 curl http://127.0.0.1:8000/health
 curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami
+
+pytest   # runs against a throwaway temp SQLite db, never directory.db
 ```
 
 `.python-version` pins 3.14.6 — Azure App Service's newest Linux runtime
@@ -97,8 +99,8 @@ seed.py              synthetic data generator + constraint verification summary
 - [x] 1. Schema + migrations (SQLite)
 - [x] 2. Seed data + verification summary
 - [x] 3. FastAPI skeleton, Entra auth dependency, `/docs`, health endpoint
-- [ ] 4. `find_people` / `get_person` with the full filter pipeline + audit log
-- [ ] 5. Field-visibility tests (assert restricted keys absent from response bodies)
+- [x] 4. `find_people` / `get_person` with the full filter pipeline + audit log
+- [x] 5. Field-visibility tests (assert restricted keys absent from response bodies)
 - [ ] 6. Recursive org chart endpoint (both directions, cycle-guard test)
 - [ ] 7. Azure AI Search index + `build_profile_text()` + batch embedding
 - [ ] 8. Hybrid search wired into `find_people`

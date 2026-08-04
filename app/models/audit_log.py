@@ -23,4 +23,4 @@ class AuditLog(Base):
     # portability (neither has a native array type).
     fields_returned: Mapped[str] = mapped_column(Text, nullable=False)
 
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

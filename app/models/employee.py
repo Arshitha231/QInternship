@@ -58,9 +58,9 @@ class Employee(Base):
     # Soft delete only. Records are never hard-deleted.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
     )
 
     org_unit = relationship("OrgUnit", foreign_keys=[org_unit_id])
