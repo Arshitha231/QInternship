@@ -56,11 +56,16 @@ LANGUAGE_SKILLS = [
     "Hindi", "Kannada", "Tamil", "Japanese", "Portuguese",
 ]
 
-# (name, canonical_of_or_None)
+# Every name below is a canonical skill row. Synonyms/abbreviations live only
+# in SKILL_CANONICAL_MAP and are never assigned to anyone directly — they
+# exist purely so a search for the alias resolves to the canonical skill via
+# canonical_id (build_skills() creates them as separate rows pointing back at
+# their canonical row; no pool below references an alias name).
 TECHNICAL_SKILLS = [
     "Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C++", "SQL",
     "React", "Node.js", "AWS", "Azure", "GCP", "Kubernetes", "Docker",
-    "Terraform", "CI/CD", "Site Reliability Engineering", "SRE",
+    "Terraform", "CI/CD", "Site Reliability Engineering",
+    "Swift", "Kotlin", "React Native",
     "Machine Learning", "Deep Learning", "NLP", "Computer Vision",
     "Data Engineering", "ETL Pipelines", "Power BI", "Tableau",
     "Advanced Excel", "Salesforce", "HubSpot", "SEO", "Content Marketing",
@@ -70,7 +75,10 @@ TECHNICAL_SKILLS = [
     "Contract Negotiation", "Cybersecurity", "Penetration Testing",
     "Network Administration",
 ]
-SKILL_CANONICAL_MAP = {"SRE": "Site Reliability Engineering"}
+SKILL_CANONICAL_MAP = {
+    "SRE": "Site Reliability Engineering",
+    "K8s": "Kubernetes",
+}
 
 DOMAIN_SKILLS = [
     "SaaS Metrics", "B2B Enterprise Sales", "GDPR", "SOC 2 Compliance",
@@ -78,14 +86,17 @@ DOMAIN_SKILLS = [
     "Change Management",
 ]
 
-# Per-department technical/domain skill pools, so overlap is thematically real.
+# Per-department technical/domain skill pools — secondary/cross-team skills.
+# Team-level PRIMARY skills (below, TEAM_PRIMARY_SKILLS) take priority over
+# these for the four named engineering teams; everyone else draws from here.
 DEPT_SKILL_POOL = {
     "Platform Engineering": ["Python", "JavaScript", "TypeScript", "Go", "React", "Node.js",
-                              "AWS", "Docker", "Kubernetes", "CI/CD", "SQL"],
+                              "AWS", "Docker", "Kubernetes", "CI/CD", "SQL",
+                              "Swift", "Kotlin", "React Native"],
     "Data & AI": ["Python", "SQL", "Machine Learning", "Deep Learning", "NLP",
                   "Computer Vision", "Data Engineering", "ETL Pipelines", "Power BI", "Tableau"],
     "Infrastructure": ["AWS", "Azure", "GCP", "Kubernetes", "Docker", "Terraform",
-                        "Site Reliability Engineering", "SRE", "Network Administration", "Cybersecurity"],
+                        "Site Reliability Engineering", "Network Administration", "Cybersecurity"],
     "Quality Engineering": ["Python", "Java", "SQL", "CI/CD", "Agile/Scrum", "Cybersecurity"],
     "Product Management": ["Product Analytics", "Agile/Scrum", "Project Management", "SQL", "Figma"],
     "Design": ["Figma", "UX Research", "Product Analytics", "Agile/Scrum"],
@@ -96,6 +107,18 @@ DEPT_SKILL_POOL = {
     "HR Operations": ["Employment Law", "Change Management", "Advanced Excel"],
     "Talent Acquisition": ["Applicant Tracking Systems", "Employment Law", "Change Management"],
     "Compliance": ["Employment Law", "GDPR", "SOC 2 Compliance", "Contract Negotiation"],
+}
+
+# Team-theme -> the skills that should clearly dominate that team's holders.
+# Keyed by theme (e.g. "Backend"), not by the literal org_unit name, since an
+# oversized team is split into several sibling org_units ("Backend Team",
+# "Backend Team B", ...) that all share the same theme. Uses canonical skill
+# names only (e.g. "Site Reliability Engineering", not the "SRE" alias).
+TEAM_PRIMARY_SKILLS = {
+    "Backend": ["Python", "Go", "Node.js", "SQL"],
+    "Frontend": ["React", "TypeScript", "JavaScript", "Figma"],
+    "Mobile": ["Swift", "Kotlin", "React Native"],
+    "Cloud Operations": ["Terraform", "Azure", "AWS", "Kubernetes", "Site Reliability Engineering"],
 }
 
 # ---------------------------------------------------------------------------
@@ -211,38 +234,43 @@ def next_name() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Org tree definition. Each department-with-teams lists team (name, size);
-# each department-without-teams is given a flat size (includes its Director).
-# Sizes are headcounts EXCLUDING the division VP / department-with-teams
-# Director, who are created separately.
+# Org tree definition. Divisions (VP each) contain departments (Director
+# each); a department's headcount is expressed as one or more named THEMES
+# (e.g. Platform Engineering = Backend + Frontend + Mobile). Each theme is
+# split into as many same-sized sibling team org_units as needed to keep
+# every leaf team in the realistic 6-15 range — real teams don't run 80
+# people deep under one manager. All teams from the same theme still share
+# one manager-title scheme and, for the four call-out engineering themes,
+# one skill-correlation profile (TEAM_PRIMARY_SKILLS).
 # ---------------------------------------------------------------------------
 
-ORG_TREE = {
-    "Engineering": {
-        "Platform Engineering": {"teams": {"Backend Team": 41, "Frontend Team": 28, "Mobile Team": 24}},
-        "Data & AI": {"teams": {"Machine Learning Team": 27, "Data Platform Team": 23, "Analytics Team": 14}},
-        "Infrastructure": {"teams": {"Cloud Operations Team": 27, "Networking Team": 18}},
-        "Quality Engineering": {"teams": {"QA Automation Team": 36}},
-    },
-    "Product": {
-        "Product Management": {"flat_size": 28},
-        "Design": {"flat_size": 26},
-    },
-    "Sales & Marketing": {
-        "Sales": {"teams": {"Enterprise Sales Team": 23, "SMB Sales Team": 22}},
-        "Marketing": {"teams": {"Growth Marketing Team": 14, "Brand Team": 13}},
-    },
-    "Finance": {
-        "Finance Operations": {"flat_size": 22},
-        "Payroll": {"flat_size": 14},
-    },
-    "People & Culture": {
-        "HR Operations": {"flat_size": 18},
-        "Talent Acquisition": {"flat_size": 16},
-    },
-    "Legal": {
-        "Compliance": {"flat_size": 13},
-    },
+DIVISION_DEPTS = {
+    "Engineering": ["Platform Engineering", "Data & AI", "Infrastructure", "Quality Engineering"],
+    "Product": ["Product Management", "Design"],
+    "Sales & Marketing": ["Sales", "Marketing"],
+    "Finance": ["Finance Operations", "Payroll"],
+    "People & Culture": ["HR Operations", "Talent Acquisition"],
+    "Legal": ["Compliance"],
+}
+
+# department -> {theme: headcount}. Headcount includes that theme's own
+# team lead(s) — see split_target(). "Backend" absorbs the balancing
+# shortfall below and hosts the deliberately deep reporting chain, so its
+# first split team stays a natural home for it regardless of size drift.
+DEPT_THEMES = {
+    "Platform Engineering": {"Backend": 50, "Frontend": 45, "Mobile": 36},
+    "Data & AI": {"Machine Learning": 28, "Data Platform": 22, "Analytics": 15},
+    "Infrastructure": {"Cloud Operations": 27, "Networking": 18},
+    "Quality Engineering": {"QA Automation": 36},
+    "Product Management": {"Product Management": 27},
+    "Design": {"Design": 25},
+    "Sales": {"Enterprise Sales": 24, "SMB Sales": 21},
+    "Marketing": {"Growth Marketing": 14, "Brand": 13},
+    "Finance Operations": {"Finance Operations": 21},
+    "Payroll": {"Payroll": 13},
+    "HR Operations": {"HR Operations": 17},
+    "Talent Acquisition": {"Talent Acquisition": 15},
+    "Compliance": {"Compliance": 13},
 }
 
 IC_TITLES_BY_DEPT = {
@@ -261,27 +289,32 @@ IC_TITLES_BY_DEPT = {
     "Compliance": ["Compliance Analyst", "Senior Compliance Analyst"],
 }
 
-# Backend Team hosts the deliberately deep reporting chain (see build_deep_chain),
-# so any shortfall needed to hit exactly 500 total records is padded there —
-# it already has the management structure to absorb more ICs realistically.
-_target_total = 500
+
+def split_target(total: int, max_size: int = 15, target_avg: int = 11) -> list[int]:
+    """Split `total` people into leaf-team-sized chunks, each <= max_size."""
+    if total <= max_size:
+        return [total]
+    k = -(-total // target_avg)  # ceil
+    base, extra = divmod(total, k)
+    return [base + 1] * extra + [base] * (k - extra)
 
 
-def _org_tree_total() -> int:
-    total = 1  # CEO
-    for _div, depts in ORG_TREE.items():
-        total += 1  # VP
-        for _dept, spec in depts.items():
-            if "teams" in spec:
-                total += 1  # Director
-                total += sum(spec["teams"].values())
-            else:
-                total += spec["flat_size"]
-    return total
+def theme_team_names(theme: str, sizes: list[int]) -> list[str]:
+    if len(sizes) == 1:
+        return [f"{theme} Team"]
+    letters = "ABCDEFGH"
+    return [f"{theme} Team"] + [f"{theme} Team {letters[i]}" for i in range(len(sizes) - 1)]
 
 
-_shortfall = _target_total - _org_tree_total()
-ORG_TREE["Engineering"]["Platform Engineering"]["teams"]["Backend Team"] += _shortfall
+def _grand_total() -> int:
+    n_divisions = len(DIVISION_DEPTS)
+    n_departments = sum(len(depts) for depts in DIVISION_DEPTS.values())
+    ic_total = sum(size for themes in DEPT_THEMES.values() for size in themes.values())
+    return 1 + n_divisions + n_departments + ic_total  # CEO + VPs + Directors + ICs
+
+
+_shortfall = 500 - _grand_total()
+DEPT_THEMES["Platform Engineering"]["Backend"] += _shortfall
 
 
 # ---------------------------------------------------------------------------
@@ -310,32 +343,44 @@ def weighted_office_choice(offices: list[Office]) -> Office:
     return rng.choices(offices, weights=weights, k=1)[0]
 
 
-def build_org_units(session) -> dict[str, OrgUnit]:
+def build_org_units(session):
+    """Returns (units, theme_units): units maps every org_unit name (company /
+    division / department / team) to its row; theme_units maps (department,
+    theme) -> [(team_unit, team_size), ...] for however many sibling teams
+    that theme got split into.
+    """
     units: dict[str, OrgUnit] = {}
+    theme_units: dict[tuple[str, str], list[tuple[OrgUnit, int]]] = {}
+
     root = OrgUnit(name="Quadrant Technologies", parent_id=None, unit_type="company")
     session.add(root)
     session.flush()
     units["Quadrant Technologies"] = root
 
-    for division, depts in ORG_TREE.items():
+    for division, depts in DIVISION_DEPTS.items():
         div_unit = OrgUnit(name=division, parent_id=root.id, unit_type="division")
         session.add(div_unit)
         session.flush()
         units[division] = div_unit
 
-        for dept, spec in depts.items():
+        for dept in depts:
             dept_unit = OrgUnit(name=dept, parent_id=div_unit.id, unit_type="department")
             session.add(dept_unit)
             session.flush()
             units[dept] = dept_unit
 
-            if "teams" in spec:
-                for team in spec["teams"]:
-                    team_unit = OrgUnit(name=team, parent_id=dept_unit.id, unit_type="team")
+            for theme, size in DEPT_THEMES[dept].items():
+                sizes = split_target(size)
+                names = theme_team_names(theme, sizes)
+                team_list = []
+                for name, team_size in zip(names, sizes):
+                    team_unit = OrgUnit(name=name, parent_id=dept_unit.id, unit_type="team")
                     session.add(team_unit)
                     session.flush()
-                    units[team] = team_unit
-    return units
+                    units[name] = team_unit
+                    team_list.append((team_unit, team_size))
+                theme_units[(dept, theme)] = team_list
+    return units, theme_units
 
 
 def build_skills(session) -> dict[str, Skill]:
@@ -391,16 +436,18 @@ LEVEL_HIRE_YEAR_RANGE = {
 }
 
 # Populated as employees are created: employee.id -> department name used for
-# skill-pool assignment (None for CEO/company-wide roles), and -> org level
-# (0=CEO .. 7=IC), used later for incompleteness injection.
+# skill-pool assignment (None for CEO/company-wide roles), -> org level
+# (0=CEO .. 7=IC) used for incompleteness injection, and -> team theme (e.g.
+# "Backend") for the four engineering teams with a primary-skill profile.
 EMPLOYEE_SKILL_DEPT: dict[str, str | None] = {}
 EMPLOYEE_LEVEL: dict[str, int] = {}
+EMPLOYEE_TEAM_THEME: dict[str, str | None] = {}
 ALL_EMPLOYEES: list[Employee] = []
 
 
 def make_employee(session, first, last, title, org_unit, manager, level, offices,
                    skill_dept: str | None, employment_type: EmploymentType | None = None,
-                   forced_office: Office | None = None) -> Employee:
+                   forced_office: Office | None = None, team_theme: str | None = None) -> Employee:
     emp_id = str(uuid.uuid4())
 
     if employment_type is None:
@@ -486,10 +533,12 @@ def make_employee(session, first, last, title, org_unit, manager, level, offices
     ALL_EMPLOYEES.append(emp)
     EMPLOYEE_SKILL_DEPT[emp.id] = skill_dept
     EMPLOYEE_LEVEL[emp.id] = level
+    EMPLOYEE_TEAM_THEME[emp.id] = team_theme
     return emp
 
 
-def distribute_ics(session, offices, dept_name, unit, count, manager, ic_titles, level, span=8):
+def distribute_ics(session, offices, dept_name, unit, count, manager, ic_titles, level,
+                    span=14, team_theme=None):
     if count <= 0:
         return
     if count <= span or level >= 7:
@@ -497,7 +546,8 @@ def distribute_ics(session, offices, dept_name, unit, count, manager, ic_titles,
             first, last = next_name()
             title = rng.choice(ic_titles)
             seniority = 7 if level >= 7 else rng.choices([6, 7], weights=[1, 2])[0]
-            make_employee(session, first, last, title, unit, manager, seniority, offices, dept_name)
+            make_employee(session, first, last, title, unit, manager, seniority, offices, dept_name,
+                          team_theme=team_theme)
         return
 
     num_leads = max(2, -(-count // (span + 1)))
@@ -506,19 +556,22 @@ def distribute_ics(session, offices, dept_name, unit, count, manager, ic_titles,
     for i in range(num_leads):
         first, last = next_name()
         lead_title = f"{unit.name} Team Lead" if unit.unit_type == "team" else f"{dept_name} Team Lead"
-        lead = make_employee(session, first, last, lead_title, unit, manager, level, offices, dept_name)
+        lead = make_employee(session, first, last, lead_title, unit, manager, level, offices, dept_name,
+                             team_theme=team_theme)
         my_ics = base + (1 if i < extra else 0)
-        distribute_ics(session, offices, dept_name, unit, my_ics, lead, ic_titles, level + 1, span)
+        distribute_ics(session, offices, dept_name, unit, my_ics, lead, ic_titles, level + 1, span, team_theme)
 
 
-def populate_unit(session, offices, dept_name, unit, size, top_manager, manager_level, manager_title_fn):
+def populate_unit(session, offices, dept_name, unit, size, top_manager, manager_level, manager_title_fn,
+                  team_theme=None):
     if size <= 0:
         return top_manager
     first, last = next_name()
     manager_local = make_employee(session, first, last, manager_title_fn(unit), unit,
-                                   top_manager, manager_level, offices, dept_name)
+                                   top_manager, manager_level, offices, dept_name, team_theme=team_theme)
     ic_titles = IC_TITLES_BY_DEPT.get(dept_name, ["Specialist", "Senior Specialist"])
-    distribute_ics(session, offices, dept_name, unit, size - 1, manager_local, ic_titles, manager_level + 1)
+    distribute_ics(session, offices, dept_name, unit, size - 1, manager_local, ic_titles, manager_level + 1,
+                   team_theme=team_theme)
     return manager_local
 
 
@@ -527,7 +580,7 @@ def build_deep_chain(session, offices, platform_eng_director, backend_unit):
 
     Deliberately hard-coded (not left to the generic span-of-control splitter)
     so the >=6-levels-deep reporting-chain constraint is guaranteed, not just
-    statistically likely.
+    statistically likely. Lives in the first "Backend Team" sub-team.
     """
     dept_name = "Platform Engineering"
     chain_titles = [
@@ -543,13 +596,14 @@ def build_deep_chain(session, offices, platform_eng_director, backend_unit):
         # Draw straight from the pools, NOT next_name() — the forced-injection
         # queue is reserved for the generic IC pool, not this hard-coded chain.
         first, last = rng.choice(FIRST_NAMES), rng.choice(LAST_NAMES)
-        person = make_employee(session, first, last, title, backend_unit, manager, level, offices, dept_name)
+        person = make_employee(session, first, last, title, backend_unit, manager, level, offices, dept_name,
+                               team_theme="Backend")
         chain.append(person)
         manager = person
     return chain  # chain[-2] is the Engineering Manager (level 4), used as top_manager for the rest of Backend Team
 
 
-def build_employees(session, offices, units):
+def build_employees(session, offices, units, theme_units):
     seattle = next(o for o in offices if o.name == "Seattle HQ")
     bangalore = next(o for o in offices if o.name == "Bangalore Office")
 
@@ -561,37 +615,39 @@ def build_employees(session, offices, units):
     division_vps: dict[str, Employee] = {}
     deep_chain: list[Employee] = []
 
-    for division, depts in ORG_TREE.items():
+    for division, depts in DIVISION_DEPTS.items():
         vp_first, vp_last = rng.choice(FIRST_NAMES), rng.choice(LAST_NAMES)
         forced = seattle if division == "Engineering" else None
         vp = make_employee(session, vp_first, vp_last, f"VP of {division}",
                             units[division], ceo, 1, offices, None, forced_office=forced)
         division_vps[division] = vp
 
-        for dept, spec in depts.items():
-            if "teams" in spec:
-                dir_first, dir_last = rng.choice(FIRST_NAMES), rng.choice(LAST_NAMES)
-                forced_dir_office = seattle if dept == "Platform Engineering" else None
-                director = make_employee(session, dir_first, dir_last, f"Director of {dept}",
-                                          units[dept], vp, 2, offices, dept, forced_office=forced_dir_office)
-                dept_directors[dept] = director
+        for dept in depts:
+            dir_first, dir_last = rng.choice(FIRST_NAMES), rng.choice(LAST_NAMES)
+            forced_dir_office = seattle if dept == "Platform Engineering" else None
+            director = make_employee(session, dir_first, dir_last, f"Director of {dept}",
+                                      units[dept], vp, 2, offices, dept, forced_office=forced_dir_office)
+            dept_directors[dept] = director
 
-                for team_name, team_size in spec["teams"].items():
-                    if dept == "Platform Engineering" and team_name == "Backend Team":
-                        deep_chain = build_deep_chain(session, offices, director, units[team_name])
-                        chain_manager = deep_chain[2]  # "Engineering Manager, Backend" (level 4)
-                        remaining = team_size - 5  # 5 = SrMgr, Mgr, TechLead, SrEngineer, Engineer
-                        distribute_ics(session, offices, dept, units[team_name], remaining,
-                                        chain_manager, IC_TITLES_BY_DEPT[dept], level=5)
-                    else:
-                        populate_unit(session, offices, dept, units[team_name], team_size, director,
-                                      manager_level=4,
-                                      manager_title_fn=lambda u: f"{u.name} Manager")
-            else:
-                director = populate_unit(session, offices, dept, units[dept], spec["flat_size"], vp,
-                                         manager_level=2,
-                                         manager_title_fn=lambda u, d=dept: f"Director of {d}")
-                dept_directors[dept] = director
+            for theme in DEPT_THEMES[dept]:
+                team_theme = theme if theme in TEAM_PRIMARY_SKILLS else None
+                team_list = theme_units[(dept, theme)]
+
+                if dept == "Platform Engineering" and theme == "Backend":
+                    first_unit, first_size = team_list[0]
+                    deep_chain = build_deep_chain(session, offices, director, first_unit)
+                    chain_manager = deep_chain[2]  # "Engineering Manager, Backend" (level 4)
+                    remaining = first_size - 5  # 5 = SrMgr, Mgr, TechLead, SrEngineer, Engineer
+                    distribute_ics(session, offices, dept, first_unit, remaining, chain_manager,
+                                   IC_TITLES_BY_DEPT[dept], level=5, team_theme="Backend")
+                    rest = team_list[1:]
+                else:
+                    rest = team_list
+
+                for team_unit, team_size in rest:
+                    populate_unit(session, offices, dept, team_unit, team_size, director,
+                                  manager_level=4, manager_title_fn=lambda u: f"{u.name} Manager",
+                                  team_theme=team_theme)
 
     return {
         "ceo": ceo, "dept_directors": dept_directors, "division_vps": division_vps,
@@ -652,18 +708,46 @@ def assign_skills(session, skills, ctx):
 
     for emp in ALL_EMPLOYEES:
         dept = EMPLOYEE_SKILL_DEPT[emp.id]
-        pool = DEPT_SKILL_POOL.get(dept, LEADERSHIP_SKILL_POOL)
-        n = rng.randint(2, min(4, len(pool)))
-        for name in rng.sample(pool, n):
-            level = rng.choices(
-                [SkillLevel.learning, SkillLevel.working, SkillLevel.expert], weights=[20, 55, 25])[0]
-            source = rng.choices(
-                [SkillSource.self_reported, SkillSource.inferred, SkillSource.confirmed, SkillSource.certified],
-                weights=[40, 30, 20, 10])[0]
-            verified_at = (datetime.now() - timedelta(days=rng.randint(10, 700))
-                           if source in (SkillSource.confirmed, SkillSource.certified) else None)
-            pending.append({"employee": emp, "skill_name": name, "level": level,
-                            "source": source, "verified_at": verified_at})
+        theme = EMPLOYEE_TEAM_THEME[emp.id]
+        primary = TEAM_PRIMARY_SKILLS.get(theme)
+
+        if primary:
+            # Team-primary skills dominate: most of this person's technical
+            # skills come from their own team's core set, at levels that read
+            # as real fluency (Working/Expert, not Learning).
+            n_primary = rng.randint(max(2, len(primary) - 1), len(primary))
+            for name in rng.sample(primary, n_primary):
+                level = rng.choices([SkillLevel.working, SkillLevel.expert], weights=[55, 45])[0]
+                source = rng.choices(
+                    [SkillSource.self_reported, SkillSource.inferred, SkillSource.confirmed, SkillSource.certified],
+                    weights=[35, 20, 30, 15])[0]
+                verified_at = (datetime.now() - timedelta(days=rng.randint(10, 700))
+                               if source in (SkillSource.confirmed, SkillSource.certified) else None)
+                pending.append({"employee": emp, "skill_name": name, "level": level,
+                                "source": source, "verified_at": verified_at})
+
+            # Occasional secondary, cross-team skill — never at Expert, so it
+            # can't be mistaken for another primary specialty.
+            if rng.random() < 0.3:
+                secondary_pool = [s for s in DEPT_SKILL_POOL.get(dept, []) if s not in primary]
+                if secondary_pool:
+                    name = rng.choice(secondary_pool)
+                    level = rng.choices([SkillLevel.learning, SkillLevel.working], weights=[40, 60])[0]
+                    pending.append({"employee": emp, "skill_name": name, "level": level,
+                                    "source": SkillSource.self_reported, "verified_at": None})
+        else:
+            pool = DEPT_SKILL_POOL.get(dept, LEADERSHIP_SKILL_POOL)
+            n = rng.randint(2, min(4, len(pool)))
+            for name in rng.sample(pool, n):
+                level = rng.choices(
+                    [SkillLevel.learning, SkillLevel.working, SkillLevel.expert], weights=[20, 55, 25])[0]
+                source = rng.choices(
+                    [SkillSource.self_reported, SkillSource.inferred, SkillSource.confirmed, SkillSource.certified],
+                    weights=[40, 30, 20, 10])[0]
+                verified_at = (datetime.now() - timedelta(days=rng.randint(10, 700))
+                               if source in (SkillSource.confirmed, SkillSource.certified) else None)
+                pending.append({"employee": emp, "skill_name": name, "level": level,
+                                "source": source, "verified_at": verified_at})
 
         langs = []
         if rng.random() < 0.92:
@@ -709,8 +793,13 @@ def assign_skills(session, skills, ctx):
             pbi_bangalore.append(entry)
 
     # --- Engineered mentor pool: Terraform experts for find_mentor().
+    # Cloud Operations is Terraform's home team (TEAM_PRIMARY_SKILLS), so
+    # prefer boosting there; fall back to the wider Infrastructure department
+    # only if that team somehow doesn't cover it.
     terraform_experts = [p for p in pending if p["skill_name"] == "Terraform" and p["level"] == SkillLevel.expert]
-    infra_pool = [e for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT[e.id] == "Infrastructure"]
+    cloud_ops_pool = [e for e in ALL_EMPLOYEES if EMPLOYEE_TEAM_THEME[e.id] == "Cloud Operations"]
+    infra_pool = cloud_ops_pool + [e for e in ALL_EMPLOYEES
+                                    if EMPLOYEE_SKILL_DEPT[e.id] == "Infrastructure" and e not in cloud_ops_pool]
     rng.shuffle(infra_pool)
     for e in infra_pool:
         if len(terraform_experts) >= 3:
@@ -730,13 +819,6 @@ def assign_skills(session, skills, ctx):
         seeker = next(e for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT[e.id] == "Platform Engineering"
                       and not has_skill(e, "Terraform"))
         pending.append({"employee": seeker, "skill_name": "Terraform", "level": SkillLevel.learning,
-                        "source": SkillSource.self_reported, "verified_at": None})
-
-    # --- Make sure the SRE synonym itself (not just its canonical form) is in use.
-    if not any(p["skill_name"] == "SRE" for p in pending):
-        holder = next(e for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT[e.id] == "Infrastructure"
-                      and not has_skill(e, "SRE"))
-        pending.append({"employee": holder, "skill_name": "SRE", "level": SkillLevel.working,
                         "source": SkillSource.self_reported, "verified_at": None})
 
     seen: set[tuple[str, int]] = set()
@@ -856,6 +938,21 @@ def print_verification(session, ctx, specials, offices, skills):
     status = "PASS" if total == 500 else "FAIL"
     print(f"\n[{status}] Total employee records: {total} (target 500)")
 
+    team_counts = session.execute(
+        select(OrgUnit.name, func.count(Employee.id))
+        .join(Employee, Employee.org_unit_id == OrgUnit.id)
+        .where(OrgUnit.unit_type == "team")
+        .group_by(OrgUnit.name)
+    ).all()
+    oversized = [r for r in team_counts if r[1] > 15]
+    max_name, max_size = max(team_counts, key=lambda r: r[1])
+    status = "PASS" if not oversized else "FAIL"
+    avg_size = sum(c for _, c in team_counts) / len(team_counts)
+    print(f"\n[{status}] Team sizes rebalanced (target 6-15 per leaf team): "
+          f"{len(team_counts)} teams, largest is '{max_name}' at {max_size}, avg {avg_size:.1f}")
+    for name, cnt in oversized:
+        print(f"        OVERSIZED: {name}: {cnt}")
+
     depth, path = longest_manager_chain(session)
     status = "PASS" if depth >= 6 else "FAIL"
     print(f"\n[{status}] Deepest reporting chain: {depth} levels")
@@ -870,6 +967,26 @@ def print_verification(session, ctx, specials, offices, skills):
     status = "PASS" if 3 <= len(pbi) <= 5 else "FAIL"
     print(f"\n[{status}] Skill overlap tuned — 'Power BI' in Bangalore: {len(pbi)} people (target 3-5)")
     print(f"        {', '.join(pbi)}")
+
+    alias_rows = session.execute(
+        select(Skill.id, Skill.name, Skill.canonical_id).where(Skill.name.in_(SKILL_CANONICAL_MAP.keys()))
+    ).all()
+    synonym_ok = True
+    synonym_lines = []
+    for skill_id, name, canonical_id in alias_rows:
+        canonical_name = SKILL_CANONICAL_MAP[name]
+        linked_ok = canonical_id == skills[canonical_name].id
+        assigned = session.scalar(
+            select(func.count()).select_from(EmployeeSkill).where(EmployeeSkill.skill_id == skill_id))
+        alias_ok = linked_ok and assigned == 0
+        synonym_ok = synonym_ok and alias_ok
+        synonym_lines.append(f"        '{name}' --canonical_id--> '{canonical_name}' "
+                             f"({'linked' if linked_ok else 'BROKEN LINK'}, "
+                             f"{assigned} people hold the alias directly{'' if assigned == 0 else ' — should be 0'})")
+    status = "PASS" if synonym_ok else "FAIL"
+    print(f"\n[{status}] Skill synonyms resolve via canonical_id, alias never directly assigned:")
+    for line in synonym_lines:
+        print(line)
 
     tricky_names = ["Siobhan Nguyen", "Xiomara Delacroix", "Przemyslaw Kowalczyk",
                      "Aoife Kavanagh", "Zhiyuan Tanaka", "Kshitij Radhakrishnan"]
@@ -913,18 +1030,14 @@ def print_verification(session, ctx, specials, offices, skills):
     status = "PASS" if conf_projects else "FAIL"
     print(f"\n[{status}] Confidential projects: {len(conf_projects)} — {', '.join(conf_projects)}")
 
-    finance_count = session.scalar(
-        select(func.count()).select_from(Employee)
-        .join(OrgUnit, Employee.org_unit_id == OrgUnit.id)
-        .where(OrgUnit.name.in_(["Finance", "Finance Operations", "Payroll"])))
-    eng_count = session.scalar(
-        select(func.count()).select_from(Employee)
-        .join(OrgUnit, Employee.org_unit_id == OrgUnit.id)
-        .where(OrgUnit.name.in_(["Engineering", "Platform Engineering", "Data & AI",
-                                  "Infrastructure", "Quality Engineering",
-                                  "Backend Team", "Frontend Team", "Mobile Team",
-                                  "Machine Learning Team", "Data Platform Team", "Analytics Team",
-                                  "Cloud Operations Team", "Networking Team", "QA Automation Team"])))
+    # Department membership is tracked via EMPLOYEE_SKILL_DEPT (set from the
+    # department each employee's team belongs to) rather than an org_unit
+    # name list, since oversized teams are now split across several
+    # differently-named sibling org_units (see split_target()).
+    finance_depts = {"Finance Operations", "Payroll"}
+    eng_depts = {"Platform Engineering", "Data & AI", "Infrastructure", "Quality Engineering"}
+    finance_count = sum(1 for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT[e.id] in finance_depts)
+    eng_count = sum(1 for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT[e.id] in eng_depts)
     status = "PASS" if finance_count > 0 and eng_count > 0 else "FAIL"
     print(f"\n[{status}] Departments with different sensitivity: "
           f"Finance-side={finance_count} employees, Engineering-side={eng_count} employees")
@@ -985,6 +1098,25 @@ def print_verification(session, ctx, specials, offices, skills):
           f"job_title~jobTitle, work_phone~businessPhones, manager_id~manager (schema-level, no data check)")
 
     print("\n" + "=" * 78)
+    print("SKILL-BY-TEAM BREAKDOWN (primary-skill correlation check)")
+    print("=" * 78)
+    for theme, primary_list in TEAM_PRIMARY_SKILLS.items():
+        theme_ids = [e.id for e in ALL_EMPLOYEES if EMPLOYEE_TEAM_THEME[e.id] == theme]
+        n_people = len(theme_ids)
+        rows = session.execute(
+            select(Skill.name, func.count())
+            .join(EmployeeSkill, EmployeeSkill.skill_id == Skill.id)
+            .where(EmployeeSkill.employee_id.in_(theme_ids))
+            .group_by(Skill.name)
+            .order_by(func.count().desc())
+        ).all()
+        print(f"\n{theme} team(s) — {n_people} people. Skill holders (desc.), '*' = team-primary:")
+        for name, cnt in rows[:8]:
+            marker = " *PRIMARY*" if name in primary_list else ""
+            pct = (cnt / n_people * 100) if n_people else 0
+            print(f"        {name:32s} {cnt:4d} people ({pct:5.1f}%){marker}")
+
+    print("\n" + "=" * 78)
 
 
 def main():
@@ -992,9 +1124,9 @@ def main():
     try:
         reset_tables(session)
         offices = build_offices(session)
-        units = build_org_units(session)
+        units, theme_units = build_org_units(session)
         skills = build_skills(session)
-        ctx = build_employees(session, offices, units)
+        ctx = build_employees(session, offices, units, theme_units)
         specials = inject_incompleteness_and_specials(ctx)
         assign_skills(session, skills, ctx)
         build_projects(session, units, ctx)
