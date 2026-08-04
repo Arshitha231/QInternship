@@ -49,6 +49,19 @@ cp .env.example .env          # DATABASE_URL defaults to sqlite:///directory.db
 
 alembic upgrade head          # create the schema
 python seed.py                # generate ~500 synthetic employees + verification report
+
+uvicorn app.main:app --reload --port 8000   # http://127.0.0.1:8000/docs
+```
+
+Auth is pluggable (`app/auth.py`). With no Entra config set, `AUTH_MODE` defaults
+to `dev`: every request needs an `X-Dev-Role: employee|manager|hr` header (plus
+optional `X-Dev-User-Id`, `X-Dev-Name`), enforced by the same `get_current_user`
+dependency the real Entra JWT-validation path uses — so nothing downstream
+changes when `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` show up later.
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami
 ```
 
 `.python-version` pins 3.14.6 — Azure App Service's newest Linux runtime
@@ -58,6 +71,8 @@ python seed.py                # generate ~500 synthetic employees + verification
 
 ```
 app/
+  main.py            FastAPI app — health check, /docs, /auth/whoami (no employee data yet)
+  auth.py            pluggable get_current_user: dev header vs. real Entra JWT validation
   db.py              SQLAlchemy engine/session, reads DATABASE_URL
   models/            Employee, OrgUnit, Office, Skill, EmployeeSkill, Project,
                       EmployeeProject, EmployeeCertification, AuditLog
@@ -81,7 +96,7 @@ seed.py              synthetic data generator + constraint verification summary
 
 - [x] 1. Schema + migrations (SQLite)
 - [x] 2. Seed data + verification summary
-- [ ] 3. FastAPI skeleton, Entra auth dependency, `/docs`, health endpoint
+- [x] 3. FastAPI skeleton, Entra auth dependency, `/docs`, health endpoint
 - [ ] 4. `find_people` / `get_person` with the full filter pipeline + audit log
 - [ ] 5. Field-visibility tests (assert restricted keys absent from response bodies)
 - [ ] 6. Recursive org chart endpoint (both directions, cycle-guard test)
