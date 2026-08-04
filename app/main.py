@@ -1,11 +1,14 @@
+from typing import Literal
+
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.db import engine, get_db
+from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
-from app.schemas import PersonDetail, PersonSummary
+from app.schemas import OrgChainNode, PersonDetail, PersonSummary
 
 app = FastAPI(
     title="Employee Directory API",
@@ -60,3 +63,20 @@ def get_person_route(
         # access — redact, never reject.
         raise HTTPException(status_code=404, detail="Person not found")
     return person
+
+
+@app.get("/people/{person_id}/org-chart", response_model=list[OrgChainNode])
+def get_org_chart_route(
+    person_id: str,
+    direction: Literal["up", "down"] = "up",
+    depth: int = 10,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[OrgChainNode]:
+    result = get_org_chain_service(db, user, person_id, direction, depth)
+    if result is None:
+        # Same identical-shape rule as get_person: root not visible or not
+        # found look the same. Direction access (downward, wrong role) is a
+        # different case — that's an empty list, handled inside the service.
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result

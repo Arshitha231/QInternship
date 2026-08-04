@@ -80,3 +80,17 @@ class PersonDetail(BaseModel):
     hire_date: date | None = None
     cost_centre: str | None = None
     personal_mobile: str | None = None
+
+
+class OrgChainNode(BaseModel):
+    """One entry in a get_org_chain result. depth=1 is a direct manager (up)
+    or direct report (down); depth increases moving further from the root.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    depth: int

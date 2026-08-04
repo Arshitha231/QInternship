@@ -135,6 +135,28 @@ def _seed() -> None:
         for i in range(MAX_RESULTS + 10):
             mkemp(f"bulk-{i}", f"Bulk Person {i}", "Software Engineer", f"bulk{i}@example.test")
 
+        # --- org chart: a clean 3-level chain for up/down traversal -------
+        mkemp("chain-3", "Casey Top", "VP of Engineering", "chain3@example.test")
+        mkemp("chain-2", "Charlie Middle", "Engineering Manager", "chain2@example.test",
+              manager_id="chain-3")
+        mkemp("chain-1", "Chris Bottom", "Software Engineer", "chain1@example.test",
+              manager_id="chain-2")
+
+        # --- org chart: a restricted node partway up a chain, to prove
+        # record-level filtering applies to every node, not just the root.
+        mkemp("rchain-3", "Robin Top", "VP of Engineering", "rchain3@example.test")
+        mkemp("rchain-2", "Rory Middle", "Engineering Manager", "rchain2@example.test",
+              manager_id="rchain-3", availability_status=AvailabilityStatus.restricted)
+        mkemp("rchain-1", "Ray Bottom", "Software Engineer", "rchain1@example.test",
+              manager_id="rchain-2")
+
+        # --- cyclic manager_id data: the cycle guard is what has to stop
+        # this from hanging, since there's no legitimate top of this chain.
+        mkemp("cyclic-a", "Alex Cyclic", "Software Engineer", "cyclic-a@example.test",
+              manager_id="cyclic-b")
+        mkemp("cyclic-b", "Bailey Cyclic", "Engineering Manager", "cyclic-b@example.test",
+              manager_id="cyclic-a")
+
         db.commit()
     finally:
         db.close()

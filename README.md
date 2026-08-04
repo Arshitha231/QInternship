@@ -101,7 +101,7 @@ seed.py              synthetic data generator + constraint verification summary
 - [x] 3. FastAPI skeleton, Entra auth dependency, `/docs`, health endpoint
 - [x] 4. `find_people` / `get_person` with the full filter pipeline + audit log
 - [x] 5. Field-visibility tests (assert restricted keys absent from response bodies)
-- [ ] 6. Recursive org chart endpoint (both directions, cycle-guard test)
+- [x] 6. Recursive org chart endpoint (both directions, cycle-guard test)
 - [ ] 7. Azure AI Search index + `build_profile_text()` + batch embedding
 - [ ] 8. Hybrid search wired into `find_people`
 - [ ] 9. Tool-calling layer with few-shot examples (mock first)
