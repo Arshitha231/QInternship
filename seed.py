@@ -858,9 +858,44 @@ PROJECT_DEFS = [
 ]
 PROJECT_ROLES = ["Contributor", "Lead", "Stakeholder", "Reviewer"]
 
+# Generic past-initiative names each department draws from, on top of the
+# named flagship projects above — this is what gives each person a varied,
+# non-repetitive project *history* instead of at-most-one membership.
+COMPLETED_PROJECT_TEMPLATES = [
+    "{dept} Process Improvement Initiative", "{dept} Tooling Upgrade",
+    "{dept} Onboarding Revamp", "{dept} Vendor Consolidation",
+    "{dept} Reporting Overhaul", "{dept} Workflow Automation",
+    "{dept} Knowledge Base Migration", "{dept} Annual Planning Cycle",
+]
+COMPANY_WIDE_PROJECT_NAMES = [
+    "Company All-Hands Modernization", "Leadership Offsite Planning",
+    "Annual Strategy Refresh", "Cross-Functional Culture Initiative",
+]
 
-def build_projects(session, units, ctx):
+# Below this many days of tenure, a confidential-project member with no
+# other completed project history is plausible ("explained by their join
+# date") rather than a data-quality gap.
+NEW_HIRE_DAYS = 90
+
+
+def tenure_days(emp: Employee) -> int:
+    return (date.today() - emp.hire_date).days
+
+
+def build_flagship_projects(session, units, ctx):
+    """The 10 named, thematically real projects — including the 2
+    confidential ones. Returns (projects, membership_state), where
+    membership_state tracks what each member already has so the general
+    portfolio pass (build_portfolios) tops up rather than piles on.
+    """
     projects_created = []
+    membership_state: dict[str, dict] = {}
+
+    def note(emp_id: str, project_id: int, is_current: bool):
+        state = membership_state.setdefault(emp_id, {"projects": set(), "completed": 0, "current": 0})
+        state["projects"].add(project_id)
+        state["current" if is_current else "completed"] += 1
+
     for name, ptype, classification, owning_unit, owner_key, member_dept, member_count in PROJECT_DEFS:
         owner_kind, owner_ref = owner_key
         owner = ctx["dept_directors"][owner_ref] if owner_kind == "dept_director" else ctx["division_vps"][owner_ref]
@@ -879,14 +914,157 @@ def build_projects(session, units, ctx):
         members = candidates[:member_count]
         rows = [(owner, "Owner")] + [(m, rng.choice(PROJECT_ROLES)) for m in members]
         for person, role in rows:
-            start = date.today() - timedelta(days=rng.randint(60, 900))
             ongoing = rng.random() < 0.6
-            end = None if ongoing else start + timedelta(days=rng.randint(60, 500))
+            if ongoing:
+                start = date.today() - timedelta(days=rng.randint(30, 500))
+                end = None
+            else:
+                start, end = _past_dates()  # guarantees end < today, unlike start+duration
             session.add(EmployeeProject(
                 employee_id=person.id, project_id=project.id, role=role,
                 start_date=start, end_date=end,
             ))
-    return projects_created
+            note(person.id, project.id, is_current=ongoing)
+
+    return projects_created, membership_state
+
+
+def build_project_pool(session, units, ctx) -> dict[str | None, list[Project]]:
+    """Per-department (plus a company-wide, keyed None) pool of generic
+    past initiatives. 7-8 per bucket so a person's 1-6-project portfolio
+    can be sampled without repeats, while still letting many different
+    people share membership in the same initiative — projects naturally
+    have more than one member.
+    """
+    pool: dict[str | None, list[Project]] = {}
+
+    for dept, director in ctx["dept_directors"].items():
+        dept_unit = units[dept]
+        names = rng.sample(COMPLETED_PROJECT_TEMPLATES, len(COMPLETED_PROJECT_TEMPLATES))
+        dept_projects = []
+        for template in names:
+            name = template.format(dept=dept)
+            ptype = rng.choices([ProjectType.project, ProjectType.function, ProjectType.system],
+                                weights=[70, 20, 10])[0]
+            classification = ProjectClassification.public if rng.random() < 0.1 else ProjectClassification.internal
+            project = Project(name=name, type=ptype, description=f"{name} — owned by {dept}.",
+                              owning_unit_id=dept_unit.id, owner_id=director.id, classification=classification)
+            session.add(project)
+            dept_projects.append(project)
+        pool[dept] = dept_projects
+
+    company_unit = units["Quadrant Technologies"]
+    leadership_projects = []
+    for name in COMPANY_WIDE_PROJECT_NAMES:
+        ptype = rng.choice([ProjectType.function, ProjectType.policy])
+        project = Project(name=name, type=ptype, description=f"{name} — company-wide.",
+                          owning_unit_id=company_unit.id, owner_id=ctx["ceo"].id,
+                          classification=ProjectClassification.internal)
+        session.add(project)
+        leadership_projects.append(project)
+    pool[None] = leadership_projects
+
+    session.flush()
+    return pool
+
+
+def _roll_completed_target(tenure: int) -> int:
+    if tenure < NEW_HIRE_DAYS:
+        return rng.choices([0, 1, 2], weights=[50, 35, 15])[0]
+    return rng.choices([1, 2, 3, 4], weights=[30, 35, 20, 15])[0]
+
+
+def _roll_current_target() -> int:
+    return rng.choices([0, 1, 2], weights=[35, 45, 20])[0]
+
+
+def _past_dates() -> tuple[date, date]:
+    end = date.today() - timedelta(days=rng.randint(10, 700))
+    start = end - timedelta(days=rng.randint(60, 400))
+    return start, end
+
+
+def build_portfolios(session, pool: dict, membership_state: dict) -> None:
+    """Give every employee a realistic mix of completed (past end_date) and
+    current (open-ended) projects, on top of whatever flagship membership
+    they already picked up — most people land at 1-4 completed + 0-2
+    current overall, per the target distribution above.
+    """
+    for emp in ALL_EMPLOYEES:
+        dept = EMPLOYEE_SKILL_DEPT[emp.id]
+        dept_pool = pool.get(dept) or pool[None]
+        state = membership_state.setdefault(emp.id, {"projects": set(), "completed": 0, "current": 0})
+
+        need_completed = max(0, _roll_completed_target(tenure_days(emp)) - state["completed"])
+        need_current = max(0, _roll_current_target() - state["current"])
+
+        available = [p for p in dept_pool if p.id not in state["projects"]]
+        rng.shuffle(available)
+        picks = available[:need_completed + need_current]
+
+        for i, project in enumerate(picks):
+            role = rng.choice(PROJECT_ROLES)
+            if i < need_completed:
+                start, end = _past_dates()
+            else:
+                start = date.today() - timedelta(days=rng.randint(30, 500))
+                end = None
+            session.add(EmployeeProject(
+                employee_id=emp.id, project_id=project.id, role=role, start_date=start, end_date=end,
+            ))
+            state["projects"].add(project.id)
+
+
+def top_up_confidential_members(session, pool: dict) -> dict:
+    """Anyone on a confidential project should also have real project
+    history elsewhere — otherwise their record reads as having no life
+    outside the confidential work, which is both unrealistic and a subtle
+    tell about what they're on. The only allowed exception is someone too
+    new to have accumulated history yet, and even then only sometimes.
+    """
+    session.flush()
+    confidential_ids = {
+        pid for (pid,) in session.query(Project.id).filter(Project.classification == ProjectClassification.confidential)
+    }
+    conf_member_ids = {
+        row.employee_id for row in session.query(EmployeeProject.employee_id)
+        .filter(EmployeeProject.project_id.in_(confidential_ids)).distinct()
+    }
+    employees_by_id = {e.id: e for e in ALL_EMPLOYEES}
+
+    topped_up, exempted_new_hires = 0, 0
+    for emp_id in conf_member_ids:
+        emp = employees_by_id[emp_id]
+        has_completed_noncon = session.query(EmployeeProject).join(
+            Project, EmployeeProject.project_id == Project.id
+        ).filter(
+            EmployeeProject.employee_id == emp_id,
+            Project.classification != ProjectClassification.confidential,
+            EmployeeProject.end_date.isnot(None),
+        ).first() is not None
+        if has_completed_noncon:
+            continue
+
+        if tenure_days(emp) < NEW_HIRE_DAYS and rng.random() < 0.5:
+            exempted_new_hires += 1  # empty history explained by join date
+            continue
+
+        dept = EMPLOYEE_SKILL_DEPT[emp_id]
+        dept_pool = pool.get(dept) or pool[None]
+        existing_ids = {pid for (pid,) in session.query(EmployeeProject.project_id)
+                        .filter(EmployeeProject.employee_id == emp_id)}
+        available = [p for p in dept_pool if p.id not in existing_ids]
+        rng.shuffle(available)
+        for project in available[:rng.choice([1, 2])]:
+            start, end = _past_dates()
+            session.add(EmployeeProject(
+                employee_id=emp_id, project_id=project.id, role=rng.choice(PROJECT_ROLES),
+                start_date=start, end_date=end,
+            ))
+        topped_up += 1
+    session.flush()
+    return {"confidential_members": len(conf_member_ids), "topped_up": topped_up,
+            "exempted_new_hires": exempted_new_hires}
 
 
 def build_certifications(session, skills):
@@ -929,7 +1107,7 @@ def longest_manager_chain(session):
     return best_depth, [name[i] for i in best_path]
 
 
-def print_verification(session, ctx, specials, offices, skills):
+def print_verification(session, ctx, specials, offices, skills, topup_stats):
     print("\n" + "=" * 78)
     print("SEED DATA VERIFICATION SUMMARY")
     print("=" * 78)
@@ -1030,6 +1208,47 @@ def print_verification(session, ctx, specials, offices, skills):
     status = "PASS" if conf_projects else "FAIL"
     print(f"\n[{status}] Confidential projects: {len(conf_projects)} — {', '.join(conf_projects)}")
 
+    conf_ids = {pid for (pid,) in session.query(Project.id)
+                .filter(Project.classification == ProjectClassification.confidential)}
+    conf_member_ids = {row.employee_id for row in session.query(EmployeeProject.employee_id)
+                       .filter(EmployeeProject.project_id.in_(conf_ids)).distinct()}
+    employees_by_id = {e.id: e for e in ALL_EMPLOYEES}
+    bare_non_new_hire = []
+    for emp_id in conf_member_ids:
+        has_completed_noncon = session.query(EmployeeProject).join(
+            Project, EmployeeProject.project_id == Project.id
+        ).filter(
+            EmployeeProject.employee_id == emp_id,
+            Project.classification != ProjectClassification.confidential,
+            EmployeeProject.end_date.isnot(None),
+        ).first() is not None
+        if not has_completed_noncon and tenure_days(employees_by_id[emp_id]) >= NEW_HIRE_DAYS:
+            bare_non_new_hire.append(emp_id)
+    status = "PASS" if not bare_non_new_hire else "FAIL"
+    print(f"\n[{status}] Confidential-project members also have non-confidential history: "
+          f"{len(conf_member_ids)} members, {topup_stats['topped_up']} topped up, "
+          f"{topup_stats['exempted_new_hires']} exempted as new hires (empty history explained by join date)")
+    if bare_non_new_hire:
+        print(f"        BARE (not new hires, still no completed non-confidential project): {bare_non_new_hire}")
+
+    portfolio_counts = session.execute(
+        select(EmployeeProject.employee_id, EmployeeProject.end_date)
+    ).all()
+    completed_n: dict[str, int] = {}
+    current_n: dict[str, int] = {}
+    for emp_id, end_date in portfolio_counts:
+        bucket = completed_n if end_date is not None else current_n
+        bucket[emp_id] = bucket.get(emp_id, 0) + 1
+    in_target_range = sum(1 for e in ALL_EMPLOYEES if 1 <= completed_n.get(e.id, 0) <= 4)
+    zero_completed = sum(1 for e in ALL_EMPLOYEES if completed_n.get(e.id, 0) == 0)
+    over_two_current = sum(1 for e in ALL_EMPLOYEES if current_n.get(e.id, 0) > 2)
+    status = "PASS" if in_target_range / len(ALL_EMPLOYEES) >= 0.8 and over_two_current == 0 else "FAIL"
+    print(f"\n[{status}] Realistic project portfolio distribution:")
+    print(f"        {in_target_range}/{len(ALL_EMPLOYEES)} employees have 1-4 completed projects "
+          f"({in_target_range / len(ALL_EMPLOYEES) * 100:.0f}%)")
+    print(f"        {zero_completed} have zero completed projects (expected: mostly new hires)")
+    print(f"        {over_two_current} exceed the 0-2 current-project target (expected: 0)")
+
     # Department membership is tracked via EMPLOYEE_SKILL_DEPT (set from the
     # department each employee's team belongs to) rather than an org_unit
     # name list, since oversized teams are now split across several
@@ -1129,12 +1348,15 @@ def main():
         ctx = build_employees(session, offices, units, theme_units)
         specials = inject_incompleteness_and_specials(ctx)
         assign_skills(session, skills, ctx)
-        build_projects(session, units, ctx)
+        _projects, membership_state = build_flagship_projects(session, units, ctx)
+        project_pool = build_project_pool(session, units, ctx)
+        build_portfolios(session, project_pool, membership_state)
+        topup_stats = top_up_confidential_members(session, project_pool)
         build_certifications(session, skills)
         session.commit()
         print(f"Seeded {len(ALL_EMPLOYEES)} employees, {len(offices)} offices, "
               f"{len(units)} org units, {len(skills)} skills.")
-        print_verification(session, ctx, specials, offices, skills)
+        print_verification(session, ctx, specials, offices, skills, topup_stats)
     finally:
         session.close()
 

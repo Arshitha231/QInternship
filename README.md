@@ -103,6 +103,8 @@ seed.py              synthetic data generator + constraint verification summary
 - [x] 5. Field-visibility tests (assert restricted keys absent from response bodies)
 - [x] 6. Recursive org chart endpoint (both directions, cycle-guard test)
 - [ ] 7. Azure AI Search index + `build_profile_text()` + batch embedding
+      — `build_profile_text()` and the index schema (`search_index_schema.json`)
+      are done; batch embedding is still pending Azure OpenAI credentials.
 - [ ] 8. Hybrid search wired into `find_people`
 - [ ] 9. Tool-calling layer with few-shot examples (mock first)
 - [ ] 10. Golden evaluation set, scored per tier

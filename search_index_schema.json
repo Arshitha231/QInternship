@@ -1,0 +1,192 @@
+{
+  "name": "employees-index",
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "key": true,
+      "searchable": false,
+      "filterable": true,
+      "retrievable": true
+    },
+    {
+      "name": "full_name",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": false,
+      "sortable": true,
+      "retrievable": true,
+      "indexAnalyzer": "name_prefix_analyzer",
+      "searchAnalyzer": "standard.lucene"
+    },
+    {
+      "name": "preferred_name",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": false,
+      "retrievable": true,
+      "indexAnalyzer": "name_prefix_analyzer",
+      "searchAnalyzer": "standard.lucene"
+    },
+    {
+      "name": "job_title",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": true,
+      "facetable": true,
+      "retrievable": true
+    },
+    {
+      "name": "org_unit",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "facetable": true,
+      "retrievable": true
+    },
+    {
+      "name": "office",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "facetable": true,
+      "retrievable": true
+    },
+    {
+      "name": "office_city",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "facetable": true,
+      "retrievable": true
+    },
+    {
+      "name": "skills",
+      "type": "Collection(Edm.ComplexType)",
+      "fields": [
+        {
+          "name": "name",
+          "type": "Edm.String",
+          "searchable": true,
+          "filterable": true,
+          "facetable": true,
+          "retrievable": true
+        },
+        {
+          "name": "level",
+          "type": "Edm.String",
+          "filterable": true,
+          "facetable": true,
+          "retrievable": true
+        },
+        {
+          "name": "category",
+          "type": "Edm.String",
+          "filterable": true,
+          "facetable": true,
+          "retrievable": true
+        },
+        {
+          "name": "source",
+          "type": "Edm.String",
+          "filterable": true,
+          "retrievable": true
+        }
+      ]
+    },
+    {
+      "name": "availability_status",
+      "type": "Edm.String",
+      "searchable": false,
+      "filterable": true,
+      "facetable": true,
+      "retrievable": true
+    },
+    {
+      "name": "is_active",
+      "type": "Edm.Boolean",
+      "filterable": true,
+      "retrievable": false
+    },
+    {
+      "name": "profile_text",
+      "type": "Edm.String",
+      "searchable": true,
+      "filterable": false,
+      "retrievable": true,
+      "analyzer": "en.microsoft"
+    },
+    {
+      "name": "profile_vector",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "retrievable": false,
+      "dimensions": 1536,
+      "vectorSearchProfile": "profile-vector-profile"
+    }
+  ],
+  "vectorSearch": {
+    "algorithms": [
+      {
+        "name": "hnsw-config",
+        "kind": "hnsw",
+        "hnswParameters": {
+          "metric": "cosine",
+          "m": 4,
+          "efConstruction": 400,
+          "efSearch": 500
+        }
+      }
+    ],
+    "profiles": [
+      {
+        "name": "profile-vector-profile",
+        "algorithm": "hnsw-config"
+      }
+    ]
+  },
+  "semantic": {
+    "configurations": [
+      {
+        "name": "employee-semantic-config",
+        "prioritizedFields": {
+          "titleField": {
+            "fieldName": "full_name"
+          },
+          "prioritizedContentFields": [
+            {
+              "fieldName": "profile_text"
+            }
+          ],
+          "prioritizedKeywordsFields": [
+            {
+              "fieldName": "job_title"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "analyzers": [
+    {
+      "name": "name_prefix_analyzer",
+      "@odata.type": "#Microsoft.Azure.Search.CustomAnalyzer",
+      "tokenizer": "name_prefix_tokenizer",
+      "tokenFilters": [
+        "lowercase"
+      ]
+    }
+  ],
+  "tokenizers": [
+    {
+      "name": "name_prefix_tokenizer",
+      "@odata.type": "#Microsoft.Azure.Search.EdgeNGramTokenizer",
+      "minGram": 2,
+      "maxGram": 15,
+      "tokenChars": [
+        "letter",
+        "digit"
+      ]
+    }
+  ]
+}
