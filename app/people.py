@@ -1,5 +1,5 @@
 """find_people and get_person — the only two ways employee data leaves this
-service in step 4. Both follow the same fixed pipeline:
+service in step 4+. Both follow the same fixed pipeline:
 
     retrieve -> filter records -> filter fields -> department check
              -> cap results -> write audit_log -> respond
@@ -7,6 +7,14 @@ service in step 4. Both follow the same fixed pipeline:
 The model (step 9) will call these same two functions and nothing else — it
 never touches the database directly, and permission logic never runs inside
 the model's reach.
+
+Step 8: find_people's retrieve step now tries Azure AI Search (hybrid
+keyword+fuzzy+vector via native RRF) first when there's a name/description
+query to rank on, falling back to the plain SQL query when Search isn't
+configured, has no query text to work with, or errors. Everything after
+retrieval — is_record_visible, capping, audit — is identical code running
+on identical Employee rows no matter which retrieval path produced them;
+Search never sees the caller and never makes a visibility decision.
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ from app.models import (
 from app.models.enums import AvailabilityStatus, SkillLevel
 from app.permissions import can_see_confidential_project, is_record_visible, visible_fields
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
+from app.search_client import search_people
 
 # Query-level restriction: one colleague's email is a lookup, every
 # employee's email in one response is bulk extraction.
@@ -104,43 +113,73 @@ def find_people(
         office=office, language=language, available=available,
     ).items() if v is not None}
 
-    # 1. retrieve
-    query = select(Employee).where(Employee.is_active.is_(True))
-
-    if name:
-        pattern = f"%{name}%"
-        query = query.where((Employee.full_name.ilike(pattern)) | (Employee.preferred_name.ilike(pattern)))
-    if org_unit:
-        query = query.join(OrgUnit, Employee.org_unit_id == OrgUnit.id).where(OrgUnit.name.ilike(org_unit))
-    if office:
-        query = query.join(Office, Employee.office_id == Office.id).where(
-            (Office.name.ilike(f"%{office}%")) | (Office.city.ilike(f"%{office}%"))
-        )
-    if available:
-        # Only the positive filter is exposed. "Show me everyone who's away"
-        # is exactly the restricted aggregate-absence query the spec calls
-        # out, so `available=False` is a silent no-op, never a bulk listing.
-        query = query.where(Employee.availability_status == AvailabilityStatus.available)
+    # Resolve skill/language synonyms once, up front — both the Search
+    # filter and the SQL fallback need the same canonical name/id, and an
+    # unknown skill/language or invalid level means no matches either way
+    # (not an error).
+    resolved_skill = None
+    parsed_level = None
     if skill:
-        resolved = resolve_skill(db, skill)
-        if resolved is None:
-            return []  # no such skill -> no matches, not an error
-        skill_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved.id)
+        resolved_skill = resolve_skill(db, skill)
+        if resolved_skill is None:
+            _write_audit(db, caller, "find_people", json.dumps(filters_used), 0, SUMMARY_FIELDS)
+            return []
         if level:
             parsed_level = _parse_level(level)
             if parsed_level is None:
+                _write_audit(db, caller, "find_people", json.dumps(filters_used), 0, SUMMARY_FIELDS)
                 return []
-            skill_subq = skill_subq.where(EmployeeSkill.level == parsed_level)
-        query = query.where(Employee.id.in_(skill_subq))
+    resolved_lang = None
     if language:
         resolved_lang = resolve_skill(db, language)
         if resolved_lang is None:
+            _write_audit(db, caller, "find_people", json.dumps(filters_used), 0, SUMMARY_FIELDS)
             return []
-        lang_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_lang.id)
-        query = query.where(Employee.id.in_(lang_subq))
 
-    query = query.order_by(Employee.full_name)
-    candidates = db.execute(query).scalars().all()
+    # 1. retrieve — hybrid Search when there's a name/description query to
+    # rank on, SQL otherwise (pure-filter browsing doesn't need relevance
+    # ranking) or whenever Search is unconfigured/unavailable/erroring.
+    candidates: list[Employee] | None = None
+    if name:
+        ranked_ids = search_people(
+            name=name, skill=resolved_skill.name if resolved_skill else None,
+            level=parsed_level.value if parsed_level else None,
+            org_unit=org_unit, office=office,
+            language=resolved_lang.name if resolved_lang else None, available=available,
+            top=MAX_RESULTS * 2,  # buffer for record-level filtering losses below
+        )
+        if ranked_ids is not None:
+            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
+            by_id = {e.id: e for e in rows}
+            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
+
+    if candidates is None:
+        query = select(Employee).where(Employee.is_active.is_(True))
+        if name:
+            pattern = f"%{name}%"
+            query = query.where((Employee.full_name.ilike(pattern)) | (Employee.preferred_name.ilike(pattern)))
+        if org_unit:
+            query = query.join(OrgUnit, Employee.org_unit_id == OrgUnit.id).where(OrgUnit.name.ilike(org_unit))
+        if office:
+            query = query.join(Office, Employee.office_id == Office.id).where(
+                (Office.name.ilike(f"%{office}%")) | (Office.city.ilike(f"%{office}%"))
+            )
+        if available:
+            # Only the positive filter is exposed. "Show me everyone who's away"
+            # is exactly the restricted aggregate-absence query the spec calls
+            # out, so `available=False` is a silent no-op, never a bulk listing.
+            query = query.where(Employee.availability_status == AvailabilityStatus.available)
+        if resolved_skill:
+            skill_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_skill.id)
+            if parsed_level:
+                skill_subq = skill_subq.where(EmployeeSkill.level == parsed_level)
+            query = query.where(Employee.id.in_(skill_subq))
+        if resolved_lang:
+            lang_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_lang.id)
+            query = query.where(Employee.id.in_(lang_subq))
+
+        query = query.order_by(Employee.full_name)
+        candidates = db.execute(query).scalars().all()
 
     # 2. filter records
     visible_records = [e for e in candidates if is_record_visible(caller, e)]

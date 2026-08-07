@@ -4,6 +4,14 @@ DATABASE_URL is pointed at a throwaway temp file BEFORE app.db is imported
 by anything, so these tests never touch the real dev directory.db. All
 routes under test are read-only (find_people / get_person), so the whole
 fixture set is seeded once per test session rather than per test.
+
+Search/OpenAI env vars are explicitly cleared before any app import too —
+otherwise a real .env (see step 7/8) would make find_people's tests route
+through the live Azure Search index, which has no idea the test fixtures
+(Riley Report, Rory Restricted, ...) exist. Tests must stay hermetic
+regardless of what's sitting in the developer's .env; this forces the
+find_people's SQL fallback path deterministically, same as it always ran
+before Search existed.
 """
 import os
 import tempfile
@@ -11,6 +19,12 @@ from datetime import date, datetime
 
 import pytest
 import pytest_asyncio
+
+# Set (not pop!) to empty string: load_dotenv() only skips vars that are
+# already *present* in os.environ, even if empty — an absent var would
+# just get re-populated from .env the moment app.search_client imports it.
+for _var in ("SEARCH_ENDPOINT", "SEARCH_KEY", "OPENAI_ENDPOINT", "OPENAI_KEY", "OPENAI_EMBEDDING_DEPLOYMENT"):
+    os.environ[_var] = ""
 
 _tmp_fd, _TMP_DB_PATH = tempfile.mkstemp(suffix=".db")
 os.close(_tmp_fd)
