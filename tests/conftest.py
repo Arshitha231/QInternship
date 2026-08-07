@@ -171,6 +171,45 @@ def _seed() -> None:
         mkemp("cyclic-b", "Bailey Cyclic", "Engineering Manager", "cyclic-b@example.test",
               manager_id="cyclic-a")
 
+        # --- search fixtures (step 8 hybrid search tests) ------------------
+        satellite_office = Office(name="Satellite Office", city="Satellite City", country="Testland", timezone="UTC")
+        db.add(satellite_office)
+        db.flush()
+
+        power_bi = Skill(name="Power BI", category=SkillCategory.technical, canonical_id=None)
+        terraform = Skill(name="Terraform", category=SkillCategory.technical, canonical_id=None)
+        french = Skill(name="French", category=SkillCategory.language, canonical_id=None)
+        db.add_all([power_bi, terraform, french])
+        db.flush()
+
+        # Plain name target for fuzzy-matching tests — no distinguishing skill.
+        mkemp("search-sean", "Sean Wilson", "Backend Engineer", "sean.wilson@example.test")
+
+        # Vector-search target: bio deliberately avoids the word "dashboard"
+        # so a "good with dashboards"-style query can only match via
+        # semantic similarity, never keyword overlap.
+        dana = mkemp("search-dana", "Dana Powers", "Data Analyst", "dana.powers@example.test",
+                     bio="Dana turns raw numbers into something leadership can act on in a meeting.")
+        db.flush()
+        db.add(EmployeeSkill(employee_id=dana.id, skill_id=power_bi.id, level=SkillLevel.expert,
+                             source=SkillSource.confirmed, verified_at=datetime.now()))
+
+        # Filter-narrowing targets: same skill (Terraform), different org
+        # unit / office / level / language, so org_unit, skill+level,
+        # location, and language filters each have something real to
+        # narrow away rather than just happening to return one result.
+        filter_eng = mkemp("search-filter-eng", "Taylor Cloud", "Infrastructure Engineer",
+                           "taylor.cloud@example.test", org_unit_id=eng_dept.id, office_id=office.id)
+        filter_fin = mkemp("search-filter-fin", "Jordan Ledger", "Infrastructure Contractor",
+                           "jordan.ledger@example.test", org_unit_id=fin_dept.id, office_id=satellite_office.id)
+        db.flush()
+        db.add(EmployeeSkill(employee_id=filter_eng.id, skill_id=terraform.id, level=SkillLevel.expert,
+                             source=SkillSource.confirmed, verified_at=datetime.now()))
+        db.add(EmployeeSkill(employee_id=filter_fin.id, skill_id=terraform.id, level=SkillLevel.learning,
+                             source=SkillSource.self_reported, verified_at=None))
+        db.add(EmployeeSkill(employee_id=filter_fin.id, skill_id=french.id, level=SkillLevel.working,
+                             source=SkillSource.self_reported, verified_at=None))
+
         db.commit()
     finally:
         db.close()

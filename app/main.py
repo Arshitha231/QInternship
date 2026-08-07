@@ -1,6 +1,6 @@
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
@@ -35,7 +35,15 @@ def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> Authenticated
 
 @app.get("/people", response_model=list[PersonSummary])
 def list_people(
-    name: str | None = None,
+    name: str | None = Query(
+        None, description="Exact or partial person name. Keyword+prefix and fuzzy "
+                          "(misspelling-tolerant) matching via hybrid search."),
+    query: str | None = Query(
+        None, description='Free-text description of a person, e.g. "who knows Power BI '
+                          'in Bangalore". Routed through the same hybrid keyword+fuzzy+vector '
+                          "search as `name`, plus a semantic (vector) match — use this for a "
+                          "description rather than a literal name. Takes priority over `name` "
+                          "if both are given."),
     skill: str | None = None,
     level: str | None = None,
     org_unit: str | None = None,
@@ -46,7 +54,7 @@ def list_people(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[PersonSummary]:
     return find_people_service(
-        db, user, name=name, skill=skill, level=level, org_unit=org_unit,
+        db, user, name=name, query=query, skill=skill, level=level, org_unit=org_unit,
         office=office, language=language, available=available,
     )
 

@@ -93,7 +93,16 @@ def _write_audit(db: Session, caller: AuthenticatedUser, action: str, query_text
 
 
 # ---------------------------------------------------------------------------
-# find_people(name?, skill?, level?, org_unit?, office?, language?, available?)
+# find_people(name?, query?, skill?, level?, org_unit?, office?, language?, available?)
+#
+# `name` and `query` both feed the same hybrid-search text — `query` is the
+# explicit "description of a person" entry point (e.g. "who knows Power BI
+# in Bangalore"), `name` stays for an exact/partial/misspelled literal name.
+# CLAUDE.md's tool signature only lists `name`; `query` is an additive,
+# more self-documenting alias so the free-text/semantic capability isn't
+# hidden behind a parameter that reads as "literal name only" — same
+# underlying search_people() call either way. If both are given, `query`
+# wins (it's the more explicit signal of intent).
 # ---------------------------------------------------------------------------
 
 def find_people(
@@ -101,6 +110,7 @@ def find_people(
     caller: AuthenticatedUser,
     *,
     name: str | None = None,
+    query: str | None = None,
     skill: str | None = None,
     level: str | None = None,
     org_unit: str | None = None,
@@ -108,8 +118,10 @@ def find_people(
     language: str | None = None,
     available: bool | None = None,
 ) -> list[PersonSummary]:
+    effective_query = query or name
+
     filters_used = {k: v for k, v in dict(
-        name=name, skill=skill, level=level, org_unit=org_unit,
+        name=name, query=query, skill=skill, level=level, org_unit=org_unit,
         office=office, language=language, available=available,
     ).items() if v is not None}
 
@@ -140,9 +152,9 @@ def find_people(
     # rank on, SQL otherwise (pure-filter browsing doesn't need relevance
     # ranking) or whenever Search is unconfigured/unavailable/erroring.
     candidates: list[Employee] | None = None
-    if name:
+    if effective_query:
         ranked_ids = search_people(
-            name=name, skill=resolved_skill.name if resolved_skill else None,
+            name=effective_query, skill=resolved_skill.name if resolved_skill else None,
             level=parsed_level.value if parsed_level else None,
             org_unit=org_unit, office=office,
             language=resolved_lang.name if resolved_lang else None, available=available,
@@ -154,32 +166,36 @@ def find_people(
             candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
 
     if candidates is None:
-        query = select(Employee).where(Employee.is_active.is_(True))
-        if name:
-            pattern = f"%{name}%"
-            query = query.where((Employee.full_name.ilike(pattern)) | (Employee.preferred_name.ilike(pattern)))
+        stmt = select(Employee).where(Employee.is_active.is_(True))
+        if effective_query:
+            # SQL fallback only ever does a literal substring match — a
+            # description-style query legitimately returns nothing here,
+            # per spec ("fall back to direct database queries for name
+            # lookup" — not semantic lookup, which needs Search).
+            pattern = f"%{effective_query}%"
+            stmt = stmt.where((Employee.full_name.ilike(pattern)) | (Employee.preferred_name.ilike(pattern)))
         if org_unit:
-            query = query.join(OrgUnit, Employee.org_unit_id == OrgUnit.id).where(OrgUnit.name.ilike(org_unit))
+            stmt = stmt.join(OrgUnit, Employee.org_unit_id == OrgUnit.id).where(OrgUnit.name.ilike(org_unit))
         if office:
-            query = query.join(Office, Employee.office_id == Office.id).where(
+            stmt = stmt.join(Office, Employee.office_id == Office.id).where(
                 (Office.name.ilike(f"%{office}%")) | (Office.city.ilike(f"%{office}%"))
             )
         if available:
             # Only the positive filter is exposed. "Show me everyone who's away"
             # is exactly the restricted aggregate-absence query the spec calls
             # out, so `available=False` is a silent no-op, never a bulk listing.
-            query = query.where(Employee.availability_status == AvailabilityStatus.available)
+            stmt = stmt.where(Employee.availability_status == AvailabilityStatus.available)
         if resolved_skill:
             skill_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_skill.id)
             if parsed_level:
                 skill_subq = skill_subq.where(EmployeeSkill.level == parsed_level)
-            query = query.where(Employee.id.in_(skill_subq))
+            stmt = stmt.where(Employee.id.in_(skill_subq))
         if resolved_lang:
             lang_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_lang.id)
-            query = query.where(Employee.id.in_(lang_subq))
+            stmt = stmt.where(Employee.id.in_(lang_subq))
 
-        query = query.order_by(Employee.full_name)
-        candidates = db.execute(query).scalars().all()
+        stmt = stmt.order_by(Employee.full_name)
+        candidates = db.execute(stmt).scalars().all()
 
     # 2. filter records
     visible_records = [e for e in candidates if is_record_visible(caller, e)]
