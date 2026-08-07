@@ -8,7 +8,8 @@ from app.db import engine, get_db
 from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
-from app.schemas import OrgChainNode, PersonDetail, PersonSummary
+from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary
+from app.tool_calling import answer as answer_service
 
 app = FastAPI(
     title="Employee Directory API",
@@ -88,3 +89,16 @@ def get_org_chart_route(
         # different case — that's an empty list, handled inside the service.
         raise HTTPException(status_code=404, detail="Person not found")
     return result
+
+
+@app.post("/ask")
+def ask(
+    body: AskRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Natural-language entry point to the seven-function tool-calling
+    layer. The model only ever emits a function name + arguments; every
+    result here comes from the same permission-filtered service functions
+    the structured endpoints above use — nothing bypasses the pipeline."""
+    return answer_service(db, user, body.message)

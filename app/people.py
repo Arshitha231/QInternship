@@ -41,8 +41,18 @@ from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, Proje
 from app.search_client import search_people
 
 # Query-level restriction: one colleague's email is a lookup, every
-# employee's email in one response is bulk extraction.
+# employee's email in one response is bulk extraction. This is the ceiling
+# for plain filter/browse queries (no relevance ranking to truncate on).
 MAX_RESULTS = 50
+
+# Hybrid search results are relevance-ranked, not just filtered — past the
+# first handful, matches stop being meaningfully related to the query (see
+# the "Priya Shrama" case: real matches at #1-#2, noise from #15 on). A
+# much tighter cap belongs here than on plain browsing, which has no
+# ranking signal to justify keeping only a few. Only applied when Search
+# actually produced the results (never the SQL fallback, which has no
+# ranking to trust a tiny cutoff on).
+MAX_SEARCH_RESULTS = 5
 
 # The fixed, always-visible field set PersonSummary is built from — see the
 # comment in find_people() for why no per-record field filtering is needed.
@@ -158,12 +168,18 @@ def find_people(
             level=parsed_level.value if parsed_level else None,
             org_unit=org_unit, office=office,
             language=resolved_lang.name if resolved_lang else None, available=available,
-            top=MAX_RESULTS * 2,  # buffer for record-level filtering losses below
+            top=MAX_SEARCH_RESULTS * 4,  # buffer for record-level filtering losses below
         )
         if ranked_ids is not None:
             rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
             by_id = {e.id: e for e in rows}
             candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
+
+    # Only real, successful Search results are relevance-ranked — a SQL
+    # fallback (Search unconfigured/unavailable/erroring) is just an
+    # alphabetical filter match with no ranking to trust a tight cutoff on,
+    # so it gets the same cap as plain browsing.
+    used_search = candidates is not None
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active.is_(True))
@@ -206,8 +222,10 @@ def find_people(
     # is therefore provably a no-op for this shape; full RBAC/ABAC/
     # department filtering happens in get_person's detail view instead.
 
-    # 5. cap results
-    capped = visible_records[:MAX_RESULTS]
+    # 5. cap results — tight relevance cutoff for ranked Search results,
+    # the wider bulk-extraction ceiling for plain filter/browse queries.
+    effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
+    capped = visible_records[:effective_cap]
 
     results = [
         PersonSummary(

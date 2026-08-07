@@ -14,7 +14,7 @@ different retrieval source, so nothing about permissions should differ.
 import pytest
 
 from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill
-from app.people import MAX_RESULTS
+from app.people import MAX_SEARCH_RESULTS
 from app.search_index import build_profile_text
 from tests.conftest import auth_headers
 from tests.fake_search import FakeSearchIndex, fake_embed
@@ -182,14 +182,23 @@ async def test_field_absent_not_null_for_person_found_via_search(client, search_
 
 
 # ---------------------------------------------------------------------------
-# 6. Result cap still holds on a broad semantic query.
+# 6. Result cap on a broad semantic query — the tight relevance cap
+# (MAX_SEARCH_RESULTS), not the wider browse/filter ceiling. Hybrid search
+# results are relevance-ranked; past the first handful, matches stop being
+# meaningfully related to the query, so a much smaller cap belongs here
+# than on plain filter browsing (see test_visibility.py's
+# test_result_cap_holds_on_broad_query, which covers the no-query browse
+# case and still expects MAX_RESULTS).
 # ---------------------------------------------------------------------------
 
 async def test_result_cap_holds_on_broad_query_via_search(client, search_index):
     resp = await client.get("/people", params={"name": "Person"}, headers=auth_headers("employee"))
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body) == MAX_RESULTS
+    # 60 "Bulk Person N" fixtures match this query — comfortably more than
+    # the cap, so this proves truncation actually happened, not a
+    # coincidence of exactly 5 matches existing.
+    assert len(body) == MAX_SEARCH_RESULTS
 
 
 # ---------------------------------------------------------------------------

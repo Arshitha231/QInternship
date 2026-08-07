@@ -94,3 +94,61 @@ class OrgChainNode(BaseModel):
     job_title: str
     org_unit: str
     depth: int
+
+
+class ProjectOwnerResult(BaseModel):
+    """find_project_owner result. Covers project | system | function |
+    policy uniformly — one lookup answers for anything the org owns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    project_type: str
+    classification: str
+    owner_id: str
+    owner_name: str
+
+
+class MentorCandidate(BaseModel):
+    """One find_mentor result. `reason` is always populated — the system
+    finds people who match requirements, it never claims to rank the "best"
+    candidate, since that depends on performance and ambition, which
+    aren't in the directory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    level: str
+    reason: str
+
+
+class SkillGapItem(BaseModel):
+    """One entry in a skill_gap result — coverage for one requested skill."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    recognized: bool  # False if the skill name didn't resolve to anything indexed
+    expert_count: int
+    working_count: int
+    learning_count: int
+    gap: bool  # no Working/Expert holders at all
+
+
+class AskRequest(BaseModel):
+    message: str
+
+
+class SkillScarcityItem(BaseModel):
+    """One entry in a skill_scarcity result — same shape whether it's a
+    lookup for one named skill or the org-wide scarcest-skills scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    expert_count: int
+    working_count: int
+    learning_count: int
+    capable_count: int  # expert + working — genuine capability, not just familiarity
