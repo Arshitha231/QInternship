@@ -40,8 +40,12 @@ from app.people import find_people, get_person
 
 load_dotenv()
 
-OPENAI_ENDPOINT = os.environ.get("OPENAI_ENDPOINT", "")
-OPENAI_KEY = os.environ.get("OPENAI_KEY", "")
+# Its own resource, separate from embeddings (app/search_client.py) — a
+# classic per-resource Azure OpenAI deployment, so this stays on the
+# AzureOpenAI client (azure_endpoint + api_version + deployment name), unlike
+# the embedding client's plain-OpenAI-client v1 API shape.
+CHAT_ENDPOINT = os.environ.get("CHAT_ENDPOINT", "")
+CHAT_KEY = os.environ.get("CHAT_KEY", "")
 OPENAI_CHAT_DEPLOYMENT = os.environ.get("OPENAI_CHAT_DEPLOYMENT", "")
 OPENAI_API_VERSION = "2024-08-01-preview"  # first GA API version with tool-calling support
 
@@ -275,7 +279,7 @@ def _mode() -> str:
     mode = os.environ.get("AI_MODE")
     if mode:
         return mode
-    if OPENAI_ENDPOINT and OPENAI_KEY and OPENAI_CHAT_DEPLOYMENT:
+    if CHAT_ENDPOINT and CHAT_KEY and OPENAI_CHAT_DEPLOYMENT:
         return "real"
     return "mock"
 
@@ -321,7 +325,7 @@ _openai_client: AzureOpenAI | None = None
 def _get_openai_client() -> AzureOpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AzureOpenAI(azure_endpoint=OPENAI_ENDPOINT, api_key=OPENAI_KEY, api_version=OPENAI_API_VERSION)
+        _openai_client = AzureOpenAI(azure_endpoint=CHAT_ENDPOINT, api_key=CHAT_KEY, api_version=OPENAI_API_VERSION)
     return _openai_client
 
 

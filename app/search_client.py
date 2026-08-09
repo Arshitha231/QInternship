@@ -23,7 +23,7 @@ import re
 
 import httpx
 from dotenv import load_dotenv
-from openai import AzureOpenAI, OpenAIError
+from openai import OpenAI, OpenAIError
 
 load_dotenv()
 
@@ -32,10 +32,16 @@ SEARCH_KEY = os.environ.get("SEARCH_KEY", "")
 SEARCH_API_VERSION = "2024-07-01"
 INDEX_NAME = "employees-index"
 
-OPENAI_ENDPOINT = os.environ.get("OPENAI_ENDPOINT", "")
-OPENAI_KEY = os.environ.get("OPENAI_KEY", "")
-OPENAI_EMBEDDING_DEPLOYMENT = os.environ.get("OPENAI_EMBEDDING_DEPLOYMENT", "")
-OPENAI_API_VERSION = "2024-06-01"
+# Its own resource, separate from chat (app/tool_calling.py) — a v1-API
+# Azure AI Foundry endpoint, not a classic per-resource Azure OpenAI
+# deployment, so this uses the plain OpenAI SDK client pointed at
+# {endpoint}/openai/v1/ rather than AzureOpenAI's azure_endpoint+
+# api_version+deployments/{name} URL shape. Confirmed live: this resource
+# accepts the model catalog id directly as `model` with no separate
+# per-account deployment name.
+EMBEDDING_ENDPOINT = os.environ.get("EMBEDDING_ENDPOINT", "")
+EMBEDDING_KEY = os.environ.get("EMBEDDING_KEY", "")
+EMBEDDING_DEPLOYMENT = os.environ.get("OPENAI_EMBEDDING_DEPLOYMENT", "")
 
 _LUCENE_SPECIAL = re.compile(r'([+\-!(){}\[\]^"~*?:\\/&|])')
 
@@ -100,15 +106,15 @@ def _build_filter(
     return " and ".join(clauses)
 
 
-_openai_client: AzureOpenAI | None = None
+_openai_client: OpenAI | None = None
 
 
-def _get_openai_client() -> AzureOpenAI | None:
+def _get_openai_client() -> OpenAI | None:
     global _openai_client
-    if not (OPENAI_ENDPOINT and OPENAI_KEY and OPENAI_EMBEDDING_DEPLOYMENT):
+    if not (EMBEDDING_ENDPOINT and EMBEDDING_KEY and EMBEDDING_DEPLOYMENT):
         return None
     if _openai_client is None:
-        _openai_client = AzureOpenAI(azure_endpoint=OPENAI_ENDPOINT, api_key=OPENAI_KEY, api_version=OPENAI_API_VERSION)
+        _openai_client = OpenAI(base_url=f"{EMBEDDING_ENDPOINT.rstrip('/')}/openai/v1/", api_key=EMBEDDING_KEY)
     return _openai_client
 
 
@@ -120,7 +126,7 @@ def _embed_query(text: str) -> list[float] | None:
     if client is None:
         return None
     try:
-        response = client.embeddings.create(model=OPENAI_EMBEDDING_DEPLOYMENT, input=[text])
+        response = client.embeddings.create(model=EMBEDDING_DEPLOYMENT, input=[text])
         return response.data[0].embedding
     except OpenAIError:
         return None

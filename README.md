@@ -27,8 +27,10 @@ permission filtering happens in Python, between retrieval and the model.
   dataset (`seed.py`, ~500 records). Microsoft Graph is an interface spec only —
   never connected. There is no live directory sync.
 - **Runs without Azure OpenAI credentials.** Semantic search degrades to keyword +
-  fuzzy matching, and the app still starts, when `OPENAI_ENDPOINT` / `OPENAI_KEY`
-  are unset.
+  fuzzy matching, and the app still starts, when `EMBEDDING_ENDPOINT` / `EMBEDDING_KEY`
+  are unset. Chat/tool-calling degrades to the mock resolver the same way when
+  `CHAT_ENDPOINT` / `CHAT_KEY` are unset — embeddings, search, and chat are three
+  separate Azure resources, each with its own endpoint/key pair.
 - **SQLite locally, Azure SQL in deployment** — switching is a one-line
   `DATABASE_URL` change. Steps 1–6 of the build need no Azure resources at all.
 

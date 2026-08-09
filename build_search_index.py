@@ -4,7 +4,7 @@ employees using build_profile_text() + the Azure OpenAI embedding
 deployment.
 
 Unlike everything else built so far, this actually calls Azure — it needs
-SEARCH_ENDPOINT, SEARCH_KEY, OPENAI_ENDPOINT, OPENAI_KEY, and
+SEARCH_ENDPOINT, SEARCH_KEY, EMBEDDING_ENDPOINT, EMBEDDING_KEY, and
 OPENAI_EMBEDDING_DEPLOYMENT in .env. Never errors out mid-batch: a failure
 on one employee (embedding call or index upload) is recorded and the rest
 continue, matching the project's "degradation, never errors" principle.
@@ -18,7 +18,7 @@ import time
 
 import httpx
 from dotenv import load_dotenv
-from openai import AzureOpenAI, OpenAIError
+from openai import OpenAI, OpenAIError
 from sqlalchemy import select
 
 load_dotenv()
@@ -27,7 +27,7 @@ from app.db import SessionLocal  # noqa: E402
 from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill  # noqa: E402
 from app.search_index import INDEX_SCHEMA, build_profile_text  # noqa: E402
 
-REQUIRED_ENV = ["SEARCH_ENDPOINT", "SEARCH_KEY", "OPENAI_ENDPOINT", "OPENAI_KEY", "OPENAI_EMBEDDING_DEPLOYMENT"]
+REQUIRED_ENV = ["SEARCH_ENDPOINT", "SEARCH_KEY", "EMBEDDING_ENDPOINT", "EMBEDDING_KEY", "OPENAI_EMBEDDING_DEPLOYMENT"]
 missing = [v for v in REQUIRED_ENV if not os.environ.get(v)]
 if missing:
     sys.exit(f"Missing required .env values: {', '.join(missing)}")
@@ -37,10 +37,13 @@ SEARCH_KEY = os.environ["SEARCH_KEY"]
 SEARCH_API_VERSION = "2024-07-01"
 INDEX_NAME = INDEX_SCHEMA["name"]
 
-OPENAI_ENDPOINT = os.environ["OPENAI_ENDPOINT"]
-OPENAI_KEY = os.environ["OPENAI_KEY"]
-OPENAI_EMBEDDING_DEPLOYMENT = os.environ["OPENAI_EMBEDDING_DEPLOYMENT"]
-OPENAI_API_VERSION = "2024-06-01"
+# Its own resource, separate from chat — see app/search_client.py's comment
+# for why this is the plain OpenAI client (base_url=.../openai/v1/) rather
+# than AzureOpenAI, and why the model catalog id is passed directly with no
+# separate deployment name.
+EMBEDDING_ENDPOINT = os.environ["EMBEDDING_ENDPOINT"]
+EMBEDDING_KEY = os.environ["EMBEDDING_KEY"]
+EMBEDDING_DEPLOYMENT = os.environ["OPENAI_EMBEDDING_DEPLOYMENT"]
 
 BATCH_SIZE = 20
 BATCH_PAUSE_SECONDS = 0.6  # stays comfortably under the deployment's 20-req/10s rate limit
@@ -100,8 +103,8 @@ def build_search_document(db, employee: Employee) -> dict:
     }
 
 
-def embed_batch(client: AzureOpenAI, texts: list[str]) -> list[list[float]]:
-    response = _with_retries(client.embeddings.create, model=OPENAI_EMBEDDING_DEPLOYMENT, input=texts)
+def embed_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
+    response = _with_retries(client.embeddings.create, model=EMBEDDING_DEPLOYMENT, input=texts)
     return [d.embedding for d in response.data]
 
 
@@ -129,7 +132,7 @@ def main() -> None:
     create_index()
     print("Index ready.\n")
 
-    openai_client = AzureOpenAI(azure_endpoint=OPENAI_ENDPOINT, api_key=OPENAI_KEY, api_version=OPENAI_API_VERSION)
+    openai_client = OpenAI(base_url=f"{EMBEDDING_ENDPOINT.rstrip('/')}/openai/v1/", api_key=EMBEDDING_KEY)
 
     db = SessionLocal()
     indexed = 0

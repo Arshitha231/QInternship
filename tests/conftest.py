@@ -23,7 +23,8 @@ import pytest_asyncio
 # Set (not pop!) to empty string: load_dotenv() only skips vars that are
 # already *present* in os.environ, even if empty — an absent var would
 # just get re-populated from .env the moment app.search_client imports it.
-for _var in ("SEARCH_ENDPOINT", "SEARCH_KEY", "OPENAI_ENDPOINT", "OPENAI_KEY", "OPENAI_EMBEDDING_DEPLOYMENT"):
+for _var in ("SEARCH_ENDPOINT", "SEARCH_KEY", "EMBEDDING_ENDPOINT", "EMBEDDING_KEY",
+             "OPENAI_EMBEDDING_DEPLOYMENT", "CHAT_ENDPOINT", "CHAT_KEY"):
     os.environ[_var] = ""
 
 _tmp_fd, _TMP_DB_PATH = tempfile.mkstemp(suffix=".db")
