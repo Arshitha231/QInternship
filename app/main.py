@@ -34,7 +34,7 @@ def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> Authenticated
     return user
 
 
-@app.get("/people", response_model=list[PersonSummary])
+@app.get("/people", response_model=list[PersonSummary], response_model_exclude_unset=True)
 def list_people(
     name: str | None = Query(
         None, description="Exact or partial person name. Keyword+prefix and fuzzy "

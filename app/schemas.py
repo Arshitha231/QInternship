@@ -32,8 +32,18 @@ class ProjectHistoryItem(BaseModel):
 
 
 class PersonSummary(BaseModel):
-    """find_people results. Only ever the always-visible fields — no ABAC/RBAC
-    gated data — so a bulk list can never leak more than a single lookup would.
+    """find_people results. The base fields are always the same always-visible
+    set — no ABAC/RBAC gated data — so a bulk list can never leak more than a
+    single lookup would.
+
+    manager/delegate/direct_reports are the one exception, and only ever set
+    when the search resolved to exactly one person (never on a multi-result
+    list, which is what keeps the "no gated data in bulk" guarantee intact for
+    everything else). manager/delegate are visible to all, same as on
+    get_person; direct_reports carries the same downward-visibility
+    restriction as get_org_chain's "down" direction (manager/hr only) — the
+    route serializes with exclude_unset=True, so a caller who can't see it
+    gets the key genuinely absent, not null.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -45,6 +55,9 @@ class PersonSummary(BaseModel):
     org_unit: str
     office: OfficeOut | None = None
     availability_status: str
+    manager: PersonRef | None = None
+    delegate: PersonRef | None = None
+    direct_reports: list[PersonRef] | None = None
 
 
 class PersonDetail(BaseModel):

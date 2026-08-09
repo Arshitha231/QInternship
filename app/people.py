@@ -21,8 +21,8 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import literal, select
+from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
 from app.models import (
@@ -58,6 +58,12 @@ MAX_SEARCH_RESULTS = 5
 # comment in find_people() for why no per-record field filtering is needed.
 SUMMARY_FIELDS = {"id", "full_name", "preferred_name", "job_title", "org_unit", "office", "availability_status"}
 
+# Mirrors app.org_chart.MAX_DEPTH (org_units is only company -> division ->
+# department -> team, 4 levels, so this is a generous bound) — not imported
+# from there directly, since org_chart already imports MAX_RESULTS from this
+# module and importing back would be circular.
+ORG_UNIT_MAX_DEPTH = 10
+
 
 def _tenure_band(hire_date: date) -> str:
     years = (date.today() - hire_date).days // 365
@@ -85,6 +91,38 @@ def resolve_skill(db: Session, name: str) -> Skill | None:
 
 def _parse_level(level: str) -> SkillLevel | None:
     return next((m for m in SkillLevel if m.value.lower() == level.lower()), None)
+
+
+def _org_unit_and_descendant_ids(db: Session, name: str) -> list[int] | None:
+    """Resolve an org_unit filter value to every unit id in its subtree.
+
+    Employees only ever belong to their single most-specific unit, so a flat
+    exact-name match against a division/department name like "Infrastructure"
+    always returned zero rows — everyone in it is actually filed under one of
+    its teams ("Cloud Operations Team", "Networking Team", ...). This walks
+    org_units.parent_id downward from the matched unit, same recursive-CTE
+    shape as org_chart._traverse's walk over employees.manager_id, so a
+    parent-level filter value now includes every descendant team's people.
+    Returns None if the name doesn't match any unit at all.
+    """
+    root = db.query(OrgUnit).filter(OrgUnit.name.ilike(name)).first()
+    if root is None:
+        return None
+
+    anchor = (
+        select(OrgUnit.id, OrgUnit.parent_id, literal(0).label("depth"))
+        .where(OrgUnit.id == root.id)
+        .cte(name="org_unit_tree", recursive=True)
+    )
+    child = aliased(OrgUnit)
+    recursive_term = (
+        select(child.id, child.parent_id, (anchor.c.depth + 1).label("depth"))
+        .join(anchor, child.parent_id == anchor.c.id)
+        .where(anchor.c.depth < ORG_UNIT_MAX_DEPTH)
+    )
+    tree = anchor.union_all(recursive_term)
+    rows = db.execute(select(tree.c.id)).all()
+    return [r.id for r in rows]
 
 
 def _office_out(office: Office | None) -> OfficeOut | None:
@@ -158,15 +196,34 @@ def find_people(
             _write_audit(db, caller, "find_people", json.dumps(filters_used), 0, SUMMARY_FIELDS)
             return []
 
-    # 1. retrieve — hybrid Search when there's a name/description query to
-    # rank on, SQL otherwise (pure-filter browsing doesn't need relevance
-    # ranking) or whenever Search is unconfigured/unavailable/erroring.
+    # org_unit resolves once, up front, to every unit id (and name) in its
+    # subtree — both the Search filter and the SQL fallback need the same
+    # hierarchy-expanded set, and an org_unit that matches nothing means no
+    # matches either way (not an error).
+    org_unit_ids: list[int] | None = None
+    org_unit_names: list[str] | None = None
+    if org_unit:
+        org_unit_ids = _org_unit_and_descendant_ids(db, org_unit)
+        if not org_unit_ids:
+            _write_audit(db, caller, "find_people", json.dumps(filters_used), 0, SUMMARY_FIELDS)
+            return []
+        org_unit_names = db.execute(select(OrgUnit.name).where(OrgUnit.id.in_(org_unit_ids))).scalars().all()
+
+    # 1. retrieve — hybrid Search for anything there's a criterion to search
+    # or filter on, name/description query or not: a plain filter combo
+    # ("Terraform" + "Cloud Operations Team") still goes through Search's
+    # OData filter and gets the tight relevance cap below, same as a ranked
+    # text query. SQL is reserved for genuine Search-unavailable
+    # degradation (search_people() returns None) or a call with no
+    # criteria at all (nothing to search or filter on).
+    has_criteria = bool(effective_query or resolved_skill or org_unit_ids or office or resolved_lang or available)
+
     candidates: list[Employee] | None = None
-    if effective_query:
+    if has_criteria:
         ranked_ids = search_people(
             name=effective_query, skill=resolved_skill.name if resolved_skill else None,
             level=parsed_level.value if parsed_level else None,
-            org_unit=org_unit, office=office,
+            org_unit=org_unit_names, office=office,
             language=resolved_lang.name if resolved_lang else None, available=available,
             top=MAX_SEARCH_RESULTS * 4,  # buffer for record-level filtering losses below
         )
@@ -176,9 +233,10 @@ def find_people(
             candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
 
     # Only real, successful Search results are relevance-ranked — a SQL
-    # fallback (Search unconfigured/unavailable/erroring) is just an
-    # alphabetical filter match with no ranking to trust a tight cutoff on,
-    # so it gets the same cap as plain browsing.
+    # fallback (Search unconfigured/unavailable/erroring, or nothing to
+    # search on at all) is just an alphabetical filter match with no
+    # ranking to trust a tight cutoff on, so it gets the same cap as plain
+    # browsing.
     used_search = candidates is not None
 
     if candidates is None:
@@ -190,8 +248,8 @@ def find_people(
             # lookup" — not semantic lookup, which needs Search).
             pattern = f"%{effective_query}%"
             stmt = stmt.where((Employee.full_name.ilike(pattern)) | (Employee.preferred_name.ilike(pattern)))
-        if org_unit:
-            stmt = stmt.join(OrgUnit, Employee.org_unit_id == OrgUnit.id).where(OrgUnit.name.ilike(org_unit))
+        if org_unit_ids:
+            stmt = stmt.where(Employee.org_unit_id.in_(org_unit_ids))
         if office:
             stmt = stmt.join(Office, Employee.office_id == Office.id).where(
                 (Office.name.ilike(f"%{office}%")) | (Office.city.ilike(f"%{office}%"))
@@ -227,18 +285,67 @@ def find_people(
     effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
     capped = visible_records[:effective_cap]
 
-    results = [
-        PersonSummary(
+    # A `name` search that resolves unambiguously to exactly one EXACT
+    # full/preferred-name match can answer a relationship question ("who
+    # does X report to", "list X's direct reports", "who's covering for X")
+    # in this same call, without a second get_person/get_org_chain round
+    # trip. Deliberately keyed on an exact match, not "the whole result list
+    # has one entry" — hybrid search legitimately surfaces fuzzy neighbors
+    # (Ethan Wilson, Sean Ryan, ...) alongside an exact "Sean Wilson" match,
+    # and that breadth is the misspelling-tolerance feature working as
+    # intended, not ambiguity about who "Sean Wilson" unambiguously refers
+    # to. Two people who share the exact same full name (the seeded "Priya
+    # Sharma" duplicate) correctly produce zero exact matches here — genuine
+    # ambiguity, not enriched. Never enriched from a `query`-only search —
+    # that's the description-style lookup, with no literal name to match
+    # exactly against.
+    single = None
+    if name:
+        exact = [
+            e for e in capped
+            if e.full_name.lower() == name.strip().lower()
+            or (e.preferred_name and e.preferred_name.lower() == name.strip().lower())
+        ]
+        if len(exact) == 1:
+            single = exact[0]
+    fields_returned = set(SUMMARY_FIELDS)
+
+    results: list[PersonSummary] = []
+    for e in capped:
+        kwargs: dict = dict(
             id=e.id, full_name=e.full_name, preferred_name=e.preferred_name,
             job_title=e.job_title, org_unit=_org_unit_name(db, e.org_unit_id),
             office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
             availability_status=e.availability_status.value,
         )
-        for e in capped
-    ]
+        if e is single:
+            # manager/delegate: visible to all, same as get_person — no
+            # is_record_visible check on the referenced person, matching
+            # get_person's own _build_detail() precedent.
+            if e.manager_id:
+                manager = db.get(Employee, e.manager_id)
+                if manager:
+                    kwargs["manager"] = PersonRef(id=manager.id, full_name=manager.full_name)
+                    fields_returned.add("manager")
+            if e.delegate_id:
+                delegate = db.get(Employee, e.delegate_id)
+                if delegate:
+                    kwargs["delegate"] = PersonRef(id=delegate.id, full_name=delegate.full_name)
+                    fields_returned.add("delegate")
+            # direct_reports: downward chain, manager/hr only — same RBAC
+            # gate as get_org_chain's "down" direction, same per-record
+            # is_record_visible filter as its downward traversal.
+            if caller.role in ("manager", "hr"):
+                reports = db.execute(
+                    select(Employee).where(Employee.manager_id == e.id, Employee.is_active.is_(True))
+                ).scalars().all()
+                visible_reports = [r for r in reports if is_record_visible(caller, r)]
+                kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in visible_reports]
+                fields_returned.add("direct_reports")
+        results.append(PersonSummary(**kwargs))
 
     # 6. write to audit_log
-    _write_audit(db, caller, "find_people", json.dumps(filters_used), len(results), SUMMARY_FIELDS)
+    _write_audit(db, caller, "find_people", json.dumps(filters_used), len(results), fields_returned)
 
     # 7. respond
     return results

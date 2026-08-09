@@ -105,5 +105,5 @@ seed.py              synthetic data generator + constraint verification summary
 - [x] 7. Azure AI Search index + `build_profile_text()` + batch embedding
 - [x] 8. Hybrid search wired into `find_people`
 - [x] 9. Tool-calling layer with few-shot examples (mock first)
-- [ ] 10. Golden evaluation set, scored per tier
+- [x] 10. Golden evaluation set, scored per tier
 - [ ] 11. Frontend: search, results, three graph views, profile panel

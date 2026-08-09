@@ -67,12 +67,22 @@ def _name_query(name: str) -> str:
 
 
 def _build_filter(
-    *, org_unit: str | None, skill: str | None, level: str | None,
+    *, org_unit: str | list[str] | None, skill: str | None, level: str | None,
     office: str | None, language: str | None, available: bool | None,
 ) -> str:
     clauses = ["is_active eq true"]  # data hygiene, not a permission decision
     if org_unit:
-        clauses.append(f"org_unit eq '{_escape_odata(org_unit)}'")
+        # A hierarchy-expanded filter (a department name resolves to every
+        # descendant team) arrives as a list of leaf names — the index only
+        # ever stores an employee's single most-specific unit, so a
+        # department-level filter has to OR across all of them. The common
+        # single-unit case stays a plain equality clause.
+        names = org_unit if isinstance(org_unit, list) else [org_unit]
+        if len(names) == 1:
+            clauses.append(f"org_unit eq '{_escape_odata(names[0])}'")
+        else:
+            or_clause = " or ".join(f"org_unit eq '{_escape_odata(n)}'" for n in names)
+            clauses.append(f"({or_clause})")
     if office:
         esc = _escape_odata(office)
         clauses.append(f"(office eq '{esc}' or office_city eq '{esc}')")
@@ -118,33 +128,33 @@ def _embed_query(text: str) -> list[float] | None:
 
 def search_people(
     *,
-    name: str,
+    name: str | None = None,
     skill: str | None = None,
     level: str | None = None,
-    org_unit: str | None = None,
+    org_unit: str | list[str] | None = None,
     office: str | None = None,
     language: str | None = None,
     available: bool | None = None,
     top: int,
 ) -> list[str] | None:
-    """Ranked employee IDs for a free-text query, or None if Search itself
-    is unavailable/unconfigured/erroring — the caller falls back to SQL.
-    Only meaningful when there's a `name` query to rank on; pure-filter
-    browsing with no free text stays on the SQL path (find_people never
-    calls this without a name).
+    """Ranked employee IDs for a free-text query and/or structured filters,
+    or None if Search itself is unavailable/unconfigured/erroring — the
+    caller falls back to SQL. `name=None` is a filter-only call (no text to
+    rank on): submits `search: "*"` with just the OData filter applied, and
+    skips the vector query entirely (nothing to embed).
     """
     if not is_configured():
         return None
 
     body: dict = {
-        "search": _name_query(name),
+        "search": _name_query(name) if name else "*",
         "queryType": "full",
         "filter": _build_filter(org_unit=org_unit, skill=skill, level=level,
                                 office=office, language=language, available=available),
         "select": "id",
         "top": top,
     }
-    vector = _embed_query(name)
+    vector = _embed_query(name) if name else None
     if vector is not None:
         body["vectorQueries"] = [{"kind": "vector", "vector": vector, "fields": "profile_vector", "k": top}]
 
