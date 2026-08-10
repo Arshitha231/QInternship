@@ -1,6 +1,7 @@
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
@@ -15,6 +16,16 @@ app = FastAPI(
     title="Employee Directory API",
     description="Internal employee directory with permission-filtered natural-language search.",
     version="0.1.0",
+)
+
+# Local frontend dev server only (Vite default port) — the API has no
+# cookie-based session to protect against CSRF here, auth is a header the
+# browser never attaches automatically.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

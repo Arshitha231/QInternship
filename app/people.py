@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 
-from sqlalchemy import literal, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
@@ -209,17 +209,49 @@ def find_people(
             return []
         org_unit_names = db.execute(select(OrgUnit.name).where(OrgUnit.id.in_(org_unit_ids))).scalars().all()
 
+    # Exact-match short-circuit: a query that exactly matches a unique
+    # identifier (work email, Slack handle) or a full/preferred name
+    # shouldn't be diluted by fuzzy/semantic neighbors at all. Verified
+    # live against the real Search index: RRF scores decay too smoothly to
+    # separate "the right answer" from "four other Wilsons" by a
+    # relevance-score cutoff (an exact full-name match only scores ~5%
+    # above its nearest neighbor) — and email/Slack aren't indexed for
+    # Search in the first place, so a Slack-handle query rides entirely on
+    # weak vector similarity to *anyone* with a similar-shaped name. An
+    # exact match on a field that's actually unique per person is a
+    # stronger, cheaper signal than any ranking could produce, so it skips
+    # Search/fuzzy matching entirely. A genuine duplicate exact name (two
+    # "Priya Sharma"s) still correctly returns both — this narrows to
+    # exact matches, it doesn't force uniqueness that isn't really there.
+    exact_match_ids: set[str] | None = None
+    if effective_query and effective_query.strip():
+        q_lower = effective_query.strip().lower()
+        q_handle_variants = {q_lower, q_lower.lstrip("@"), f"@{q_lower.lstrip('@')}"}
+        found_ids = set(db.execute(
+            select(Employee.id).where(
+                Employee.is_active.is_(True),
+                or_(
+                    func.lower(Employee.full_name) == q_lower,
+                    func.lower(Employee.preferred_name) == q_lower,
+                    func.lower(Employee.work_email) == q_lower,
+                    func.lower(Employee.slack_handle).in_(q_handle_variants),
+                ),
+            )
+        ).scalars().all())
+        if found_ids:
+            exact_match_ids = found_ids
+
     # 1. retrieve — hybrid Search for anything there's a criterion to search
     # or filter on, name/description query or not: a plain filter combo
     # ("Terraform" + "Cloud Operations Team") still goes through Search's
     # OData filter and gets the tight relevance cap below, same as a ranked
     # text query. SQL is reserved for genuine Search-unavailable
-    # degradation (search_people() returns None) or a call with no
-    # criteria at all (nothing to search or filter on).
+    # degradation (search_people() returns None), an exact-identifier
+    # match (above), or a call with no criteria at all.
     has_criteria = bool(effective_query or resolved_skill or org_unit_ids or office or resolved_lang or available)
 
     candidates: list[Employee] | None = None
-    if has_criteria:
+    if exact_match_ids is None and has_criteria:
         ranked_ids = search_people(
             name=effective_query, skill=resolved_skill.name if resolved_skill else None,
             level=parsed_level.value if parsed_level else None,
@@ -236,12 +268,15 @@ def find_people(
     # fallback (Search unconfigured/unavailable/erroring, or nothing to
     # search on at all) is just an alphabetical filter match with no
     # ranking to trust a tight cutoff on, so it gets the same cap as plain
-    # browsing.
-    used_search = candidates is not None
+    # browsing. An exact-identifier match gets the tight cap too — it's a
+    # stronger signal than a ranked result, not a weaker one.
+    used_search = candidates is not None or exact_match_ids is not None
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active.is_(True))
-        if effective_query:
+        if exact_match_ids is not None:
+            stmt = stmt.where(Employee.id.in_(exact_match_ids))
+        elif effective_query:
             # SQL fallback only ever does a literal substring match — a
             # description-style query legitimately returns nothing here,
             # per spec ("fall back to direct database queries for name

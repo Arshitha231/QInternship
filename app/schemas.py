@@ -107,6 +107,9 @@ class OrgChainNode(BaseModel):
     job_title: str
     org_unit: str
     depth: int
+    availability_status: str
+    delegate: PersonRef | None = None
+    has_reports: bool
 
 
 class ProjectOwnerResult(BaseModel):

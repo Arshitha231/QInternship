@@ -23,7 +23,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
 from app.permissions import is_record_visible
-from app.schemas import OrgChainNode
+from app.schemas import OrgChainNode, PersonRef
 
 # The recursive CTE always stops here, no matter what depth is requested or
 # how malformed the manager_id data is — this IS the cycle guard. A tight
@@ -41,7 +41,9 @@ def _org_unit_name(db: Session, org_unit_id: int) -> str:
 def _write_audit(db: Session, caller: AuthenticatedUser, query_text: str, result_count: int) -> None:
     db.add(AuditLog(
         actor_id=caller.id, action="get_org_chain", query_text=query_text, result_count=result_count,
-        fields_returned=json.dumps(["id", "full_name", "job_title", "org_unit", "depth"]),
+        fields_returned=json.dumps(
+            ["id", "full_name", "job_title", "org_unit", "depth", "availability_status", "delegate", "has_reports"]
+        ),
         timestamp=datetime.now(),
     ))
     db.commit()
@@ -103,6 +105,17 @@ def get_org_chain(
 
         raw = _traverse(db, person_id, direction, effective_depth)
 
+        # One query up front rather than a per-node existence check — tells
+        # every node in this response, in O(1), whether it has any reports
+        # of its own (used by the frontend to show/hide an expand control).
+        managers_with_reports: set[str] = set(
+            db.execute(
+                select(Employee.manager_id).where(
+                    Employee.manager_id.is_not(None), Employee.is_active.is_(True)
+                ).distinct()
+            ).scalars().all()
+        )
+
         seen: set[str] = set()
         for emp_id, node_depth in raw:
             if emp_id in seen:
@@ -111,9 +124,19 @@ def get_org_chain(
             emp = db.get(Employee, emp_id)
             if emp is None or not emp.is_active or not is_record_visible(caller, emp):
                 continue  # 3. filter records again, for every node in the chain
+            delegate = None
+            if emp.delegate_id:
+                # manager/delegate: visible to all, no is_record_visible check
+                # on the referenced person — same precedent as find_people's
+                # single-match enrichment and get_person's _build_detail().
+                delegate_emp = db.get(Employee, emp.delegate_id)
+                if delegate_emp:
+                    delegate = PersonRef(id=delegate_emp.id, full_name=delegate_emp.full_name)
             result.append(OrgChainNode(
                 id=emp.id, full_name=emp.full_name, job_title=emp.job_title,
                 org_unit=_org_unit_name(db, emp.org_unit_id), depth=node_depth,
+                availability_status=emp.availability_status.value, delegate=delegate,
+                has_reports=emp.id in managers_with_reports,
             ))
 
         # 4. cap results — a downward chain from someone near the top can
