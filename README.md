@@ -13,8 +13,8 @@ permission filtering happens in Python, between retrieval and the model.
 
 | Area | Owner |
 |---|---|
-| Backend & AI layer (this repo) | Arshitha |
-| Project management | Neev |
+| Backend & AI layer + Team Lead (this repo) | Arshitha |
+| Features | Shreyas |
 | Embeddings & indexing | Aarya |
 | Search quality | Nikhil |
 | Infrastructure & Terraform | Abhinav |
