@@ -93,6 +93,51 @@ def _parse_level(level: str) -> SkillLevel | None:
     return next((m for m in SkillLevel if m.value.lower() == level.lower()), None)
 
 
+# Curated, hand-picked real language-family groupings -- never ML-guessed or
+# embedding-similarity-derived. Used only as a fallback when a requested
+# language has zero direct matches (unresolvable, like "Telugu" below, or
+# resolvable but genuinely nobody has it), to suggest people who speak a
+# linguistically related language instead. The result is always presented
+# as related, never substituted in as if it matched the actual request --
+# that distinction is what keeps this different from the exact failure mode
+# diagnosed for the free-text/semantic path (confident nearest-neighbor
+# results with no connection to what was actually asked). Covers every
+# language in seed.py's LANGUAGE_SKILLS plus a handful of common unseeded
+# ones (Telugu, Malayalam, ...) so an unseeded request still has somewhere
+# sensible to land.
+LANGUAGE_FAMILIES: dict[str, str] = {
+    "tamil": "dravidian", "kannada": "dravidian", "telugu": "dravidian", "malayalam": "dravidian",
+    "hindi": "indo-aryan", "marathi": "indo-aryan", "bengali": "indo-aryan",
+    "punjabi": "indo-aryan", "gujarati": "indo-aryan", "urdu": "indo-aryan",
+    "spanish": "romance", "french": "romance", "portuguese": "romance", "italian": "romance", "romanian": "romance",
+    "german": "germanic", "english": "germanic", "dutch": "germanic",
+    "mandarin": "sino-tibetan", "cantonese": "sino-tibetan",
+    "japanese": "japonic",
+}
+
+
+def find_related_language_speakers(
+    db: Session, caller: AuthenticatedUser, language: str,
+) -> tuple[str | None, list[PersonSummary]]:
+    """Called only after a language search for `language` has already come
+    back empty. Looks up its language family and returns speakers of any
+    other seeded language in that family (deduped, capped at
+    MAX_SEARCH_RESULTS same as any ranked lookup). Returns (family, [])
+    with family set but no results when the family is known but nobody
+    speaks any related language either; (None, []) when `language` isn't in
+    the curated table at all.
+    """
+    family = LANGUAGE_FAMILIES.get(language.strip().lower())
+    if family is None:
+        return None, []
+    related_names = [n for n, f in LANGUAGE_FAMILIES.items() if f == family and n != language.strip().lower()]
+    seen: dict[str, PersonSummary] = {}
+    for related_name in related_names:
+        for person in find_people(db, caller, language=related_name):
+            seen.setdefault(person.id, person)
+    return family, list(seen.values())[:MAX_SEARCH_RESULTS]
+
+
 def _org_unit_and_descendant_ids(db: Session, name: str) -> list[int] | None:
     """Resolve an org_unit filter value to every unit id in its subtree.
 

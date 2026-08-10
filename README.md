@@ -71,6 +71,19 @@ pytest   # runs against a throwaway temp SQLite db, never directory.db
 `.python-version` pins 3.14.6 — Azure App Service's newest Linux runtime
 (`PYTHON|3.14`, confirmed via `az webapp list-runtimes`).
 
+### Frontend
+
+Vite + React + TypeScript, in `frontend/`. Talks to the backend above over
+CORS at `http://127.0.0.1:8000`; dev-mode auth is sent via the same
+`X-Dev-Role` / `X-Dev-User-Id` / `X-Dev-Name` headers, switchable from an
+identity picker in the top bar (no real login yet).
+
+```bash
+cd frontend
+npm install
+npm run dev -- --port 5173 --strictPort   # http://localhost:5173
+```
+
 ## Project structure
 
 ```
@@ -108,4 +121,4 @@ seed.py              synthetic data generator + constraint verification summary
 - [x] 8. Hybrid search wired into `find_people`
 - [x] 9. Tool-calling layer with few-shot examples (mock first)
 - [x] 10. Golden evaluation set, scored per tier
-- [ ] 11. Frontend: search, results, three graph views, profile panel
+- [x] 11. Frontend: search, results, three graph views, profile panel, AI assistant panel

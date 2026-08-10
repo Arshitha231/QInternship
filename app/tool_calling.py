@@ -36,7 +36,7 @@ from app.auth import AuthenticatedUser
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
 from app.org_chart import get_org_chain
-from app.people import find_people, get_person
+from app.people import find_people, find_related_language_speakers, get_person
 
 load_dotenv()
 
@@ -444,6 +444,31 @@ def answer(db: Session, caller: AuthenticatedUser, message: str) -> dict:
             "message": "I found a matching action but couldn't complete it — try rephrasing.",
             "tool_call": turn.tool_call.name, "arguments": turn.tool_call.arguments, "result": None,
         }
+
+    # A language search with zero direct matches (unresolvable, like
+    # "Telugu" -- not seeded at all -- or resolvable but nobody has it)
+    # still says "nobody matched" plainly, but also offers speakers of a
+    # linguistically related language as a clearly-labeled next best thing,
+    # instead of a bare empty result. Never silently substituted in as if
+    # it answered the actual question -- that's the distinction from the
+    # semantic-neighbor failure mode this is deliberately not replicating.
+    if turn.tool_call.name == "find_people" and turn.tool_call.arguments.get("language") and not result:
+        requested = turn.tool_call.arguments["language"]
+        family, related = find_related_language_speakers(db, caller, requested)
+        if related:
+            names = ", ".join(p.full_name for p in related)
+            family_label = family.replace("-", " ") if family else ""
+            plural = "s" if len(related) != 1 else ""
+            text = (
+                f'Nobody matched "{requested}" directly. {len(related)} {family_label}-family '
+                f"speaker{plural} might help instead: {names}."
+            )
+            _write_audit(db, caller, f"{message} -> find_people(language related to {requested})", len(related))
+            return {"message": text, "tool_call": turn.tool_call.name,
+                    "arguments": turn.tool_call.arguments, "result": related}
+        _write_audit(db, caller, f"{message} -> {turn.tool_call.name}({turn.tool_call.arguments})", 0)
+        return {"message": f'Nobody matched "{requested}" directly.', "tool_call": turn.tool_call.name,
+                "arguments": turn.tool_call.arguments, "result": result}
 
     _write_audit(db, caller, f"{message} -> {turn.tool_call.name}({turn.tool_call.arguments})", 1)
     return {"message": None, "tool_call": turn.tool_call.name, "arguments": turn.tool_call.arguments, "result": result}
