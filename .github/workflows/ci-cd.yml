@@ -1,0 +1,166 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.14"
+  WEBAPP_NAME: Tempest34
+  RESOURCE_GROUP: Tempest
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Always runs, on every push and PR. Nothing downstream proceeds unless
+  # this passes.
+  # ---------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      ai-changed: ${{ steps.filter.outputs.ai }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest
+
+      # Only used to decide whether the golden eval step below runs --
+      # doesn't gate pytest, doesn't gate anything else.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ai:
+              - 'app/tool_calling.py'
+              - 'app/search_client.py'
+              - 'app/directory_tools.py'
+              - 'app/people.py'
+              - 'build_search_index.py'
+              - 'eval/**'
+              - 'requirements.txt'
+
+      # Hits the real Azure OpenAI + Azure AI Search resources, so it's
+      # slow (rate-limited, deliberately paced -- see eval/run_golden_eval.py)
+      # and needs its own secrets. Only runs when AI/search-relevant files
+      # actually changed, and never blocks deploy on its own -- a
+      # regression here is a signal to look at, not a hard gate, since
+      # these are the resources still mid-migration to Quadrant's own
+      # credentials (see the README's "Hard constraints" section).
+      - name: Golden evaluation set (55 questions)
+        if: steps.filter.outputs.ai == 'true'
+        continue-on-error: true
+        env:
+          CHAT_ENDPOINT: ${{ secrets.CHAT_ENDPOINT }}
+          CHAT_KEY: ${{ secrets.CHAT_KEY }}
+          SEARCH_ENDPOINT: ${{ secrets.SEARCH_ENDPOINT }}
+          SEARCH_KEY: ${{ secrets.SEARCH_KEY }}
+          EMBEDDING_ENDPOINT: ${{ secrets.EMBEDDING_ENDPOINT }}
+          EMBEDDING_KEY: ${{ secrets.EMBEDDING_KEY }}
+        run: python eval/run_golden_eval.py
+
+  # ---------------------------------------------------------------------
+  # Infra. Only on a real push to main (never on a PR) -- a PR shouldn't
+  # be able to touch live Azure resources just by being opened.
+  # ---------------------------------------------------------------------
+  terraform:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      TF_VAR_db_pwd: ${{ secrets.DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+
+  # ---------------------------------------------------------------------
+  # App code. Deliberately NOT `az webapp deploy --type zip` (OneDeploy) --
+  # that path does a raw rsync and silently ignores
+  # SCM_DO_BUILD_DURING_DEPLOYMENT, which is exactly what caused the
+  # original ModuleNotFoundError('fastapi') outage: dependencies were
+  # never installed. `az webapp deployment source config-zip` is the
+  # classic Kudu zipdeploy endpoint, confirmed live to actually run Oryx's
+  # build (pip install) when that setting is true.
+  # ---------------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test, terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build deploy zip (backend only)
+        run: |
+          zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
+            -x "*__pycache__*" -x "*.pyc"
+
+      - uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
+
+      # Idempotent -- safe to set on every deploy. SCM_DO_BUILD_DURING_DEPLOYMENT
+      # is what makes the zipdeploy step below actually build instead of
+      # just copying files. DATABASE_URL is an absolute path under /home
+      # (App Service's persistent storage) -- anywhere else (e.g. a
+      # relative sqlite:///directory.db) gets wiped on every restart,
+      # because Oryx runs the app from an ephemeral /tmp/<hash>/
+      # extraction, not from /home/site/wwwroot.
+      - name: Ensure required app settings
+        run: |
+          az webapp config appsettings set \
+            --name ${{ env.WEBAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --settings \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+              DATABASE_URL="sqlite:////home/data/directory.db"
+
+      - name: Deploy (Kudu zipdeploy, triggers Oryx build)
+        run: |
+          az webapp deployment source config-zip \
+            --name ${{ env.WEBAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --src deploy.zip
+
+      # Catches exactly the failure mode this project already hit once:
+      # a deploy that "succeeds" at the API level but the container
+      # crash-loops on startup. Fails the workflow instead of leaving a
+      # silently-503 site for someone to discover later.
+      - name: Wait for health check
+        run: |
+          for i in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              "https://${{ env.WEBAPP_NAME }}.azurewebsites.net/health" || true)
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::App did not become healthy within 4 minutes of deploy."
+          exit 1
