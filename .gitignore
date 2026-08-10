@@ -3,7 +3,21 @@ __pycache__/
 .venv/
 venv/
 *.db
-.env
-.env.company.bak
+
+# Any files containing word ".env" will be ignored
+*.env*
+*.env
+
+# Secrets and Big Files
+.terraform/
+*.terraform.lock.hcl
+*.tfvars
+*.tfstate
+*.tfstate*
+*tfstate.backup
+
+# Exception to .env.example
+!.env.example
+
 .DS_Store
 .pytest_cache/
