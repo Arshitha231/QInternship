@@ -81,7 +81,9 @@ identity picker in the top bar (no real login yet).
 ```bash
 cd frontend
 npm install
-npm run dev -- --port 5173 --strictPort   # http://localhost:5173
+npm run dev -- --port 5173 --strictPort   # http://localhost:5173, talks to the local backend
+
+npm run dev:live                          # same UI, talks to the deployed Azure backend instead
 ```
 
 ## Project structure

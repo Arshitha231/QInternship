@@ -1,6 +1,10 @@
 import type { AskResponse, Identity, OrgChainNode, PersonDetail, PersonSummary } from "./types";
 
-const API_BASE = "http://127.0.0.1:8000";
+// Defaults to the local backend for normal dev. Override with
+// VITE_API_BASE (see package.json's "dev:live" script) to point this same
+// frontend at the deployed Azure backend instead -- e.g. to view real
+// deployed data without running uvicorn locally.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 export class ApiError extends Error {
   status: number;
