@@ -242,6 +242,13 @@ button { font: inherit; }
 .panel-close:hover { background: var(--page); color: var(--ink); }
 .panel-body { padding: 22px 22px 40px; display: flex; flex-direction: column; gap: 16px; }
 
+/* ---------- full-page profile ---------- */
+.profile-page { display: flex; flex-direction: column; gap: 20px; }
+.profile-page-body { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 860px) { .profile-page-body { grid-template-columns: 1fr; } }
+.profile-page-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.reports-icon { vertical-align: -2px; margin-right: 6px; }
+
 .profile-header { display: flex; gap: 18px; align-items: flex-start; }
 .profile-header .avatar { width: 76px; height: 76px; font-size: 26px; }
 .p-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }

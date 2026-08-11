@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Filters } from "./components/Filters";
 import { UnifiedResults } from "./components/UnifiedResults";
-import { ProfilePanel } from "./components/ProfilePanel";
+import { ProfilePage } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
 import { DEV_IDENTITIES } from "./identities";
 import type { Identity, UnifiedSearchResponse } from "./types";
 
-type Mode = "search" | "graphs";
+type Mode = "profile" | "graphs";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -17,10 +17,10 @@ function initialQuery(): string {
 
 export default function App() {
   const [identity, setIdentity] = useState<Identity>(DEV_IDENTITIES[0]);
-  const [mode, setMode] = useState<Mode>("search");
+  const [mode, setMode] = useState<Mode>("profile");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [profileId, setProfileId] = useState<string>(DEV_IDENTITIES[0].id);
   const [graphFocusId, setGraphFocusId] = useState<string>(DEV_IDENTITIES[0].id);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
@@ -81,28 +81,42 @@ export default function App() {
     <div className="app">
       <TopBar
         query={query}
-        onQueryChange={(q) => {
-          setQuery(q);
-          if (q) setMode("search");
-        }}
+        onQueryChange={setQuery}
         identity={identity}
         onIdentityChange={(next) => {
           setIdentity(next);
           setGraphFocusId(next.id);
+          setProfileId(next.id);
         }}
       />
 
       <div className="tabs" role="tablist" aria-label="Section">
-        <button role="tab" aria-selected={mode === "search"} className={`tab ${mode === "search" ? "active" : ""}`} onClick={() => setMode("search")}>
-          Search
+        <button
+          role="tab"
+          aria-selected={mode === "profile"}
+          className={`tab ${mode === "profile" ? "active" : ""}`}
+          onClick={() => {
+            setMode("profile");
+            setQuery("");
+          }}
+        >
+          Profile
         </button>
-        <button role="tab" aria-selected={mode === "graphs"} className={`tab ${mode === "graphs" ? "active" : ""}`} onClick={() => setMode("graphs")}>
+        <button
+          role="tab"
+          aria-selected={mode === "graphs"}
+          className={`tab ${mode === "graphs" ? "active" : ""}`}
+          onClick={() => {
+            setMode("graphs");
+            setQuery("");
+          }}
+        >
           Graphs
         </button>
       </div>
 
       <main className="content">
-        {mode === "search" ? (
+        {hasQuery ? (
           <>
             <Filters filters={filters} onChange={setFilters} />
             <UnifiedResults
@@ -111,30 +125,30 @@ export default function App() {
               response={response}
               hasQuery={hasQuery}
               flashId={flashId}
-              onSelect={(id) => setSelectedId(id)}
+              onSelect={(id) => {
+                setProfileId(id);
+                setMode("profile");
+                setQuery("");
+              }}
               onJumpToCard={jumpToCard}
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
             />
           </>
+        ) : mode === "profile" ? (
+          <ProfilePage personId={profileId} identity={identity} onNavigate={setProfileId} />
         ) : (
           <GraphPage
             identity={identity}
             focusId={graphFocusId}
             onFocusChange={setGraphFocusId}
-            onOpenProfile={(id) => setSelectedId(id)}
+            onOpenProfile={(id) => {
+              setProfileId(id);
+              setMode("profile");
+            }}
           />
         )}
       </main>
-
-      {selectedId && (
-        <ProfilePanel
-          personId={selectedId}
-          identity={identity}
-          onClose={() => setSelectedId(null)}
-          onNavigate={(id) => setSelectedId(id)}
-        />
-      )}
     </div>
   );
 }
