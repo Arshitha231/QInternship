@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Filters } from "./components/Filters";
 import { UnifiedResults } from "./components/UnifiedResults";
-import { ProfilePage } from "./components/ProfilePage";
+import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
@@ -15,15 +15,77 @@ function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 
+function profileIdFromPath(): string | null {
+  const m = window.location.pathname.match(/^\/profile\/([^/]+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function profileUrl(id: string): string {
+  return `/profile/${encodeURIComponent(id)}${window.location.search}`;
+}
+
 export default function App() {
   const [identity, setIdentity] = useState<Identity>(DEV_IDENTITIES[0]);
   const [mode, setMode] = useState<Mode>("profile");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
-  const [profileId, setProfileId] = useState<string>(DEV_IDENTITIES[0].id);
+  const [profileStack, setProfileStack] = useState<ProfileStackEntry[]>(() => {
+    const urlId = profileIdFromPath();
+    return urlId ? [{ id: urlId, name: "" }] : [{ id: DEV_IDENTITIES[0].id, name: DEV_IDENTITIES[0].name }];
+  });
+  const profileId = profileStack[profileStack.length - 1].id;
   const [graphFocusId, setGraphFocusId] = useState<string>(DEV_IDENTITIES[0].id);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
+
+  // Normalize the URL to reflect the initial profile on first mount, without
+  // creating a spurious history entry.
+  useEffect(() => {
+    window.history.replaceState({ stack: profileStack }, "", profileUrl(profileStack[profileStack.length - 1].id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Browser back/forward restores whichever stack was pushed at that point
+  // in history; a bare URL with no app state (e.g. a fresh navigation from
+  // outside) falls back to a single-entry stack for that id.
+  useEffect(() => {
+    function onPopState(e: PopStateEvent) {
+      const state = e.state as { stack?: ProfileStackEntry[] } | null;
+      if (state?.stack && state.stack.length > 0) {
+        setProfileStack(state.stack);
+        setMode("profile");
+      } else {
+        const urlId = profileIdFromPath();
+        if (urlId) {
+          setProfileStack([{ id: urlId, name: "" }]);
+          setMode("profile");
+        }
+      }
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  function goToStack(nextStack: ProfileStackEntry[]) {
+    setProfileStack(nextStack);
+    window.history.pushState({ stack: nextStack }, "", profileUrl(nextStack[nextStack.length - 1].id));
+  }
+
+  function pushProfile(id: string, name: string) {
+    goToStack([...profileStack, { id, name }]);
+  }
+
+  function resetProfile(id: string, name: string) {
+    goToStack([{ id, name }]);
+  }
+
+  function backOneProfile() {
+    if (profileStack.length > 1) goToStack(profileStack.slice(0, -1));
+  }
+
+  function jumpToProfileIndex(index: number) {
+    if (index < profileStack.length - 1) goToStack(profileStack.slice(0, index + 1));
+  }
 
   const debouncedQuery = useDebouncedValue(query, 300);
   const debouncedFilters = useDebouncedValue(filters, 300);
@@ -86,7 +148,7 @@ export default function App() {
         onIdentityChange={(next) => {
           setIdentity(next);
           setGraphFocusId(next.id);
-          setProfileId(next.id);
+          resetProfile(next.id, next.name);
         }}
       />
 
@@ -98,6 +160,7 @@ export default function App() {
           onClick={() => {
             setMode("profile");
             setQuery("");
+            resetProfile(identity.id, identity.name);
           }}
         >
           Profile
@@ -125,8 +188,8 @@ export default function App() {
               response={response}
               hasQuery={hasQuery}
               flashId={flashId}
-              onSelect={(id) => {
-                setProfileId(id);
+              onSelect={(id, name) => {
+                resetProfile(id, name);
                 setMode("profile");
                 setQuery("");
               }}
@@ -136,14 +199,21 @@ export default function App() {
             />
           </>
         ) : mode === "profile" ? (
-          <ProfilePage personId={profileId} identity={identity} onNavigate={setProfileId} />
+          <ProfilePage
+            personId={profileId}
+            identity={identity}
+            stack={profileStack}
+            onNavigate={pushProfile}
+            onBack={backOneProfile}
+            onBreadcrumb={jumpToProfileIndex}
+          />
         ) : (
           <GraphPage
             identity={identity}
             focusId={graphFocusId}
             onFocusChange={setGraphFocusId}
-            onOpenProfile={(id) => {
-              setProfileId(id);
+            onOpenProfile={(id, name) => {
+              resetProfile(id, name);
               setMode("profile");
             }}
           />

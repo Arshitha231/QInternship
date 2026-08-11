@@ -249,6 +249,19 @@ button { font: inherit; }
 .profile-page-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 .reports-icon { vertical-align: -2px; margin-right: 6px; }
 
+.profile-nav { display: flex; flex-direction: column; gap: 6px; }
+.profile-back {
+  display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+  background: none; border: none; padding: 0; color: var(--muted); font-size: 13.5px; font-weight: 500; cursor: pointer;
+}
+.profile-back:hover { color: var(--purple); }
+.profile-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.crumb { display: inline-flex; align-items: center; gap: 4px; }
+.crumb-sep { color: var(--border); }
+.crumb-link { background: none; border: none; padding: 0; color: var(--muted); font: inherit; cursor: pointer; }
+.crumb-link:hover { color: var(--purple); text-decoration: underline; }
+.crumb-current { color: var(--ink); font-weight: 500; }
+
 .profile-header { display: flex; gap: 18px; align-items: flex-start; }
 .profile-header .avatar { width: 76px; height: 76px; font-size: 26px; }
 .p-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }

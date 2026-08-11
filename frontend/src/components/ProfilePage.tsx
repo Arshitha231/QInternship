@@ -2,13 +2,21 @@ import { useEffect, useState } from "react";
 import { ApiError, getOrgChart, getPerson } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
 import {
-  Briefcase, Building, Clock, Mail, MapPin, Phone, Slack, UserReports, Users,
+  Briefcase, Building, ChevronLeft, Clock, Mail, MapPin, Phone, Slack, UserReports, Users,
 } from "../icons";
+
+export interface ProfileStackEntry {
+  id: string;
+  name: string;
+}
 
 interface Props {
   personId: string;
   identity: Identity;
-  onNavigate: (id: string) => void;
+  stack: ProfileStackEntry[];
+  onNavigate: (id: string, name: string) => void;
+  onBack: () => void;
+  onBreadcrumb: (index: number) => void;
 }
 
 function initials(name: string): string {
@@ -39,7 +47,7 @@ function localTimeInfo(tz: string): string | null {
   }
 }
 
-export function ProfilePage({ personId, identity, onNavigate }: Props) {
+export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onBreadcrumb }: Props) {
   const [detail, setDetail] = useState<PersonDetail | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -85,8 +93,31 @@ export function ProfilePage({ personId, identity, onNavigate }: Props) {
     );
   }
 
+  const backTarget = stack.length > 1 ? stack[stack.length - 2] : null;
+
   return (
     <div className="profile-page">
+      {backTarget && (
+        <div className="profile-nav">
+          <button className="profile-back" onClick={onBack}>
+            <ChevronLeft size={16} /> Back to {backTarget.name || "previous profile"}
+          </button>
+          {stack.length > 2 && (
+            <nav className="profile-breadcrumb" aria-label="Profile navigation">
+              {stack.map((entry, i) => (
+                <span key={entry.id} className="crumb">
+                  {i > 0 && <span className="crumb-sep">/</span>}
+                  {i === stack.length - 1 ? (
+                    <span className="crumb-current">{entry.name || "…"}</span>
+                  ) : (
+                    <button className="crumb-link" onClick={() => onBreadcrumb(i)}>{entry.name || "…"}</button>
+                  )}
+                </span>
+              ))}
+            </nav>
+          )}
+        </div>
+      )}
       <div className="profile-header">
         <span className="avatar" aria-hidden="true">{initials(detail.full_name)}</span>
         <div style={{ minWidth: 0, flex: 1 }}>
@@ -113,7 +144,7 @@ export function ProfilePage({ personId, identity, onNavigate }: Props) {
                     <span className="away-text">Away</span>
                     {detail.away_until_month ? ` · back ${detail.away_until_month}` : ""}
                     {detail.delegate && (
-                      <> &middot; <button className="link-btn" onClick={() => onNavigate(detail.delegate!.id)}>{detail.delegate.full_name}</button> covering</>
+                      <> &middot; <button className="link-btn" onClick={() => onNavigate(detail.delegate!.id, detail.delegate!.full_name)}>{detail.delegate.full_name}</button> covering</>
                     )}
                   </span>
                 ) : (
@@ -124,7 +155,7 @@ export function ProfilePage({ personId, identity, onNavigate }: Props) {
             {detail.manager && (
               <li>
                 <UserReports size={15} />
-                Reports to: <button className="link-btn" onClick={() => onNavigate(detail.manager!.id)}>{detail.manager.full_name}</button>
+                Reports to: <button className="link-btn" onClick={() => onNavigate(detail.manager!.id, detail.manager!.full_name)}>{detail.manager.full_name}</button>
               </li>
             )}
             {detail.tenure_band && (
@@ -199,7 +230,7 @@ export function ProfilePage({ personId, identity, onNavigate }: Props) {
               <ul className="reports-list">
                 {reports.map((r) => (
                   <li key={r.id}>
-                    <button onClick={() => onNavigate(r.id)}>
+                    <button onClick={() => onNavigate(r.id, r.full_name)}>
                       <span>{r.full_name}</span>
                       <span className="sub">{r.job_title}</span>
                     </button>

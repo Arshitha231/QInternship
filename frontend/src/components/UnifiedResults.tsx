@@ -12,7 +12,7 @@ interface Props {
   response: UnifiedSearchResponse | null;
   hasQuery: boolean;
   flashId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, name: string) => void;
   onJumpToCard: (id: string) => void;
   onExampleClick: (text: string) => void;
   onRetry: () => void;
@@ -119,7 +119,7 @@ export function UnifiedResults({
                 person={p}
                 id={`person-card-${p.id}`}
                 flash={flashId === p.id}
-                onClick={() => onSelect(p.id)}
+                onClick={() => onSelect(p.id, p.full_name)}
               />
             ))}
           </div>

@@ -16,7 +16,7 @@ interface Props {
   focusId: string;
   focusPerson: PersonDetail | null;
   onNavigate: (id: string) => void;
-  onOpenProfile: (id: string) => void;
+  onOpenProfile: (id: string, name: string) => void;
 }
 
 function HubBox({ label, registerRef }: { label: string; registerRef: (el: HTMLDivElement | null) => void }) {
@@ -72,13 +72,13 @@ export function TeamGraph({ identity, focusId, focusPerson, onNavigate, onOpenPr
     };
   }, [identity, focusId, orgUnit]);
 
-  function handleNodeClick(id: string) {
+  function handleNodeClick(id: string, name: string) {
     if (id === focusId) return;
     // Team has no drill-down like Department's expand/collapse -- recentering
     // alone doesn't surface who reports to someone, so the profile panel
     // opens alongside the recenter to give that detail immediately.
     onNavigate(id);
-    onOpenProfile(id);
+    onOpenProfile(id, name);
   }
 
   const hubId = orgUnit ? `hub:${orgUnit}` : null;
@@ -131,7 +131,7 @@ export function TeamGraph({ identity, focusId, focusPerson, onNavigate, onOpenPr
         <div className="tree-tier tree-tier-reports">
           <NodeBox node={focusNode} focus registerRef={registerNode(focusId)} />
           {teammates.map((t) => (
-            <NodeBox key={t.id} node={t} onClick={() => handleNodeClick(t.id)} registerRef={registerNode(t.id)} />
+            <NodeBox key={t.id} node={t} onClick={() => handleNodeClick(t.id, t.full_name)} registerRef={registerNode(t.id)} />
           ))}
         </div>
       </div>

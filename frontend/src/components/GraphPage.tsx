@@ -20,7 +20,7 @@ export function GraphPage({
   identity: Identity;
   focusId: string;
   onFocusChange: (id: string) => void;
-  onOpenProfile: (id: string) => void;
+  onOpenProfile: (id: string, name: string) => void;
 }) {
   const [kind, setKind] = useState<GraphKind>("department");
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
@@ -50,7 +50,7 @@ export function GraphPage({
           </div>
         </div>
         <div className="graph-focus-actions">
-          <button className="btn" onClick={() => onOpenProfile(focusId)}>View profile</button>
+          <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
         </div>
       </div>
 

@@ -17,6 +17,9 @@ export const SearchIcon = ({ size = 17, className }: IconProps) => (
 export const ChevronDown = ({ size = 15, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="m6 9 6 6 6-6" /></svg>
 );
+export const ChevronLeft = ({ size = 15, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m15 18-6-6 6-6" /></svg>
+);
 export const Building = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></svg>
 );
