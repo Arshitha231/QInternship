@@ -62,6 +62,7 @@ jobs:
       - name: Golden evaluation set (55 questions)
         if: steps.filter.outputs.ai == 'true'
         continue-on-error: true
+        timeout-minutes: 30
         env:
           CHAT_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
           CHAT_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
