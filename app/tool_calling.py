@@ -28,7 +28,7 @@ import re
 from datetime import datetime
 
 from dotenv import load_dotenv
-from openai import AzureOpenAI, OpenAIError
+from openai import OpenAI, OpenAIError
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -40,14 +40,20 @@ from app.people import find_people, find_related_language_speakers, get_person
 
 load_dotenv()
 
-# Its own resource, separate from embeddings (app/search_client.py) — a
-# classic per-resource Azure OpenAI deployment, so this stays on the
-# AzureOpenAI client (azure_endpoint + api_version + deployment name), unlike
-# the embedding client's plain-OpenAI-client v1 API shape.
+# Same kind of resource as embeddings (app/search_client.py) — Quadrant's
+# shared "sharedfoundry" Azure AI Foundry resource, a unified v1 endpoint
+# (model catalog id passed directly as `model`, no classic per-account
+# deployment name), not a classic per-resource Azure OpenAI deployment. So
+# this uses the plain OpenAI SDK client pointed at {endpoint}/openai/v1/,
+# same shape as the embedding client, not AzureOpenAI's azure_endpoint +
+# api_version + deployments/{name} URL shape. Confirmed live: "gpt-5" is
+# the deployment name that actually works on this resource (deployment
+# name == model catalog id, per how this resource was provisioned) —
+# gpt-5-mini and every other model id guessed earlier all 404
+# DeploymentNotFound; only gpt-5 itself is actually enabled for this group.
 CHAT_ENDPOINT = os.environ.get("CHAT_ENDPOINT", "")
 CHAT_KEY = os.environ.get("CHAT_KEY", "")
 OPENAI_CHAT_DEPLOYMENT = os.environ.get("OPENAI_CHAT_DEPLOYMENT", "")
-OPENAI_API_VERSION = "2024-08-01-preview"  # first GA API version with tool-calling support
 
 OUT_OF_SCOPE_MESSAGE = "I can help with people, teams, skills and projects. For that one, try the HR portal."
 
@@ -445,13 +451,13 @@ def _mock_resolve(message: str) -> AssistantTurn:
     return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"query": message}))
 
 
-_openai_client: AzureOpenAI | None = None
+_openai_client: OpenAI | None = None
 
 
-def _get_openai_client() -> AzureOpenAI:
+def _get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
-        _openai_client = AzureOpenAI(azure_endpoint=CHAT_ENDPOINT, api_key=CHAT_KEY, api_version=OPENAI_API_VERSION)
+        _openai_client = OpenAI(base_url=f"{CHAT_ENDPOINT.rstrip('/')}/openai/v1/", api_key=CHAT_KEY)
     return _openai_client
 
 

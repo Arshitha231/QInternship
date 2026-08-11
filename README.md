@@ -29,8 +29,12 @@ permission filtering happens in Python, between retrieval and the model.
 - **Runs without Azure OpenAI credentials.** Semantic search degrades to keyword +
   fuzzy matching, and the app still starts, when `EMBEDDING_ENDPOINT` / `EMBEDDING_KEY`
   are unset. Chat/tool-calling degrades to the mock resolver the same way when
-  `CHAT_ENDPOINT` / `CHAT_KEY` are unset — embeddings, search, and chat are three
-  separate Azure resources, each with its own endpoint/key pair.
+  `CHAT_ENDPOINT` / `CHAT_KEY` are unset — configured independently via separate
+  env vars, though in Quadrant's deployment chat and embeddings happen to be two
+  model deployments on the same underlying Azure AI Foundry resource
+  ("sharedfoundry"), sharing one endpoint/key; Search is a genuinely separate
+  resource. Chat's deployment name is the model catalog id directly (`gpt-5`),
+  not a custom alias — confirmed the hard way after every guessed alias 404'd.
 - **SQLite locally, Azure SQL in deployment** — switching is a one-line
   `DATABASE_URL` change. Steps 1–6 of the build need no Azure resources at all.
 
