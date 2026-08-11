@@ -52,19 +52,25 @@ jobs:
       # slow (rate-limited, deliberately paced -- see eval/run_golden_eval.py)
       # and needs its own secrets. Only runs when AI/search-relevant files
       # actually changed, and never blocks deploy on its own -- a
-      # regression here is a signal to look at, not a hard gate, since
-      # these are the resources still mid-migration to Quadrant's own
-      # credentials (see the README's "Hard constraints" section).
+      # regression here is a signal to look at, not a hard gate.
+      #
+      # Chat and embeddings are two model deployments on the same
+      # Quadrant "sharedfoundry" Azure AI Foundry resource, sharing one
+      # endpoint/key (see README's "Hard constraints") -- GROUP3_4OPENAI*
+      # feeds both. Deployment names aren't secrets (not sensitive),
+      # hardcoded directly rather than added as repo secrets.
       - name: Golden evaluation set (55 questions)
         if: steps.filter.outputs.ai == 'true'
         continue-on-error: true
         env:
-          CHAT_ENDPOINT: ${{ secrets.CHAT_ENDPOINT }}
-          CHAT_KEY: ${{ secrets.CHAT_KEY }}
+          CHAT_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
+          CHAT_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
+          OPENAI_CHAT_DEPLOYMENT: gpt-5
+          EMBEDDING_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
+          EMBEDDING_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
+          OPENAI_EMBEDDING_DEPLOYMENT: text-embedding-3-small
           SEARCH_ENDPOINT: ${{ secrets.SEARCH_ENDPOINT }}
           SEARCH_KEY: ${{ secrets.SEARCH_KEY }}
-          EMBEDDING_ENDPOINT: ${{ secrets.EMBEDDING_ENDPOINT }}
-          EMBEDDING_KEY: ${{ secrets.EMBEDDING_KEY }}
         run: python eval/run_golden_eval.py
 
   # ---------------------------------------------------------------------
