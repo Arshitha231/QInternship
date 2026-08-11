@@ -48,7 +48,7 @@ export function TopBar({ query, onQueryChange, identity, onIdentityChange }: Pro
         <input
           id="q"
           type="search"
-          placeholder="Search a person by name, skills, team, or role..."
+          placeholder="Search a name or skill, or ask a question — e.g. &quot;who could mentor me in Terraform?&quot;"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
         />

@@ -1,4 +1,4 @@
-import type { AskResponse, Identity, OrgChainNode, PersonDetail, PersonSummary } from "./types";
+import type { Identity, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
 // VITE_API_BASE (see package.json's "dev:live" script) to point this same
@@ -76,10 +76,23 @@ export async function getOrgChart(
   }
 }
 
-export function ask(identity: Identity, message: string): Promise<AskResponse> {
-  return request<AskResponse>("/ask", identity, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
+export interface UnifiedSearchFilters {
+  q?: string;
+  skill?: string;
+  level?: string;
+  org_unit?: string;
+  office?: string;
+  language?: string;
+  available?: boolean;
+}
+
+export function unifiedSearch(
+  identity: Identity, filters: UnifiedSearchFilters, signal?: AbortSignal,
+): Promise<UnifiedSearchResponse> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== "" && v !== null) params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }

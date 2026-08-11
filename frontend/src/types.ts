@@ -81,54 +81,27 @@ export interface OrgChainNode {
   has_reports: boolean;
 }
 
-export interface ProjectOwnerResult {
-  project_name: string;
-  project_type: string;
-  classification: string;
-  owner_id: string;
-  owner_name: string;
-}
-
-export interface MentorCandidate {
-  id: string;
-  full_name: string;
-  job_title: string;
-  level: string;
+// Mirrors app/unified_search.py's response shape exactly (GET /search).
+// The frontend never classifies a query itself — `mode` is the backend's
+// deterministic decision, `overview` is only ever present when
+// mode === "assisted".
+export interface TraceStep {
+  tool: string;
   reason: string;
+  args: Record<string, unknown>;
+  latency_ms: number;
 }
 
-export interface SkillGapItem {
-  skill: string;
-  recognized: boolean;
-  expert_count: number;
-  working_count: number;
-  learning_count: number;
-  gap: boolean;
+export interface AIOverview {
+  answer: string;
+  citations: PersonRef[];
+  trace: TraceStep[];
 }
 
-export interface SkillScarcityItem {
-  skill: string;
-  expert_count: number;
-  working_count: number;
-  learning_count: number;
-  capable_count: number;
-}
-
-export type ToolResult =
-  | PersonSummary[]
-  | PersonDetail
-  | OrgChainNode[]
-  | ProjectOwnerResult
-  | MentorCandidate[]
-  | SkillGapItem[]
-  | SkillScarcityItem[]
-  | null;
-
-export interface AskResponse {
-  message: string | null;
-  tool_call: string | null;
-  arguments: Record<string, unknown> | null;
-  result: ToolResult;
+export interface UnifiedSearchResponse {
+  mode: "direct" | "assisted";
+  results: PersonSummary[];
+  overview?: AIOverview;
 }
 
 export type Role = "employee" | "manager" | "hr";

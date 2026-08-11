@@ -11,10 +11,12 @@ const STATUS_LABEL: Record<string, string> = {
   restricted: "Restricted",
 };
 
-export function PersonCard({ person, onClick }: { person: PersonSummary; onClick: () => void }) {
+export function PersonCard({
+  person, onClick, id, flash,
+}: { person: PersonSummary; onClick: () => void; id?: string; flash?: boolean }) {
   const status = person.availability_status;
   return (
-    <button className="result-card" onClick={onClick}>
+    <button id={id} className={`result-card ${flash ? "flash" : ""}`} onClick={onClick}>
       <span className="avatar" style={{ width: 42, height: 42, fontSize: 15 }} aria-hidden="true">
         {initials(person.full_name)}
       </span>
