@@ -213,6 +213,24 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         people = result or []
         if not people:
             return "No one in the directory matched that."
+        # A single exact-name match carries manager/delegate/direct_reports
+        # (find_people's own single-match enrichment) — surface whichever
+        # of those the caller actually asked about instead of a bare name,
+        # same as get_person's phrasing below. Without this, a correctly
+        # resolved "who does X report to?" still read as if the question
+        # went unanswered, even once routing stopped returning 5 fuzzy
+        # matches for it.
+        if len(people) == 1:
+            person = people[0]
+            bits = [person.full_name]
+            if person.manager:
+                bits.append(f"reports to {person.manager.full_name}")
+            elif person.direct_reports:
+                n = len(person.direct_reports)
+                bits.append(f"has {n} direct report{'s' if n != 1 else ''}")
+            if len(bits) > 1:
+                return f"{bits[0]} {', '.join(bits[1:])}."
+            return f"Found 1 match: {person.full_name}."
         names = [p.full_name for p in people[:5]]
         extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
         return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
@@ -229,11 +247,25 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         return " ".join(bits)
 
     if tool_name == "get_org_chain":
-        direction = "above them" if args.get("direction") == "up" else "below them"
-        n = len(result or [])
-        if n == 0:
-            return f"Nobody found {direction} in the org chart (or that direction is restricted for your role)."
-        return f"{n} {'person' if n == 1 else 'people'} {direction} in the reporting chain."
+        nodes = result or []
+        is_up = args.get("direction") == "up"
+        label = "above them" if is_up else "below them"
+        if not nodes:
+            return f"Nobody found {label} in the org chart (or that direction is restricted for your role)."
+        # An "up" walk — whether 1 hop ("my manager") or N ("my manager's
+        # manager") — is asking for one specific person at the far end of
+        # the chain, not a headcount; nodes are depth-ordered ascending, so
+        # the last one is the answer. One code path for every depth, not a
+        # separate single-hop branch that special-cases depth=1 phrasing
+        # differently from depth=2+ (that split is what let "who is my
+        # manager?" regress to a bare count while multi-hop stayed fixed).
+        if is_up:
+            top = nodes[-1]
+            levels = len(nodes)
+            hop = "their manager" if levels == 1 else f"{levels} levels up the reporting chain"
+            return f"{top.full_name} ({top.job_title}), {hop}."
+        n = len(nodes)
+        return f"{n} {'person' if n == 1 else 'people'} {label} in the reporting chain."
 
     if tool_name == "find_project_owner":
         if result is None:

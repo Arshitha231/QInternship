@@ -93,6 +93,145 @@ async def test_assisted_trace_reflects_the_real_tool_call(client):
 
 
 # ---------------------------------------------------------------------------
+# Self-referential relationship/attribute questions ("who is my manager?",
+# "who are my direct reports?") must resolve through a typed lookup
+# (get_person / get_org_chain, person_id="self") on the caller's own
+# record — never fall through to find_people's free-text/vector search,
+# which has no name to match against a first-person question.
+#
+# "who is my manager?" specifically must surface the MANAGER as the
+# headline result, not the caller — get_person(self) technically has the
+# right data (manager nested as a field) but makes the caller themself the
+# top-level card, which read as "the search highlighted my own name
+# instead of my manager's." get_org_chain(self, up, depth=1) puts the
+# manager's own record at the top level instead.
+# ---------------------------------------------------------------------------
+
+async def test_self_referential_manager_query_uses_get_org_chain_not_get_person(client):
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "report-1"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 1}
+    result_ids = {p["id"] for p in body["results"]}
+    assert "report-1" not in result_ids  # never highlights the caller
+    assert "mgr-1" in result_ids  # highlights the manager instead
+    assert "Morgan Manager" in body["overview"]["answer"]
+
+
+async def test_self_referential_direct_reports_query_uses_get_org_chain_self(client):
+    resp = await client.get(
+        "/search", params={"q": "who are my direct reports?"}, headers=auth_headers("manager", "mgr-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person_id": "self", "direction": "down", "depth": 1}
+    assert any(p["id"] == "report-1" for p in body["results"])
+
+
+# ---------------------------------------------------------------------------
+# Possessive manager chains ("my manager's manager") must walk that many
+# hops up the real reporting chain via get_org_chain, not collapse to the
+# same single-hop get_person(self) as plain "my manager" — that collapse
+# is what made the buggy version return the caller themself. chain-1 ->
+# chain-2 -> chain-3 (Chris Bottom -> Charlie Middle -> Casey Top) is the
+# fixture's 3-level chain.
+# ---------------------------------------------------------------------------
+
+async def test_self_referential_manager_single_hop_uses_org_chain_depth_one(client):
+    """Baseline: plain "my manager" (depth=1) uses the same get_org_chain
+    call shape as the multi-hop tests below — one code path for every
+    depth, not a special-cased single-hop branch."""
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "chain-1"))
+    body = resp.json()
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 1}
+    result_ids = {p["id"] for p in body["results"]}
+    assert "chain-1" not in result_ids
+    assert "chain-2" in result_ids
+
+
+async def test_self_referential_manager_of_manager_walks_two_hops(client):
+    resp = await client.get(
+        "/search", params={"q": "who is my manager's manager?"}, headers=auth_headers("employee", "chain-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 2}
+    result_ids = {p["id"] for p in body["results"]}
+    assert "chain-1" not in result_ids  # never defaults back to self
+    assert "chain-3" in result_ids  # Casey Top, two hops above Chris Bottom
+
+
+async def test_self_referential_manager_chain_three_hops(client):
+    """A 3-hop variant of the same phrasing — one more possessive "'s
+    manager" asks for depth=3. The fixture chain only has two real
+    ancestors above chain-1, so the answer still tops out at chain-3
+    (there's nobody a third level up) — the chain walk gracefully returns
+    what actually exists rather than erroring or fabricating a person."""
+    resp = await client.get(
+        "/search", params={"q": "who is my manager's manager's manager?"},
+        headers=auth_headers("employee", "chain-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 3}
+    result_ids = {p["id"] for p in body["results"]}
+    assert "chain-1" not in result_ids
+    assert "chain-3" in result_ids
+
+
+# ---------------------------------------------------------------------------
+# Named third-party relationship questions ("who does X report to?") must
+# extract X's name for a structured find_people(name=...) lookup — a single
+# exact match, with X's manager already attached via find_people's own
+# single-match enrichment — never forward the whole sentence as `query`
+# (free-text/vector search), which is what turned "who does Riley Report
+# report to?" into several loosely-related fuzzy name matches instead of
+# the one actual person.
+# ---------------------------------------------------------------------------
+
+async def test_named_third_party_report_to_query_uses_find_people_by_name(client):
+    resp = await client.get(
+        "/search", params={"q": "who does Riley Report report to?"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "find_people"
+    assert trace[0]["args"] == {"name": "Riley Report"}
+    assert len(body["results"]) == 1
+    assert body["results"][0]["id"] == "report-1"
+    assert body["results"][0]["manager"]["id"] == "mgr-1"
+    assert "Morgan Manager" in body["overview"]["answer"]
+
+
+async def test_named_third_party_possessive_manager_query_uses_find_people_by_name(client):
+    resp = await client.get(
+        "/search", params={"q": "who is Riley Report's manager?"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "find_people"
+    assert trace[0]["args"] == {"name": "Riley Report"}
+    assert len(body["results"]) == 1
+    assert body["results"][0]["id"] == "report-1"
+
+
+# ---------------------------------------------------------------------------
 # Skill-miss escalation: a filter-style skill query that misses exactly
 # still stays honest and zero-chat-model-cost — it broadens via
 # find_people's own semantic search, not a second AI system, and is

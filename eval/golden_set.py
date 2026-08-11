@@ -95,9 +95,11 @@ KRISTIN_WALSH_DIRECT_REPORTS = {
     "de5a72ce-850d-4a88-a859-3e0df1e250d5",  # Kshitij Radhakrishnan
     "36957beb-b756-4936-862a-fd319a8ca0ea",  # Ava Kavanagh -- missed earlier, visually similar to Aoife Kavanagh
 }
+MICHELLE_DVORAK = "fa37c2c1-ab69-4972-ab4c-0a1ee3832980"  # Shaun Anderson's direct manager
+
 # Shaun Anderson -> ... -> CEO, 7 levels, verified via app.org_chart._traverse.
 SHAUN_ANDERSON_UP_CHAIN = {
-    "fa37c2c1-ab69-4972-ab4c-0a1ee3832980",  # Michelle Dvorak, Sr SWE Backend
+    MICHELLE_DVORAK,  # Sr SWE Backend
     "a9d46b8f-a93c-4f32-b53f-81d349b72642",  # Niamh Ramirez, Tech Lead Backend
     "154af4dc-2b3c-4331-8c72-2ee06627463e",  # Christopher Berg, Eng Mgr Backend
     "af7f7812-be03-48e9-b81e-ee99a2b183ef",  # Xiomara Mensah, Sr Eng Mgr Backend
@@ -165,7 +167,7 @@ AVAILABLE_FRENCH = {
 }
 
 # ---------------------------------------------------------------------------
-# Tier 1 — direct lookup (19)
+# Tier 1 — direct lookup (21)
 # ---------------------------------------------------------------------------
 
 TIER1 = [
@@ -234,6 +236,31 @@ TIER1 = [
     dict(id="t1-19", tier=1, category="exact_duplicate_name", caller=HR,
          text="Pull up Priya Sharma's profile.",
          kind="ids", extractor="find_people", ground_truth={PRIYA_SHARMA_1, PRIYA_SHARMA_2}),
+    # --- regression cases: router systematically mishandled relationship
+    # queries by highlighting the wrong entity or fuzzy-matching instead of
+    # a structured lookup (see app/tool_calling.py's _mock_resolve fix and
+    # the matching SYSTEM_PROMPT/FEW_SHOT_EXAMPLES update) -----------------
+    dict(id="t1-20", tier=1, category="self_manager_lookup", caller=EMPLOYEE_PRIYA_BROWN,
+         text="Who is my manager?",
+         # Must resolve through get_org_chain(self, up, depth=1), which
+         # returns the MANAGER's own record as the top-level result — not
+         # get_person(self), which would make Priya Brown herself (the
+         # caller) the headline result with her manager merely nested
+         # inside it. person_manager_id's extractor expects a get_person-
+         # shaped .manager field, which get_org_chain's OrgChainNode
+         # doesn't have, so this uses the "org_chain" extractor instead
+         # (plain id list) against the same known manager as t1-02.
+         kind="scalar", extractor="org_chain", ground_truth={KENNETH_NAIR}),
+    dict(id="t1-21", tier=1, category="manager_lookup", caller=HR,
+         text="Who does Shaun Anderson report to?",
+         # Distinct phrasing from t1-01 ("Sean Wilson", same "report to"
+         # shape) and t1-02 ("Priya Brown", "'s manager" shape instead) —
+         # the router previously generalized inconsistently across
+         # near-identical phrasings/names, forwarding some full sentences
+         # into find_people's free-text/vector search (returning several
+         # unrelated fuzzy name matches) instead of extracting the named
+         # subject for a structured find_people(name=...) lookup.
+         kind="scalar", extractor="person_manager_id", ground_truth={MICHELLE_DVORAK}),
 ]
 
 # ---------------------------------------------------------------------------
