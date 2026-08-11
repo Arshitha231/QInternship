@@ -425,50 +425,85 @@ def _write_audit(db: Session, caller: AuthenticatedUser, query_text: str, result
     db.commit()
 
 
+def execute_with_fallback(db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, source: str) -> dict:
+    """Runs tool_call and applies the zero-extra-model-cost broadening
+    fallback when find_people(skill=...) or find_people(language=...) comes
+    back empty. `source` is only ever used for the audit_log's query_text,
+    so both call sites -- the model-routed path in answer() below, and the
+    unified /search endpoint's direct-mode skill-miss escalation, which
+    never touches the model at all -- share this one implementation instead
+    of the fallback behavior silently diverging between them.
+    """
+    try:
+        result = execute_tool_call(db, caller, tool_call)
+    except (TypeError, ValueError, KeyError):
+        _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0)
+        return {
+            "message": "I found a matching action but couldn't complete it — try rephrasing.",
+            "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": None,
+        }
+
+    # A language or skill search with zero direct matches (unresolvable,
+    # like "Telugu" -- not seeded at all -- or resolvable but nobody has
+    # it) still says "nobody matched" plainly, but also offers a
+    # clearly-labeled next best thing instead of a bare empty result:
+    # speakers of a linguistically related language (curated family
+    # table), or people whose profile semantically matches the skill even
+    # without an exact skills-table entry (find_people's own existing
+    # hybrid/vector search, not a second model call). Never silently
+    # substituted in as if it answered the actual question -- that's the
+    # distinction from the semantic-neighbor failure mode this is
+    # deliberately not replicating.
+    if tool_call.name == "find_people" and not result:
+        if tool_call.arguments.get("language"):
+            requested = tool_call.arguments["language"]
+            family, related = find_related_language_speakers(db, caller, requested)
+            if related:
+                names = ", ".join(p.full_name for p in related)
+                family_label = family.replace("-", " ") if family else ""
+                plural = "s" if len(related) != 1 else ""
+                text = (
+                    f'Nobody matched "{requested}" directly. {len(related)} {family_label}-family '
+                    f"speaker{plural} might help instead: {names}."
+                )
+                _write_audit(db, caller, f"{source} -> find_people(language related to {requested})", len(related))
+                return {"message": text, "tool_call": tool_call.name,
+                        "arguments": tool_call.arguments, "result": related}
+            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0)
+            return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
+                    "arguments": tool_call.arguments, "result": result}
+
+        if tool_call.arguments.get("skill"):
+            requested = tool_call.arguments["skill"]
+            similar = find_people(db, caller, query=requested)
+            if similar:
+                names = ", ".join(p.full_name for p in similar)
+                noun = "person" if len(similar) == 1 else "people"
+                text = (
+                    f'Nobody has "{requested}" as an exact skill match. {len(similar)} '
+                    f"{noun} with related experience might help: {names}."
+                )
+                _write_audit(db, caller, f"{source} -> find_people(skill broadened from {requested})", len(similar))
+                return {"message": text, "tool_call": tool_call.name,
+                        "arguments": tool_call.arguments, "result": similar}
+            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0)
+            return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
+                    "arguments": tool_call.arguments, "result": result}
+
+    _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 1 if result else 0)
+    return {"message": None, "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": result}
+
+
 def answer(db: Session, caller: AuthenticatedUser, message: str) -> dict:
-    """The full turn: resolve intent -> execute -> respond. The chosen
-    tool's own service function writes its own audit_log row (same as any
-    other caller of it); this writes one more, at the assistant level, so
-    "what did someone ask the assistant" stays queryable on its own."""
+    """The full turn: resolve intent (the model, or the mock heuristics) ->
+    execute -> respond. The chosen tool's own service function writes its
+    own audit_log row (same as any other caller of it); execute_with_fallback
+    writes one more, at the assistant level, so "what did someone ask the
+    assistant" stays queryable on its own."""
     turn = resolve_intent(message)
 
     if turn.tool_call is None:
         _write_audit(db, caller, message, 0)
         return {"message": turn.message or OUT_OF_SCOPE_MESSAGE, "tool_call": None, "arguments": None, "result": None}
 
-    try:
-        result = execute_tool_call(db, caller, turn.tool_call)
-    except (TypeError, ValueError, KeyError):
-        _write_audit(db, caller, f"{message} -> {turn.tool_call.name} (execution failed)", 0)
-        return {
-            "message": "I found a matching action but couldn't complete it — try rephrasing.",
-            "tool_call": turn.tool_call.name, "arguments": turn.tool_call.arguments, "result": None,
-        }
-
-    # A language search with zero direct matches (unresolvable, like
-    # "Telugu" -- not seeded at all -- or resolvable but nobody has it)
-    # still says "nobody matched" plainly, but also offers speakers of a
-    # linguistically related language as a clearly-labeled next best thing,
-    # instead of a bare empty result. Never silently substituted in as if
-    # it answered the actual question -- that's the distinction from the
-    # semantic-neighbor failure mode this is deliberately not replicating.
-    if turn.tool_call.name == "find_people" and turn.tool_call.arguments.get("language") and not result:
-        requested = turn.tool_call.arguments["language"]
-        family, related = find_related_language_speakers(db, caller, requested)
-        if related:
-            names = ", ".join(p.full_name for p in related)
-            family_label = family.replace("-", " ") if family else ""
-            plural = "s" if len(related) != 1 else ""
-            text = (
-                f'Nobody matched "{requested}" directly. {len(related)} {family_label}-family '
-                f"speaker{plural} might help instead: {names}."
-            )
-            _write_audit(db, caller, f"{message} -> find_people(language related to {requested})", len(related))
-            return {"message": text, "tool_call": turn.tool_call.name,
-                    "arguments": turn.tool_call.arguments, "result": related}
-        _write_audit(db, caller, f"{message} -> {turn.tool_call.name}({turn.tool_call.arguments})", 0)
-        return {"message": f'Nobody matched "{requested}" directly.', "tool_call": turn.tool_call.name,
-                "arguments": turn.tool_call.arguments, "result": result}
-
-    _write_audit(db, caller, f"{message} -> {turn.tool_call.name}({turn.tool_call.arguments})", 1)
-    return {"message": None, "tool_call": turn.tool_call.name, "arguments": turn.tool_call.arguments, "result": result}
+    return execute_with_fallback(db, caller, turn.tool_call, message)

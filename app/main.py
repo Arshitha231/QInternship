@@ -11,6 +11,7 @@ from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary
 from app.tool_calling import answer as answer_service
+from app.unified_search import unified_search
 
 app = FastAPI(
     title="Employee Directory API",
@@ -69,6 +70,46 @@ def list_people(
         db, user, name=name, query=query, skill=skill, level=level, org_unit=org_unit,
         office=office, language=language, available=available,
     )
+
+
+@app.get("/search")
+def unified_search_route(
+    q: str | None = Query(None, description="Free-text query or natural-language question."),
+    skill: str | None = None,
+    level: str | None = None,
+    org_unit: str | None = None,
+    office: str | None = None,
+    language: str | None = None,
+    available: bool | None = None,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The merged Search+Ask entry point. Deterministically decides direct
+    (structured, zero model calls) vs assisted (routed through the same
+    tool-calling layer /ask uses) — see app.unified_search for the actual
+    router. /people and /ask both stay in place unchanged underneath this;
+    nothing here duplicates their retrieval or permission logic.
+
+    No response_model here (the shape is a discriminated union, direct vs
+    assisted) — so results/citations are dumped with exclude_unset by hand
+    below, matching what response_model_exclude_unset does for /people. A
+    field like direct_reports is only ever set on a PersonSummary instance
+    for a manager/hr caller in the first place (see people.py); without
+    this, FastAPI's default dict encoding would serialize every unset
+    field as an explicit `null` instead of leaving the key genuinely
+    absent — quietly telling a non-manager caller "this field exists, you
+    just can't see it", the exact boundary-leak /people's flag exists to
+    prevent.
+    """
+    result = unified_search(
+        db, user, q=q,
+        filters={"skill": skill, "level": level, "org_unit": org_unit,
+                 "office": office, "language": language, "available": available},
+    )
+    result["results"] = [p.model_dump(exclude_unset=True) for p in result["results"]]
+    if result.get("overview") is not None:
+        result["overview"]["citations"] = [c.model_dump(exclude_unset=True) for c in result["overview"]["citations"]]
+    return result
 
 
 @app.get("/people/{person_id}", response_model=PersonDetail, response_model_exclude_unset=True)
