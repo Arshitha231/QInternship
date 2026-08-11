@@ -62,6 +62,14 @@ export async function getPerson(identity: Identity, personId: string): Promise<P
   }
 }
 
+export function updateOwnBio(identity: Identity, bio: string): Promise<PersonDetail> {
+  return request<PersonDetail>(`/people/${identity.id}/bio`, identity, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bio }),
+  });
+}
+
 export async function getOrgChart(
   identity: Identity,
   personId: string,

@@ -9,7 +9,8 @@ from app.db import engine, get_db
 from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
-from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary
+from app.people import update_own_bio as update_own_bio_service
+from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary, UpdateBioRequest
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
 
@@ -124,6 +125,23 @@ def get_person_route(
         # access — redact, never reject.
         raise HTTPException(status_code=404, detail="Person not found")
     return person
+
+
+@app.patch("/people/{person_id}/bio", response_model=PersonDetail, response_model_exclude_unset=True)
+def update_bio_route(
+    person_id: str,
+    body: UpdateBioRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    # Self-service only — editing anyone else's About, even your own
+    # direct reports', is out of scope for this endpoint.
+    if person_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own profile")
+    result = update_own_bio_service(db, user, person_id, body.bio.strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
 
 
 @app.get("/people/{person_id}/org-chart", response_model=list[OrgChainNode])

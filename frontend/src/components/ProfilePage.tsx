@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError, getOrgChart, getPerson } from "../api";
+import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
 import {
   Briefcase, Building, ChevronLeft, Clock, Mail, MapPin, Phone, Slack, UserReports, Users,
@@ -51,12 +51,20 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
   const [detail, setDetail] = useState<PersonDetail | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [editingBio, setEditingBio] = useState(false);
+  const [bioDraft, setBioDraft] = useState("");
+  const [savingBio, setSavingBio] = useState(false);
+  const [bioError, setBioError] = useState<string | null>(null);
+
+  const isOwnProfile = personId === identity.id;
 
   useEffect(() => {
     let cancelled = false;
     setDetail(undefined);
     setReports([]);
     setError(null);
+    setEditingBio(false);
+    setBioError(null);
     Promise.all([getPerson(identity, personId), getOrgChart(identity, personId, "down", 1)])
       .then(([person, chain]) => {
         if (cancelled) return;
@@ -94,6 +102,26 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
   }
 
   const backTarget = stack.length > 1 ? stack[stack.length - 2] : null;
+
+  function startEditingBio() {
+    setBioDraft(detail!.bio ?? "");
+    setBioError(null);
+    setEditingBio(true);
+  }
+
+  async function saveBio() {
+    setSavingBio(true);
+    setBioError(null);
+    try {
+      const updated = await updateOwnBio(identity, bioDraft.trim());
+      setDetail((prev) => (prev ? { ...prev, bio: updated.bio } : prev));
+      setEditingBio(false);
+    } catch (e) {
+      setBioError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+    } finally {
+      setSavingBio(false);
+    }
+  }
 
   return (
     <div className="profile-page">
@@ -167,10 +195,40 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
 
       <div className="profile-page-body">
         <div className="profile-page-col">
-          {detail.bio && (
+          {(detail.bio || isOwnProfile) && (
             <section className="card">
-              <h2>About</h2>
-              <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>{detail.bio}</p>
+              <div className="card-head">
+                <h2>About</h2>
+                {isOwnProfile && !editingBio && (
+                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={startEditingBio}>Edit</button>
+                )}
+              </div>
+              {editingBio ? (
+                <div className="bio-edit">
+                  <textarea
+                    className="bio-textarea"
+                    value={bioDraft}
+                    onChange={(e) => setBioDraft(e.target.value)}
+                    maxLength={2000}
+                    rows={4}
+                    autoFocus
+                    placeholder="Tell people a bit about yourself…"
+                  />
+                  {bioError && <p className="bio-error">{bioError}</p>}
+                  <div className="bio-actions">
+                    <button className="btn" onClick={() => setEditingBio(false)} disabled={savingBio}>Cancel</button>
+                    <button className="btn btn-primary" onClick={saveBio} disabled={savingBio}>
+                      {savingBio ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                </div>
+              ) : detail.bio ? (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>{detail.bio}</p>
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  You haven't added an about yet. <button className="link-btn" onClick={startEditingBio}>Add one</button>
+                </p>
+              )}
             </section>
           )}
 

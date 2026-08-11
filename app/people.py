@@ -469,6 +469,25 @@ def get_person(db: Session, caller: AuthenticatedUser, person_id: str) -> Person
     # 7. respond (via the return above)
 
 
+# ---------------------------------------------------------------------------
+# update_own_bio(person_id, bio) — self-service only. Ownership (person_id
+# == caller.id) is enforced by the route, not here; this is a straight
+# persistence op with none of the ABAC/RBAC field logic get_person has.
+# ---------------------------------------------------------------------------
+
+def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: str) -> PersonDetail | None:
+    target = db.get(Employee, person_id)
+    if target is None or not target.is_active:
+        return None
+    target.bio = bio
+    db.commit()
+    db.refresh(target)
+    fields = visible_fields(db, caller, target)
+    result = _build_detail(db, caller, target, fields)
+    _write_audit(db, caller, "update_own_bio", f"person_id={person_id}", 1, fields)
+    return result
+
+
 def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str]) -> PersonDetail:
     kwargs: dict = {"id": target.id, "full_name": target.full_name}
 

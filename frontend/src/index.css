@@ -262,6 +262,16 @@ button { font: inherit; }
 .crumb-link:hover { color: var(--purple); text-decoration: underline; }
 .crumb-current { color: var(--ink); font-weight: 500; }
 
+.bio-edit { display: flex; flex-direction: column; gap: 8px; }
+.bio-textarea {
+  width: 100%; resize: vertical; font: inherit; font-size: 13.5px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--white);
+  color: var(--ink); box-sizing: border-box;
+}
+.bio-textarea:focus { outline: none; border-color: var(--purple); }
+.bio-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.bio-error { margin: 0; color: var(--red); font-size: 12.5px; }
+
 .profile-header { display: flex; gap: 18px; align-items: flex-start; }
 .profile-header .avatar { width: 76px; height: 76px; font-size: 26px; }
 .p-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }

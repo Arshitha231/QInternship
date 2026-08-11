@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PersonRef(BaseModel):
@@ -155,6 +155,10 @@ class SkillGapItem(BaseModel):
 
 class AskRequest(BaseModel):
     message: str
+
+
+class UpdateBioRequest(BaseModel):
+    bio: str = Field(max_length=2000)
 
 
 class SkillScarcityItem(BaseModel):
