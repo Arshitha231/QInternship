@@ -111,7 +111,11 @@ def get_org_chain(
         managers_with_reports: set[str] = set(
             db.execute(
                 select(Employee.manager_id).where(
-                    Employee.manager_id.is_not(None), Employee.is_active.is_(True)
+                    Employee.manager_id.is_not(None),
+                    # `.is_(True)` renders as `IS 1` on SQL Server, which
+                    # T-SQL rejects (IS only works with NULL) -- `== True`
+                    # renders as `= 1` everywhere, including here.
+                    Employee.is_active == True
                 ).distinct()
             ).scalars().all()
         )

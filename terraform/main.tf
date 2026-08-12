@@ -45,9 +45,18 @@ resource "azurerm_linux_web_app" "webapp"{
     # even though the CI deploy job re-sets them via `az CLI` right after
     # every apply. That ordering was accidentally masking this same bug;
     # declaring them here removes the dependency on job order entirely.
+    #
+    # DATABASE_URL now points at the real Azure SQL database
+    # (tempest-database1) instead of the local sqlite file -- schema and
+    # data were migrated and verified there already (see
+    # alembic/versions/a3f0c9d2e1b4_*.py and the AllowAzureServices
+    # firewall rule below). Built from the server/database resources'
+    # own attributes rather than hardcoded strings so it can't drift if
+    # either is ever renamed. var.db_pwd is marked sensitive, which is
+    # why this whole value is redacted in `terraform plan`/`apply` output.
     app_settings = {
         SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
-        DATABASE_URL                   = "sqlite:////home/data/directory.db"
+        DATABASE_URL                   = "mssql+pymssql://${azurerm_mssql_server.server.administrator_login}:${var.db_pwd}@${azurerm_mssql_server.server.fully_qualified_domain_name}:1433/${azurerm_mssql_database.database.name}"
     }
 }
 

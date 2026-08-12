@@ -92,7 +92,10 @@ def find_mentor(db: Session, caller: AuthenticatedUser, skill: str, caller_id: s
             .filter(
                 EmployeeSkill.skill_id == resolved.id,
                 EmployeeSkill.level.in_([SkillLevel.working, SkillLevel.expert]),
-                Employee.is_active.is_(True),
+                # `.is_(True)` renders as `IS 1` on SQL Server, which
+                # T-SQL rejects (IS only works with NULL) -- `== True`
+                # renders as `= 1` everywhere, including here.
+                Employee.is_active == True,
                 Employee.id != caller_id,
             )
             .all()
@@ -217,7 +220,7 @@ def _visible_skill_holders(db: Session, caller: AuthenticatedUser, skill_id: int
     rows = (
         db.query(EmployeeSkill, Employee)
         .join(Employee, EmployeeSkill.employee_id == Employee.id)
-        .filter(EmployeeSkill.skill_id == skill_id, Employee.is_active.is_(True))
+        .filter(EmployeeSkill.skill_id == skill_id, Employee.is_active == True)
         .all()
     )
     return [(es, e) for es, e in rows if is_record_visible(caller, e)]

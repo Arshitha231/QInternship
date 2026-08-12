@@ -274,7 +274,10 @@ def find_people(
         q_handle_variants = {q_lower, q_lower.lstrip("@"), f"@{q_lower.lstrip('@')}"}
         found_ids = set(db.execute(
             select(Employee.id).where(
-                Employee.is_active.is_(True),
+                # `.is_(True)` renders as `IS 1` on SQL Server, which
+                # T-SQL rejects (IS only works with NULL) -- `== True`
+                # renders as `= 1` everywhere, including here.
+                Employee.is_active == True,
                 or_(
                     func.lower(Employee.full_name) == q_lower,
                     func.lower(Employee.preferred_name) == q_lower,
@@ -318,7 +321,7 @@ def find_people(
     used_search = candidates is not None or exact_match_ids is not None
 
     if candidates is None:
-        stmt = select(Employee).where(Employee.is_active.is_(True))
+        stmt = select(Employee).where(Employee.is_active == True)
         if exact_match_ids is not None:
             stmt = stmt.where(Employee.id.in_(exact_match_ids))
         elif effective_query:
@@ -417,7 +420,7 @@ def find_people(
             # is_record_visible filter as its downward traversal.
             if caller.role in ("manager", "hr"):
                 reports = db.execute(
-                    select(Employee).where(Employee.manager_id == e.id, Employee.is_active.is_(True))
+                    select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
                 ).scalars().all()
                 visible_reports = [r for r in reports if is_record_visible(caller, r)]
                 kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in visible_reports]

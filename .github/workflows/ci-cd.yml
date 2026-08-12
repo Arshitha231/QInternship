@@ -131,11 +131,13 @@ jobs:
 
       # Idempotent -- safe to set on every deploy. SCM_DO_BUILD_DURING_DEPLOYMENT
       # is what makes the zipdeploy step below actually build instead of
-      # just copying files. DATABASE_URL is an absolute path under /home
-      # (App Service's persistent storage) -- anywhere else (e.g. a
-      # relative sqlite:///directory.db) gets wiped on every restart,
-      # because Oryx runs the app from an ephemeral /tmp/<hash>/
-      # extraction, not from /home/site/wwwroot.
+      # just copying files. DATABASE_URL points at the real Azure SQL
+      # database (tempest-database1) -- mirrors terraform/main.tf's
+      # app_settings exactly, so a `terraform apply` and this step never
+      # fight over what DATABASE_URL should be. Server/database name are
+      # not secrets (see terraform/main.tf's own comment on this), only
+      # the admin password is -- DB_PASSWORD is the same secret Terraform
+      # uses via TF_VAR_db_pwd.
       - name: Ensure required app settings
         run: |
           az webapp config appsettings set \
@@ -143,7 +145,7 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --settings \
               SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-              DATABASE_URL="sqlite:////home/data/directory.db"
+              DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1"
 
       - name: Deploy (Kudu zipdeploy, triggers Oryx build)
         run: |
