@@ -164,6 +164,22 @@ jobs:
               SCM_DO_BUILD_DURING_DEPLOYMENT=true \
               DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1"
 
+      # A web app recreated by Terraform (e.g. after a forced-replacement
+      # change like a location move) comes up with no explicit runtime
+      # stack, and Azure was observed defaulting that to PHP -- Oryx then
+      # tried to build this zip as a PHP app and failed with "Couldn't
+      # detect a version for the platform 'php'". The azurerm provider
+      # pinned here (~> 3.0) only validates application_stack.python_version
+      # up to 3.12, so it can't express "3.14" the way this app actually
+      # needs -- hence setting it here via CLI instead, same reasoning as
+      # the app_command_line/app_settings drift-reset steps above.
+      - name: Ensure Python runtime stack
+        run: |
+          az webapp config set \
+            --name ${{ env.WEBAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version "PYTHON|3.14"
+
       # `appsettings set` above restarts the container. Kudu's zipdeploy
       # endpoint returns 400 if it's hit while the site is still coming
       # back up from that restart (observed live -- a deploy failed with
