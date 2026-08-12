@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -11,11 +11,30 @@ from app.models.enums import AvailabilityStatus, EmploymentType
 class Employee(Base):
     __tablename__ = "employees"
 
+    # A plain `unique=True` column would make this a UNIQUE *constraint*,
+    # which SQLite/Postgres treat as "NULL != NULL" (any number of NULL
+    # rows allowed) but SQL Server treats as "NULL == NULL" (only one NULL
+    # row allowed, full stop) -- broke seeding the very first time this ran
+    # against Azure SQL, where most synthetic employees have no linked
+    # directory object. A filtered/partial index sidesteps the dialect
+    # difference entirely: uniqueness only applies to non-NULL values,
+    # identically on every backend.
+    __table_args__ = (
+        Index(
+            "ix_employees_directory_object_id", "directory_object_id", unique=True,
+            mssql_where=text("directory_object_id IS NOT NULL"),
+            sqlite_where=text("directory_object_id IS NOT NULL"),
+            postgresql_where=text("directory_object_id IS NOT NULL"),
+        ),
+    )
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
     # SCIM 2.0 / Microsoft Graph external identity. Nullable: not every
     # synthetic/seed record has one, and there is no live Entra sync yet.
-    directory_object_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    # Uniqueness enforced by the filtered index in __table_args__ above,
+    # not `unique=True` here -- see that comment for why.
+    directory_object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     full_name: Mapped[str] = mapped_column(String(200), nullable=False)
     preferred_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
