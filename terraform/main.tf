@@ -13,7 +13,7 @@ provider "azurerm" {
 
 resource "azurerm_linux_web_app" "webapp"{
     name = "Tempest34"
-    location = data.azurerm_resource_group.rg.location
+    location = local.resource_default_loc
     service_plan_id = azurerm_service_plan.plan.id
     resource_group_name = data.azurerm_resource_group.rg.name
 
@@ -63,7 +63,7 @@ resource "azurerm_linux_web_app" "webapp"{
 resource "azurerm_service_plan" "plan" {
     name = "tempest-plan"
     resource_group_name = data.azurerm_resource_group.rg.name
-    location =  data.azurerm_resource_group.rg.location
+    location =  local.resource_default_loc
     os_type = "Linux"
     sku_name = "B1"
 
@@ -78,7 +78,7 @@ resource "azurerm_mssql_server" "server" {
     name = "tempest-azure-sql"
     version = "12.0"
     resource_group_name = data.azurerm_resource_group.rg.name
-    location = "West US 2"
+    location = local.resource_default_loc
     administrator_login = "QuadrantAdmin"
     administrator_login_password = var.db_pwd
 
@@ -100,7 +100,7 @@ resource "azurerm_mssql_firewall_rule" "allow_azure_services" {
 resource "azurerm_storage_account" "sa"{
     name = "tempest31"
     resource_group_name = data.azurerm_resource_group.rg.name
-    location = data.azurerm_resource_group.rg.location
+    location = local.resource_default_loc
     account_replication_type = "LRS"
     account_tier = "Standard"
 }
