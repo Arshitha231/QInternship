@@ -161,25 +161,47 @@ jobs:
               SCM_DO_BUILD_DURING_DEPLOYMENT=true \
               DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1"
 
-      - name: Deploy (Kudu zipdeploy, triggers Oryx build)
+      # `az webapp deployment source config-zip` is deprecated AND was
+      # observed live to silently not replace wwwroot's contents on a
+      # non-clean deploy (Kudu logs showed context.CleanOutputPath=False,
+      # and files like app/main.py kept their pre-deploy bytes/mtime even
+      # though the workflow reported success and /health kept passing --
+      # the old process just kept serving stale code). `az webapp deploy`
+      # is the maintained replacement; --clean true forces Kudu to wipe
+      # the target directory first so there's nothing stale left for a
+      # partial/incremental Oryx build to silently keep around.
+      - name: Deploy (OneDeploy, triggers Oryx build)
         run: |
-          az webapp deployment source config-zip \
+          az webapp deploy \
             --name ${{ env.WEBAPP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --src deploy.zip
+            --src-path deploy.zip \
+            --type zip \
+            --clean true \
+            --restart true
 
       # Catches exactly the failure mode this project already hit once:
       # a deploy that "succeeds" at the API level but the container
       # crash-loops on startup. Fails the workflow instead of leaving a
       # silently-503 site for someone to discover later.
+      #
+      # Also checks "/" isn't 404 -- /health alone doesn't catch a deploy
+      # that "succeeded" but never actually replaced the running code
+      # (observed live: old process kept passing /health for 20+ minutes
+      # after a "successful" deploy while still serving pre-frontend code
+      # with no static-file route at all). "/" only exists once the
+      # frontend build in this job actually landed, so it's a real signal
+      # that this deploy's content -- not some earlier one -- is live.
       - name: Wait for health check
         run: |
           for i in $(seq 1 24); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            health_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
               "https://${{ env.WEBAPP_NAME }}.azurewebsites.net/health" || true)
-            echo "attempt $i: HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "Healthy."
+            root_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              "https://${{ env.WEBAPP_NAME }}.azurewebsites.net/" || true)
+            echo "attempt $i: /health=$health_code /=$root_code"
+            if [ "$health_code" = "200" ] && [ "$root_code" = "200" ]; then
+              echo "Healthy, and serving current frontend build."
               exit 0
             fi
             sleep 10
