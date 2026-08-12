@@ -77,6 +77,17 @@ resource "azurerm_mssql_server" "server" {
       prevent_destroy = true
     }
 }
+
+# Azure SQL blocks every connection by default. Start/end both 0.0.0.0 is
+# the documented special case Azure recognizes as "allow traffic from any
+# Azure resource" (App Service included) -- not a real IP range, and not
+# open to the public internet.
+resource "azurerm_mssql_firewall_rule" "allow_azure_services" {
+    name             = "AllowAzureServices"
+    server_id        = azurerm_mssql_server.server.id
+    start_ip_address = "0.0.0.0"
+    end_ip_address   = "0.0.0.0"
+}
 resource "azurerm_storage_account" "sa"{
     name = "tempest31"
     resource_group_name = data.azurerm_resource_group.rg.name
