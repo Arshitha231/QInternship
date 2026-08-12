@@ -120,9 +120,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build deploy zip (backend only)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # VITE_API_BASE deliberately blank -- app/main.py serves this build
+      # from the same App Service as the API, so relative fetches (see
+      # frontend/src/api.ts) reach it on the same origin. No CORS, no
+      # hardcoded backend URL baked into the bundle.
+      - name: Build frontend
+        working-directory: frontend
         run: |
-          zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
+          npm ci
+          VITE_API_BASE= npm run build
+
+      - name: Build deploy zip (backend + built frontend)
+        run: |
+          zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 
       - uses: azure/login@v2
