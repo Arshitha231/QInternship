@@ -105,13 +105,16 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
   # ---------------------------------------------------------------------
-  # App code. Deliberately NOT `az webapp deploy --type zip` (OneDeploy) --
-  # that path does a raw rsync and silently ignores
-  # SCM_DO_BUILD_DURING_DEPLOYMENT, which is exactly what caused the
-  # original ModuleNotFoundError('fastapi') outage: dependencies were
-  # never installed. `az webapp deployment source config-zip` is the
-  # classic Kudu zipdeploy endpoint, confirmed live to actually run Oryx's
-  # build (pip install) when that setting is true.
+  # App code. This job used to call the classic `az webapp deployment
+  # source config-zip` Kudu endpoint instead of `az webapp deploy`
+  # (OneDeploy), on the belief that OneDeploy skipped
+  # SCM_DO_BUILD_DURING_DEPLOYMENT -- that's what was blamed for the
+  # original ModuleNotFoundError('fastapi') outage. Investigated live:
+  # OneDeploy does honor that setting and runs Oryx's build the same way
+  # (confirmed via Kudu deployment logs showing "Running oryx build...").
+  # Switched to `az webapp deploy` after all, specifically for its
+  # --clean flag -- see the Deploy step's own comment for why that
+  # mattered (a real incremental-deploy bug, unrelated to this).
   # ---------------------------------------------------------------------
   deploy:
     runs-on: ubuntu-latest
