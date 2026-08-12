@@ -37,6 +37,7 @@ export default function App() {
   const [graphFocusId, setGraphFocusId] = useState<string>(DEV_IDENTITIES[0].id);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
+  const [savedSearch, setSavedSearch] = useState<{ query: string; filters: SearchFilters } | null>(null);
 
   // Normalize the URL to reflect the initial profile on first mount, without
   // creating a spurious history entry.
@@ -85,6 +86,13 @@ export default function App() {
 
   function jumpToProfileIndex(index: number) {
     if (index < profileStack.length - 1) goToStack(profileStack.slice(0, index + 1));
+  }
+
+  function backToSearch() {
+    if (!savedSearch) return;
+    setQuery(savedSearch.query);
+    setFilters(savedSearch.filters);
+    setSavedSearch(null);
   }
 
   const debouncedQuery = useDebouncedValue(query, 300);
@@ -148,6 +156,7 @@ export default function App() {
         onIdentityChange={(next) => {
           setIdentity(next);
           setGraphFocusId(next.id);
+          setSavedSearch(null);
           resetProfile(next.id, next.name);
         }}
       />
@@ -160,6 +169,7 @@ export default function App() {
           onClick={() => {
             setMode("profile");
             setQuery("");
+            setSavedSearch(null);
             resetProfile(identity.id, identity.name);
           }}
         >
@@ -189,6 +199,7 @@ export default function App() {
               hasQuery={hasQuery}
               flashId={flashId}
               onSelect={(id, name) => {
+                setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
                 resetProfile(id, name);
                 setMode("profile");
                 setQuery("");
@@ -206,6 +217,7 @@ export default function App() {
             onNavigate={pushProfile}
             onBack={backOneProfile}
             onBreadcrumb={jumpToProfileIndex}
+            onBackToSearch={savedSearch ? backToSearch : undefined}
           />
         ) : (
           <GraphPage

@@ -17,6 +17,7 @@ interface Props {
   onNavigate: (id: string, name: string) => void;
   onBack: () => void;
   onBreadcrumb: (index: number) => void;
+  onBackToSearch?: () => void;
 }
 
 function initials(name: string): string {
@@ -47,7 +48,7 @@ function localTimeInfo(tz: string): string | null {
   }
 }
 
-export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onBreadcrumb }: Props) {
+export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch }: Props) {
   const [detail, setDetail] = useState<PersonDetail | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -125,11 +126,18 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
 
   return (
     <div className="profile-page">
-      {backTarget && (
+      {(backTarget || onBackToSearch) && (
         <div className="profile-nav">
-          <button className="profile-back" onClick={onBack}>
-            <ChevronLeft size={16} /> Back to {backTarget.name || "previous profile"}
-          </button>
+          {onBackToSearch && (
+            <button className="profile-back" onClick={onBackToSearch}>
+              <ChevronLeft size={16} /> Back to search
+            </button>
+          )}
+          {backTarget && (
+            <button className="profile-back" onClick={onBack}>
+              <ChevronLeft size={16} /> Back to {backTarget.name || "previous profile"}
+            </button>
+          )}
           {stack.length > 2 && (
             <nav className="profile-breadcrumb" aria-label="Profile navigation">
               {stack.map((entry, i) => (
