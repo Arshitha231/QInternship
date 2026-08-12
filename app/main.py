@@ -1,7 +1,10 @@
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
@@ -172,3 +175,23 @@ def ask(
     result here comes from the same permission-filtered service functions
     the structured endpoints above use — nothing bypasses the pipeline."""
     return answer_service(db, user, body.message)
+
+
+# Built frontend (frontend/dist, produced by the CI/CD deploy job's frontend
+# build step) is served from this same App Service -- one deploy target, one
+# origin, so the frontend's fetch calls need no CORS or absolute API_BASE in
+# production. Registered last so it never shadows an API route above; missing
+# in local dev (nobody runs `vite build` there), hence the directory guard.
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str) -> FileResponse:
+        # Client-side routes (e.g. /profile/<id>) aren't real files -- fall
+        # back to index.html and let the SPA's own router take it from there.
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")
