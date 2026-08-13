@@ -57,6 +57,17 @@ resource "azurerm_linux_web_app" "webapp"{
     app_settings = {
         SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
         DATABASE_URL                   = "mssql+pymssql://${azurerm_mssql_server.server.administrator_login}:${var.db_pwd}@${azurerm_mssql_server.server.fully_qualified_domain_name}:1433/${azurerm_mssql_database.database.name}"
+
+        # Real AI resolution instead of the silent mock fallback -- see
+        # variables.tf's comment on why these were missing before.
+        CHAT_ENDPOINT               = var.chat_endpoint
+        CHAT_KEY                    = var.chat_key
+        OPENAI_CHAT_DEPLOYMENT      = "gpt-5"
+        EMBEDDING_ENDPOINT          = var.embedding_endpoint
+        EMBEDDING_KEY               = var.embedding_key
+        OPENAI_EMBEDDING_DEPLOYMENT = "text-embedding-3-small"
+        SEARCH_ENDPOINT             = var.search_endpoint
+        SEARCH_KEY                  = var.search_key
     }
 }
 

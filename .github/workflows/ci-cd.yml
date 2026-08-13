@@ -90,6 +90,14 @@ jobs:
       ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
       TF_VAR_db_pwd: ${{ secrets.DB_PASSWORD }}
+      # Same secrets the golden-eval step below uses -- see
+      # terraform/variables.tf for why these are now also app_settings.
+      TF_VAR_chat_endpoint: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
+      TF_VAR_chat_key: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
+      TF_VAR_embedding_endpoint: ${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}
+      TF_VAR_embedding_key: ${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}
+      TF_VAR_search_endpoint: ${{ secrets.AISEARCH_ENDPOINT }}
+      TF_VAR_search_key: ${{ secrets.AISEARCH_APIKEY }}
     steps:
       - uses: actions/checkout@v5
 
@@ -162,7 +170,15 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --settings \
               SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-              DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1"
+              DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1" \
+              CHAT_ENDPOINT="${{ secrets.GROUP3_4OPENAIENDPOINT }}" \
+              CHAT_KEY="${{ secrets.GROUP3_4OPENAIAPIKEY }}" \
+              OPENAI_CHAT_DEPLOYMENT="gpt-5" \
+              EMBEDDING_ENDPOINT="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}" \
+              EMBEDDING_KEY="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
+              OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
+              SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
+              SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}"
 
       # A web app recreated by Terraform (e.g. after a forced-replacement
       # change like a location move) comes up with no explicit runtime
