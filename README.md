@@ -147,7 +147,13 @@ app/
                         EmployeeProject, EmployeeCertification, AuditLog,
                         TrainingCourse, EmployeeCourseStatus, CourseRequirement, Notification
 alembic/              migrations (SQLite locally, Azure SQL in deployment — same DDL)
-seed.py               synthetic data generator + constraint verification summary
+seed.py               synthetic data generator + constraint verification summary.
+                       Starts by DELETING every employee/project/skill/org unit —
+                       builds a directory from nothing, never run against one that
+                       already exists (see seed_training.py)
+seed_training.py      adds only the training-course tables to a database that
+                       already has a directory, touching nothing else. This is what
+                       to run against the deployed database
 build_search_index.py CLI wrapper around search_index.py, run after seeding/migrating
 eval/                 golden evaluation set (55 questions) + scorer, run in CI when
                        AI/search-relevant files change (eval/run_golden_eval.py)
