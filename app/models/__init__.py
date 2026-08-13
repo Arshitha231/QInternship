@@ -1,21 +1,29 @@
 from app.models.audit_log import AuditLog
+from app.models.course_requirement import CourseRequirement
 from app.models.employee import Employee
 from app.models.employee_certification import EmployeeCertification
+from app.models.employee_course_status import EmployeeCourseStatus
 from app.models.employee_project import EmployeeProject
 from app.models.employee_skill import EmployeeSkill
+from app.models.notification import Notification
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.project import Project
 from app.models.skill import Skill
+from app.models.training_course import TrainingCourse
 
 __all__ = [
     "AuditLog",
+    "CourseRequirement",
     "Employee",
     "EmployeeCertification",
+    "EmployeeCourseStatus",
     "EmployeeProject",
     "EmployeeSkill",
+    "Notification",
     "Office",
     "OrgUnit",
     "Project",
     "Skill",
+    "TrainingCourse",
 ]

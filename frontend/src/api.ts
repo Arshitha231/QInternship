@@ -1,4 +1,6 @@
-import type { Identity, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse } from "./types";
+import type {
+  Identity, NotificationOut, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse,
+} from "./types";
 
 // Defaults to the local backend for normal dev. Override with
 // VITE_API_BASE (see package.json's "dev:live" script) to point this same
@@ -82,6 +84,12 @@ export async function getOrgChart(
     if (e instanceof ApiError && e.status === 404) return [];
     throw e;
   }
+}
+
+// Your own notifications only — the endpoint takes no person id at all, so
+// there's deliberately no way to ask for anyone else's.
+export function getMyNotifications(identity: Identity, signal?: AbortSignal): Promise<NotificationOut[]> {
+  return request<NotificationOut[]>("/me/notifications", identity, { signal });
 }
 
 export interface UnifiedSearchFilters {
