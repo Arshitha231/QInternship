@@ -256,6 +256,21 @@ config flip, not a refactor.
 | `NOTIFY_LEVELS_UP` | `-1` (unlimited) | How far up the reporting chain a status resolution is reported. Full chain is the confirmed requirement today; it's a setting so narrowing it later (e.g. `1` for direct manager only, `0` to disable management notifications) needs no edit to notification logic. Still bounded by `org_chart.MAX_DEPTH`, which is the cycle guard, not a policy. Governs who gets *told*, never who may *look* — profile visibility stays the full chain regardless |
 | `TRAINING_API_*` | unset | base URL, key, timeout. Shape only; nothing reads them while sync is off |
 
+### Seeded shape
+
+Five fake courses, scoped so **every profile shows one or two** and none shows
+zero: `SEC-101` is company-wide, and the other four are keyed to divisions
+that don't overlap, so nothing stacks a third onto anyone. Between them the
+four narrow rows cover one scoping clause each — division alone, division +
+job title, division + employment type — so the resolver is exercised end to
+end. Real compliance training doesn't partition this tidily; this is demo
+data shaped to keep the Training card short and readable.
+
+About 15% of expected (employee, course) pairs are left with **no status row
+at all**, which is the one case where `not_started` is legitimately inferred
+rather than reported — and the case a provider outage must never be confused
+with.
+
 ### Status, and the two notifications
 
 The stored status is the four-value enum `not_started | in_progress | failed

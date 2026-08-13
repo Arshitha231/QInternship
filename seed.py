@@ -1118,19 +1118,33 @@ TRAINING_COURSES = [
 # "not completed" — an Account Executive is not out of compliance for never
 # having taken Secure Coding Practices.
 #
+# Scoped so every employee lands on exactly ONE or TWO courses: SEC-101 is
+# company-wide, and the other four are keyed to divisions that don't overlap,
+# so nothing can stack a third onto anyone. Real compliance training doesn't
+# partition itself this tidily — this is demo data, shaped to keep every
+# profile's Training card short and readable rather than to model an actual
+# training programme.
+#
+# The four narrow rows also cover one scoping clause each, so the resolver is
+# exercised end to end: division alone (SECDEV-210, FINCTRL-150), division +
+# job title (LEAD-301), division + employment type (CONDUCT-102).
+#
 # Note LEAD-301's keyword: job_title is the only role signal in this schema,
-# so a title substring is exactly as precise as titles are. "Manager" catches
-# every team manager, and also catches Product Managers, who have no reports.
-# That's a real limitation of deriving role from title rather than a bug in
-# the matcher — if it bites, the fix is a proper track taxonomy on the
-# employee, which CourseRequirement is already shaped to accept.
+# so a title substring is exactly as precise as titles are. Within Product it
+# catches Product Managers, who have no reports — a real limitation of
+# deriving role from title rather than a bug in the matcher. If it bites, the
+# fix is a proper track taxonomy on the employee, which CourseRequirement is
+# already shaped to accept.
+#
+# Divisions with no second row (People & Culture, Legal) get exactly one
+# course, which is the point: one course everywhere is the floor, never zero.
 TRAINING_REQUIREMENTS = [
     ("SEC-101", None, None, None, "Everyone, annually."),
-    ("CONDUCT-102", None, None, EmploymentType.fte,
-     "Employees only — contractors sign an equivalent through their agency."),
     ("SECDEV-210", "Engineering", None, None, "Anyone in the Engineering division."),
     ("FINCTRL-150", "Finance", None, None, "Anyone in the Finance division."),
-    ("LEAD-301", None, "Manager", None, "Anyone with a people-management title."),
+    ("LEAD-301", "Product", "Manager", None, "Product managers — division AND title must match."),
+    ("CONDUCT-102", "Sales & Marketing", None, EmploymentType.fte,
+     "Sales & Marketing employees — contractors sign an equivalent through their agency."),
 ]
 
 # Weighted so the demo has a realistic spread rather than a uniform one:
