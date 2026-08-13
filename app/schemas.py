@@ -124,6 +124,12 @@ class PersonDetail(BaseModel):
     hire_date: date | None = None
     cost_centre: str | None = None
     personal_mobile: str | None = None
+    # HR or the person themselves — never the manager. Serialized as a string
+    # so the exact decimal survives the trip: JSON numbers are IEEE 754
+    # doubles in most clients, and pay is not a value to hand to a float.
+    salary: str | None = None
+    salary_currency: str | None = None
+    date_of_birth: date | None = None
 
 
 class OrgChainNode(BaseModel):

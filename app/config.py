@@ -57,6 +57,27 @@ def notify_levels_up() -> int:
         return UNLIMITED_LEVELS
 
 
+def hr_org_unit_name() -> str:
+    """Which org unit's people count as "HR" for notification purposes.
+
+    There is no role column on Employee — roles arrive per request, from a dev
+    header or an Entra app-role claim (app/auth.py), and a scheduled sweep has
+    no request to read one from. The org tree is the only durable signal we
+    own, so HR recipients are resolved as "everyone in this unit or below it".
+
+    A setting rather than a constant because the unit's name is a fact about
+    one company's org chart, not about this code: rename the division and the
+    birthday notifications shouldn't silently stop going out.
+
+    Defaults to the HR Operations department rather than the People & Culture
+    division above it. The division also contains Talent Acquisition, and
+    recruiters are not the audience for "it's someone's 10-year anniversary" —
+    including them roughly doubled the volume for no one's benefit. Set this
+    to "People & Culture" to notify the whole division.
+    """
+    return os.environ.get("HR_ORG_UNIT_NAME", "HR Operations")
+
+
 # --- Training API connection settings -------------------------------------
 # Shape only. Nothing reads these unless enable_training_api_sync() is true.
 

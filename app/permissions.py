@@ -24,7 +24,20 @@ BASE_FIELDS: set[str] = {
 }
 
 # HR-only, per the field table: "hire_date, cost_centre | hr only".
-HR_ONLY_FIELDS: set[str] = {"hire_date", "cost_centre"}
+# salary/salary_currency/date_of_birth are hr-only at the RBAC layer and then
+# additionally granted to the person themselves by ABAC below — HR_ONLY here
+# means "no other ROLE gets these", not "only HR ever sees them".
+HR_ONLY_FIELDS: set[str] = {
+    "hire_date", "cost_centre", "salary", "salary_currency", "date_of_birth",
+}
+
+# Own profile only. Deliberately narrower than personal_mobile's "own profile
+# OR direct manager": a line manager holding your mobile number is ordinary,
+# a line manager reading your salary and date of birth off the directory is
+# not. Managers get neither, at any level of the chain — unlike
+# training_status, which the chain can see precisely because the chain is
+# already told about it.
+SELF_ONLY_FIELDS: set[str] = {"salary", "salary_currency", "date_of_birth"}
 
 # Training/certification status. Deliberately NOT in BASE_FIELDS: whether a
 # colleague has finished their compliance training is nobody's business by
@@ -49,7 +62,13 @@ ALLOWED: dict[str, set[str]] = {
 # wired exactly where the pipeline calls for it — even though with today's
 # 3-role setup it's a no-op on top of RBAC. It's what lets a future
 # division-scoped role plug in without restructuring the pipeline.
-DEPARTMENT_SENSITIVE_FIELDS: set[str] = {"cost_centre"}
+DEPARTMENT_SENSITIVE_FIELDS: set[str] = {"cost_centre", "salary", "salary_currency"}
+# salary belongs here as the most obviously finance-sensitive field in the
+# schema. It changes nothing today — HR is exempt as a company-wide function,
+# and the only other holder is the person themselves, who is by definition in
+# their own division — but leaving the pay field out of the department check
+# would be the wrong thing to find here later. date_of_birth is deliberately
+# absent: it's personal data, not financial, and this stage is the money one.
 
 
 def is_record_visible(caller: AuthenticatedUser, target: Employee) -> bool:
@@ -95,10 +114,14 @@ def _caller_org_unit_id(db, caller: AuthenticatedUser) -> int | None:
 
 
 def abac_extra_fields(caller: AuthenticatedUser, target: Employee) -> set[str]:
-    """personal_mobile: own profile, OR direct manager only."""
-    if caller.id == target.id or target.manager_id == caller.id:
-        return {"personal_mobile"}
-    return set()
+    """personal_mobile: own profile, OR direct manager.
+    salary / salary_currency / date_of_birth: own profile ONLY."""
+    fields: set[str] = set()
+    if caller.id == target.id:
+        fields |= {"personal_mobile"} | set(SELF_ONLY_FIELDS)
+    elif target.manager_id == caller.id:
+        fields |= {"personal_mobile"}
+    return fields
 
 
 def training_extra_fields(db, caller: AuthenticatedUser, target: Employee) -> set[str]:

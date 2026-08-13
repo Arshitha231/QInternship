@@ -574,6 +574,14 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
         kwargs["cost_centre"] = target.cost_centre
     if "personal_mobile" in fields:
         kwargs["personal_mobile"] = target.personal_mobile
+    # str() rather than float() — see the schema comment. Absent, not null,
+    # for anyone who isn't HR or the person themselves.
+    if "salary" in fields and target.salary is not None:
+        kwargs["salary"] = str(target.salary)
+    if "salary_currency" in fields:
+        kwargs["salary_currency"] = target.salary_currency
+    if "date_of_birth" in fields:
+        kwargs["date_of_birth"] = target.date_of_birth
 
     return PersonDetail(**kwargs)
 

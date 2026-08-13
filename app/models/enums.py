@@ -90,10 +90,23 @@ def display_status(status: CourseStatus) -> CourseDisplayStatus:
 
 
 class NotificationKind(str, enum.Enum):
-    """Which of the two independent triggers produced a notification (see
-    app/notifications.py). Both fire off the same status-change event; they
-    differ in audience, in what they're allowed to say, and in when they
-    fire — kept as distinct kinds so that stays inspectable after the fact."""
+    """Which trigger produced a notification (see app/notifications.py).
+
+    The first two fire off the same course-status-change event and differ in
+    audience, in what they're allowed to say, and in when they fire. The last
+    two are date-driven rather than event-driven: nothing changes in the
+    database on someone's birthday, so a sweep has to go looking. Kept as
+    distinct kinds so which trigger fired stays inspectable after the fact.
+    """
 
     employee_course_reminder = "employee_course_reminder"
     manager_course_report = "manager_course_report"
+    birthday_reminder = "birthday_reminder"
+    work_anniversary_reminder = "work_anniversary_reminder"
+
+
+# Years of service worth telling HR about: the first one, then every fifth.
+# Unbounded on purpose — a 45-year anniversary is rarer and more worth
+# marking, not less, so this is a rule rather than a list that silently stops.
+def is_milestone_year(years: int) -> bool:
+    return years == 1 or (years >= 5 and years % 5 == 0)
