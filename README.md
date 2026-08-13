@@ -271,6 +271,18 @@ at all**, which is the one case where `not_started` is legitimately inferred
 rather than reported — and the case a provider outage must never be confused
 with.
 
+**Deployed vs. local.** Migration `6886efd9b63d` seeds the course *catalogue*
+(the five courses and the five rules for who takes them) as reference data, so
+the App Service's startup `alembic upgrade head` gives every deployed profile
+its one or two courses with no manual step. It deliberately stops there:
+per-employee statuses are ~900 rows about specific people that go stale as
+soon as anyone joins, and schema history is the wrong home for them. The
+consequence is that straight after a deploy everything reads **"Not
+completed"** — correct, since a course with no status row genuinely means not
+started. For the realistic completed/in-progress/failed mix, run
+`seed_training.py` against that database (the App Service's own SSH console
+reaches it; a CI runner isn't dependably inside the SQL firewall).
+
 ### Status, and the two notifications
 
 The stored status is the four-value enum `not_started | in_progress | failed
