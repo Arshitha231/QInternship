@@ -6,6 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# Two pushes a minute apart used to produce two runs racing each other to the
+# same App Service, each deploying with `--clean true`, and whichever finished
+# LAST won regardless of which commit was newer. That's how seed_training.py
+# went missing from wwwroot: the run that added it to the zip finished first,
+# and the older run's zip -- built before that change -- landed on top and
+# wiped it out. Silent, and indistinguishable from "the deploy hasn't finished
+# yet" from outside.
+#
+# Grouped per ref so main and a PR branch never queue behind each other.
+#
+# cancel-in-progress stays FALSE deliberately. Cancelling mid-run is the usual
+# choice for CI, but this workflow's tail is `az webapp deploy` followed by an
+# alembic-at-startup restart -- killing that partway can leave the App Service
+# with a half-extracted wwwroot or a half-applied migration. Queueing costs a
+# few minutes; a torn deploy costs an outage.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PYTHON_VERSION: "3.14"
   WEBAPP_NAME: Tempest34
