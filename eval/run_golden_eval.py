@@ -30,10 +30,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from openai import OpenAIError  # noqa: E402
 
+import app.search_client as sc  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 from app.directory_tools import find_mentor, skill_gap, skill_scarcity  # noqa: E402
 from app.people import find_people  # noqa: E402
 from app.tool_calling import (  # noqa: E402
+    CHAT_ENDPOINT,
+    CHAT_KEY,
     OUT_OF_SCOPE_MESSAGE,
     ResolvedToolCall,
     AssistantTurn,
@@ -198,7 +201,48 @@ def score(relevant: set, returned: list) -> tuple[float, float]:
     return recall, precision
 
 
+def preflight() -> None:
+    """Fail immediately, and say why, when the chat resource isn't configured.
+
+    Without this, an empty CHAT_ENDPOINT doesn't look like a configuration
+    problem at all. _get_openai_client() builds `base_url="/openai/v1/"` --
+    a relative URL with no host -- and the SDK raises `APIConnectionError:
+    Connection error.` from the transport layer, which reads like a network
+    fault on a resource that is in fact perfectly healthy. The retry loop
+    then treats it as transient and grinds through 5 attempts at
+    10/20/40/80/90s backoff, for every one of the 55 questions, until the
+    job's 30-minute timeout kills it. The step is continue-on-error, so it
+    doesn't fail the build -- it just silently delays deploy by half an
+    hour, since terraform and deploy both wait on this job.
+
+    Diagnosed after exactly that: 275 retries reported as a connection
+    error, against an endpoint that answered a curl on the first try.
+
+    Missing search/embedding config is a warning, not an error: find_people
+    degrades to the SQL path by design, so the eval still runs -- but it's
+    then measuring a different retrieval pipeline than production uses, and
+    the scores at the end deserve that asterisk.
+    """
+    if not CHAT_ENDPOINT or not CHAT_KEY:
+        missing = [n for n, v in [("CHAT_ENDPOINT", CHAT_ENDPOINT), ("CHAT_KEY", CHAT_KEY)] if not v]
+        sys.exit(
+            f"golden eval: {' and '.join(missing)} not set — nothing to evaluate against.\n"
+            "  This eval deliberately measures the REAL model, so it refuses to run on the\n"
+            "  mock resolver rather than reporting heuristic guesses as model scores.\n"
+            "  In CI: check the GROUP3_4OPENAI* repo secrets still exist under those names\n"
+            "  (a pull request from a fork never receives them — that's GitHub's design).\n"
+            "  Locally: run from the repo root, since load_dotenv() searches upward from\n"
+            "  the calling file and won't find .env from an unrelated working directory."
+        )
+
+    if not sc.is_configured() or not sc.EMBEDDING_ENDPOINT:
+        print("golden eval: WARNING — Azure AI Search and/or embeddings unconfigured. "
+              "find_people will fall back to the SQL path, so retrieval scores below "
+              "measure a different pipeline than production runs.\n", flush=True)
+
+
 def run() -> list[dict]:
+    preflight()
     db = SessionLocal()
     results: list[dict] = []
 
