@@ -14,17 +14,22 @@ from sqlalchemy import delete, func, select
 
 from app.db import SessionLocal
 from app.models import (
+    CourseRequirement,
     Employee,
     EmployeeCertification,
+    EmployeeCourseStatus,
     EmployeeProject,
     EmployeeSkill,
+    Notification,
     Office,
     OrgUnit,
     Project,
     Skill,
+    TrainingCourse,
 )
 from app.models.enums import (
     AvailabilityStatus,
+    CourseStatus,
     EmploymentType,
     ProjectClassification,
     ProjectType,
@@ -322,7 +327,10 @@ DEPT_THEMES["Platform Engineering"]["Backend"] += _shortfall
 # ---------------------------------------------------------------------------
 
 def reset_tables(session) -> None:
-    for model in (EmployeeCertification, EmployeeProject, EmployeeSkill, Project,
+    # Training/notification tables first: they reference employees and
+    # training_courses, so they have to go before either of those does.
+    for model in (Notification, EmployeeCourseStatus, CourseRequirement, TrainingCourse,
+                  EmployeeCertification, EmployeeProject, EmployeeSkill, Project,
                   Employee, OrgUnit, Office, Skill):
         session.execute(delete(model))
     session.commit()
@@ -1081,6 +1089,160 @@ def build_certifications(session, skills):
 
 
 # ---------------------------------------------------------------------------
+# Training courses — the synthetic dataset SyntheticCertProvider reads.
+#
+# Entirely fabricated, same hard constraint as the rest of this file: no real
+# Quadrant training records exist anywhere in this project. Once
+# ENABLE_TRAINING_API_SYNC flips on, the other team's system supplies these
+# statuses instead and this section stops being the source of truth.
+# ---------------------------------------------------------------------------
+
+# code, name, description
+TRAINING_COURSES = [
+    ("SEC-101", "Information Security Awareness",
+     "Annual security basics: phishing, device hygiene, incident reporting."),
+    ("CONDUCT-102", "Code of Conduct & Ethics",
+     "Company conduct standards, conflicts of interest, and how to raise a concern."),
+    ("SECDEV-210", "Secure Coding Practices",
+     "Threat modelling, input validation, secrets handling, dependency risk."),
+    ("FINCTRL-150", "Financial Controls Basics",
+     "Segregation of duties, approval thresholds, and audit evidence."),
+    ("LEAD-301", "Manager Essentials: Leading a Team",
+     "First-line management: feedback, one-to-ones, and performance conversations."),
+]
+
+# course code -> (org_unit name or None, job_title_keyword or None,
+#                 employment_type or None, note)
+#
+# The scoping clauses are what let a profile say "doesn't apply" instead of
+# "not completed" — an Account Executive is not out of compliance for never
+# having taken Secure Coding Practices.
+#
+# Note LEAD-301's keyword: job_title is the only role signal in this schema,
+# so a title substring is exactly as precise as titles are. "Manager" catches
+# every team manager, and also catches Product Managers, who have no reports.
+# That's a real limitation of deriving role from title rather than a bug in
+# the matcher — if it bites, the fix is a proper track taxonomy on the
+# employee, which CourseRequirement is already shaped to accept.
+TRAINING_REQUIREMENTS = [
+    ("SEC-101", None, None, None, "Everyone, annually."),
+    ("CONDUCT-102", None, None, EmploymentType.fte,
+     "Employees only — contractors sign an equivalent through their agency."),
+    ("SECDEV-210", "Engineering", None, None, "Anyone in the Engineering division."),
+    ("FINCTRL-150", "Finance", None, None, "Anyone in the Finance division."),
+    ("LEAD-301", None, "Manager", None, "Anyone with a people-management title."),
+]
+
+# Weighted so the demo has a realistic spread rather than a uniform one:
+# most people are compliant, a minority are mid-course, a few failed.
+STATUS_WEIGHTS = [
+    (CourseStatus.completed, 0.55),
+    (CourseStatus.in_progress, 0.15),
+    (CourseStatus.not_started, 0.20),
+    (CourseStatus.failed, 0.10),
+]
+
+# Fraction of (employee, required course) pairs left with NO row at all.
+# Distinct from a stored not_started: it exercises the "provider has no
+# record for a course we expect" path, which is the one place not_started is
+# legitimately inferred rather than reported.
+NO_RECORD_RATE = 0.15
+
+# Fraction of employees given a course they were never required to take, so
+# the profile's expected/not-expected distinction has something to show.
+EXTRA_COURSE_RATE = 0.07
+
+
+def build_training_courses(session) -> dict[str, TrainingCourse]:
+    courses: dict[str, TrainingCourse] = {}
+    for code, name, description in TRAINING_COURSES:
+        course = TrainingCourse(code=code, name=name, description=description, is_active=True)
+        session.add(course)
+        session.flush()
+        courses[code] = course
+    return courses
+
+
+def build_course_requirements(session, courses, units) -> None:
+    for code, unit_name, title_keyword, employment_type, note in TRAINING_REQUIREMENTS:
+        session.add(CourseRequirement(
+            course_id=courses[code].id,
+            org_unit_id=units[unit_name].id if unit_name else None,
+            job_title_keyword=title_keyword,
+            employment_type=employment_type,
+            note=note,
+        ))
+    session.flush()
+
+
+def _roll_status() -> CourseStatus:
+    roll = rng.random()
+    cumulative = 0.0
+    for status, weight in STATUS_WEIGHTS:
+        cumulative += weight
+        if roll < cumulative:
+            return status
+    return STATUS_WEIGHTS[-1][0]
+
+
+def build_course_statuses(session, courses, units) -> dict:
+    """One row per (employee, applicable course), minus a deliberate slice
+    left with no row at all.
+
+    Uses the same requirements resolver the API uses, rather than
+    reimplementing the scoping rules here — if the two ever disagreed, the
+    seeded data would be quietly testing the wrong thing.
+    """
+    from app.certifications.requirements import required_courses
+
+    counts = {status: 0 for status, _ in STATUS_WEIGHTS}
+    no_record = 0
+    extra = 0
+    applicable_pairs = 0
+    all_codes = [code for code, _, _ in TRAINING_COURSES]
+
+    for emp in ALL_EMPLOYEES:
+        expected = required_courses(session, emp)
+        expected_codes = {c.code for c in expected}
+        applicable_pairs += len(expected)
+
+        for course in expected:
+            if rng.random() < NO_RECORD_RATE:
+                no_record += 1
+                continue
+            status = _roll_status()
+            counts[status] += 1
+            session.add(_course_status_row(emp, course, status))
+
+        # A course nobody required of them — shows up on the profile flagged
+        # as not expected, never as an outstanding requirement.
+        if rng.random() < EXTRA_COURSE_RATE:
+            spare = [c for c in all_codes if c not in expected_codes]
+            if spare:
+                course = courses[rng.choice(spare)]
+                extra += 1
+                session.add(_course_status_row(emp, course, CourseStatus.completed))
+
+    session.flush()
+    return {"applicable_pairs": applicable_pairs, "by_status": counts,
+            "no_record": no_record, "extra": extra}
+
+
+def _course_status_row(emp: Employee, course: TrainingCourse, status: CourseStatus) -> EmployeeCourseStatus:
+    attempted = None
+    completed = None
+    if status is not CourseStatus.not_started:
+        attempted = date.today() - timedelta(days=rng.randint(5, 400))
+    if status is CourseStatus.completed:
+        completed = attempted
+    return EmployeeCourseStatus(
+        employee_id=emp.id, course_id=course.id, status=status,
+        attempted_at=attempted, completed_at=completed,
+        source="synthetic", last_synced_at=datetime.now(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
 
@@ -1338,6 +1500,22 @@ def print_verification(session, ctx, specials, offices, skills, topup_stats):
     print("\n" + "=" * 78)
 
 
+def print_training_verification(stats: dict) -> None:
+    print("\n" + "=" * 78)
+    print("TRAINING COURSES (synthetic provider dataset)")
+    print("=" * 78)
+    print(f"  applicable (employee, required course) pairs : {stats['applicable_pairs']}")
+    total_rows = sum(stats["by_status"].values())
+    for status, count in stats["by_status"].items():
+        pct = (count / total_rows * 100) if total_rows else 0
+        print(f"        {status.value:14s} {count:5d} rows ({pct:5.1f}%)")
+    print(f"  left with no record at all                   : {stats['no_record']} "
+          "(reads as not_started — the inferred case)")
+    print(f"  non-required courses taken anyway            : {stats['extra']} "
+          "(shown flagged, never as an outstanding requirement)")
+    print("\n" + "=" * 78)
+
+
 def main():
     session = SessionLocal()
     try:
@@ -1353,10 +1531,14 @@ def main():
         build_portfolios(session, project_pool, membership_state)
         topup_stats = top_up_confidential_members(session, project_pool)
         build_certifications(session, skills)
+        courses = build_training_courses(session)
+        build_course_requirements(session, courses, units)
+        training_stats = build_course_statuses(session, courses, units)
         session.commit()
         print(f"Seeded {len(ALL_EMPLOYEES)} employees, {len(offices)} offices, "
-              f"{len(units)} org units, {len(skills)} skills.")
+              f"{len(units)} org units, {len(skills)} skills, {len(courses)} training courses.")
         print_verification(session, ctx, specials, offices, skills, topup_stats)
+        print_training_verification(training_stats)
     finally:
         session.close()
 

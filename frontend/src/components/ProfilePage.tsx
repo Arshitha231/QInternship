@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
 import {
-  Briefcase, Building, ChevronLeft, Clock, Mail, MapPin, Phone, Slack, UserReports, Users,
+  AlertCircle, Briefcase, Building, Check, ChevronLeft, Clock, GraduationCap, Mail, MapPin,
+  Phone, Slack, UserReports, Users,
 } from "../icons";
 
 export interface ProfileStackEntry {
@@ -266,6 +267,50 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
                   <span className="pill" key={l.name}>{l.name}</span>
                 ))}
               </div>
+            </section>
+          )}
+
+          {/* Absent for a caller who isn't the person, their reporting
+              chain, or HR — and also absent when the provider couldn't be
+              reached, which is why an empty list still renders the card
+              (nothing required) but a missing key renders nothing at all. */}
+          {detail.training_status && (
+            <section className="card">
+              <div className="card-head">
+                <h2><GraduationCap size={15} className="reports-icon" />Training</h2>
+                <span className="abac-badge">Self/chain/HR</span>
+              </div>
+              {detail.training_status.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  No courses are expected for this role.
+                </p>
+              ) : (
+                <ul className="training-list">
+                  {detail.training_status.map((t) => {
+                    const completed = t.display_status === "completed";
+                    return (
+                      <li key={t.course_code}>
+                        <span className={`training-icon ${completed ? "ok" : "warn"}`} aria-hidden="true">
+                          {completed ? <Check /> : <AlertCircle />}
+                        </span>
+                        <div className="training-text">
+                          <p className="training-name">
+                            {t.course_name}
+                            {!t.expected && <span className="training-tag">Not required</span>}
+                          </p>
+                          <p className="training-meta">
+                            {/* display_label is the backend's copy, not ours — the
+                                four-value status behind it never reaches the client. */}
+                            <span className={completed ? "training-ok" : "training-warn"}>{t.display_label}</span>
+                            {completed && t.completed_month ? ` · ${t.completed_month}` : ""}
+                            {!completed && t.attempted_month ? ` · last attempt ${t.attempted_month}` : ""}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </section>
           )}
 

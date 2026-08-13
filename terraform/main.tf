@@ -35,7 +35,24 @@ resource "azurerm_linux_web_app" "webapp"{
         # would fail `terraform plan` outright. Revisit once the
         # provider adds 3.14 to its accepted values, or bump the
         # provider version deliberately (bigger change, not this fix).
-        app_command_line = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+        # Migrations run here, at app startup, NOT from the CI runner. The
+        # only SQL firewall rule is AllowAzureServices (0.0.0.0), which is
+        # what lets this web app reach the database at all -- a GitHub-hosted
+        # runner is not dependably covered by it, so `alembic upgrade head`
+        # as a pipeline step would be at the mercy of which IP the runner
+        # got. The App Service is already inside that boundary.
+        #
+        # Chained with `&&` deliberately: if the migration fails, the app
+        # does not start, the deploy job's /health poll fails, and the
+        # workflow goes red. The alternative -- start anyway on a stale
+        # schema -- gives a green deploy serving 500s on every profile page,
+        # since /health only does SELECT 1 and would keep passing. Same
+        # reasoning as the health-check poll itself: fail loudly rather than
+        # leave a silent 503.
+        #
+        # Idempotent and fast when the database is already at head, which is
+        # every deploy that doesn't add a migration.
+        app_command_line = "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     }
 
     # Same drift-reset problem as app_command_line: leaving app_settings

@@ -65,6 +65,18 @@ export const Filter = ({ size = 15, className }: IconProps) => (
 export const Loader = ({ size = 18, className }: IconProps) => (
   <svg {...base(size)} className={`spin ${className ?? ""}`}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
 );
+export const Bell = ({ size = 17, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M18 8a6 6 0 1 0-12 0c0 6-3 7-3 7h18s-3-1-3-7" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></svg>
+);
+export const GraduationCap = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M22 9 12 4 2 9l10 5 10-5Z" /><path d="M6 11.5V16c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5" /></svg>
+);
+export const Check = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m20 6-11 11-5-5" /></svg>
+);
+export const AlertCircle = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg>
+);
 export const Network = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><circle cx="12" cy="5" r="2.5" /><circle cx="5" cy="19" r="2.5" /><circle cx="19" cy="19" r="2.5" /><path d="M12 7.5v4M12 11.5 6.5 17M12 11.5 17.5 17" /></svg>
 );

@@ -2,15 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, SearchIcon, X } from "../icons";
 import type { Identity } from "../types";
 import { DEV_IDENTITIES } from "../identities";
+import { NotificationBell } from "./NotificationBell";
 
 interface Props {
   query: string;
   onQueryChange: (q: string) => void;
   identity: Identity;
   onIdentityChange: (identity: Identity) => void;
+  onOpenPerson: (id: string, name: string) => void;
 }
 
-export function TopBar({ query, onQueryChange, identity, onIdentityChange }: Props) {
+export function TopBar({ query, onQueryChange, identity, onIdentityChange, onOpenPerson }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -58,6 +60,8 @@ export function TopBar({ query, onQueryChange, identity, onIdentityChange }: Pro
           </button>
         )}
       </div>
+
+      <NotificationBell identity={identity} onOpenPerson={onOpenPerson} />
 
       <div className="account" ref={menuRef}>
         <button

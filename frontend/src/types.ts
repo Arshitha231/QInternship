@@ -43,6 +43,31 @@ export interface ProjectHistoryItem {
   current: boolean;
 }
 
+export interface TrainingStatusItem {
+  course_code: string;
+  course_name: string;
+  // The two-value derivation. The underlying four-value status
+  // (not_started / in_progress / failed / completed) never leaves the
+  // backend — don't add it here expecting it to arrive.
+  display_status: "completed" | "not_completed";
+  display_label: string;
+  expected: boolean;
+  attempted_month?: string | null;
+  completed_month?: string | null;
+  source: string;
+}
+
+export interface NotificationOut {
+  id: number;
+  kind: "employee_course_reminder" | "manager_course_report";
+  subject_person: PersonRef;
+  course_name: string;
+  display_status: string;
+  body: string;
+  levels_up: number;
+  created_at: string;
+}
+
 export interface PersonDetail {
   id: string;
   full_name: string;
@@ -65,6 +90,7 @@ export interface PersonDetail {
   skills?: SkillOut[];
   languages?: SkillOut[];
   project_history?: ProjectHistoryItem[];
+  training_status?: TrainingStatusItem[];
   hire_date?: string;
   cost_centre?: string;
   personal_mobile?: string;

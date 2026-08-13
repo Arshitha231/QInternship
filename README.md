@@ -105,6 +105,8 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 | `GET /people/{id}` | one person's detail, restricted fields genuinely absent (not null) for callers without access |
 | `PATCH /people/{id}/bio` | self-service edit of your own "About" text |
 | `GET /people/{id}/org-chart` | manager chain + direct reports, both directions |
+| `GET /me/notifications` | your own notifications, newest first — no person-id parameter exists, so no role can read anyone else's |
+| `POST /people/{id}/training/{course_code}` | hr-only. Records a course status change and fires both notification triggers; stands in for the training system pushing us an event (409 once `ENABLE_TRAINING_API_SYNC` is on) |
 | `GET /search` | **the unified search+ask surface.** Classifies `q` deterministically (trailing `?` or an interrogative opener) into `direct` (plain filtered results) or `assisted` (also runs the tool-calling layer and returns an `overview` with a prose answer + citations + reasoning trace) |
 | `POST /ask` | the older direct entry point to the tool-calling layer; `/search` is what the frontend actually uses now, this is kept as a lower-level API |
 
@@ -116,7 +118,17 @@ app/
                        frontend (frontend/dist) from the same origin in prod
   auth.py             pluggable get_current_user: dev header vs. real Entra JWT validation
   db.py               SQLAlchemy engine/session, reads DATABASE_URL
+  config.py           certification-tracking settings (ENABLE_TRAINING_API_SYNC, NOTIFY_LEVELS_UP)
   permissions.py      field/record visibility rules, applied between retrieval and response
+  notifications.py    the two course-status triggers: employee reminder + full manager chain,
+                       permission-checked, explicitly ordered employee-first
+  certifications/     course status behind an internal interface — see Certification tracking below
+    base.py             CertificationProvider (Protocol) + CertStatus (DTO) + the error types
+    synthetic.py        SyntheticCertProvider: seeded fake data, powers the demo
+    training_api.py     TrainingApiProvider: SHAPE ONLY, never wired, open questions at the top
+    factory.py          get_provider(): gated on ENABLE_TRAINING_API_SYNC
+    requirements.py     which courses are expected of whom (our side, not theirs)
+    service.py          joins expectations to reported status; records status changes
   people.py           find_people / get_person + the full filter pipeline, language-family
                        and skill-miss fallbacks for "no exact match" queries
   org_chart.py        recursive org chart (both directions), cycle-guarded
@@ -132,7 +144,8 @@ app/
   search_index.py      builds/refreshes the Azure AI Search index from the database
   schemas.py           Pydantic response models (PersonSummary, PersonDetail, OrgChainNode, …)
   models/               Employee, OrgUnit, Office, Skill, EmployeeSkill, Project,
-                        EmployeeProject, EmployeeCertification, AuditLog
+                        EmployeeProject, EmployeeCertification, AuditLog,
+                        TrainingCourse, EmployeeCourseStatus, CourseRequirement, Notification
 alembic/              migrations (SQLite locally, Azure SQL in deployment — same DDL)
 seed.py               synthetic data generator + constraint verification summary
 build_search_index.py CLI wrapper around search_index.py, run after seeding/migrating
@@ -144,7 +157,10 @@ frontend/src/
                                navigation stack (back/breadcrumb), graphs vs. profile mode
   api.ts, types.ts             typed fetch wrappers + response shapes for /search etc.
   components/
-    TopBar.tsx                 search bar + identity picker (dev-mode role switch)
+    TopBar.tsx                 search bar + identity picker (dev-mode role switch) + notification bell
+    NotificationBell.tsx        bell with unread count and a dropdown over GET /me/notifications;
+                                read state is per-identity in localStorage (no read/unread column
+                                server-side), click-through to the subject's profile
     UnifiedResults.tsx          renders GET /search's direct/assisted response — the
                                 "pure renderer," no query classification lives here
     AIOverview.tsx              the AI-answer panel for assisted mode: prose + citation
@@ -184,6 +200,15 @@ Pushing to `main` runs `.github/workflows/ci-cd.yml`, three jobs in sequence:
    endpoint/key as secrets, wired into the web app's `app_settings` block so
    a future infra recreation (e.g. a region move) can't silently drop them
    again, same as it did once already.
+Database migrations run at **app startup**, not as a pipeline step — the App
+Service's startup command is `alembic upgrade head && uvicorn ...` (set in
+`terraform/main.tf`). The only SQL firewall rule is `AllowAzureServices`,
+which is what lets the web app reach the database at all; a GitHub-hosted
+runner isn't dependably covered by it, so running alembic from CI would
+depend on which IP the runner happened to get. Chained with `&&` on purpose:
+a failed migration stops the app, which fails the deploy's `/health` poll,
+rather than serving a green deploy that 500s on every profile page.
+
 3. **deploy** — builds the frontend, zips it with the backend, and deploys
    via `az webapp deploy` (OneDeploy, `--clean true`). Ends with a health-check
    poll against `/health` and `/` so a "successful" deploy that's actually
@@ -194,6 +219,94 @@ Required GitHub repo secrets: `ARM_CLIENT_ID` / `ARM_CLIENT_SECRET` /
 `DB_PASSWORD`, and three independent endpoint/key pairs for Quadrant's AI
 resources — `GROUP3_4OPENAI*` (chat), `GROUP3_4_TEXT_EMBEDDING_3_SMALL_*`
 (embeddings), `AISEARCH_*` (search).
+
+## Certification tracking
+
+Course completion is shown on profiles and drives two notification triggers.
+The training courses themselves belong to another team's system, which isn't
+ready — so nothing here talks to it. Everything runs against an internal
+interface with a synthetic implementation behind it, and going live is a
+config flip, not a refactor.
+
+### What's real and what's stubbed
+
+| | Status |
+|---|---|
+| Data model + migration (`36c145414911`) | **real** — 4 tables, additive, no existing table touched |
+| `CertificationProvider` interface + `CertStatus` | **real** — everything codes against this, nothing against an implementation |
+| `SyntheticCertProvider` | **real**, and what powers the demo — reads the seeded `employee_course_statuses` table |
+| `TrainingApiProvider` | **stub: shape only.** Method signatures, the URL/auth sketch, and the open questions. Every body raises `NotImplementedError` |
+| Requirements (who's expected to take what) | **real** — ours to own, not the training team's |
+| Profile display | **real**, permission-filtered like every other field |
+| Notification triggers, ordering, chain walk | **real** |
+| Notification *delivery* | **stub** — the row in `notifications` is the delivery; `_deliver()` in `app/notifications.py` is the single seam a mailer/Slack transport plugs into |
+| Recipient role derivation | **assumption** — no role column exists, so `_role_for()` infers manager-vs-employee from having direct reports. Should read the Entra app-role claim once that's live |
+
+### Configuration
+
+| Setting | Default | Effect |
+|---|---|---|
+| `ENABLE_TRAINING_API_SYNC` | `false` | `false` selects `SyntheticCertProvider`. `TrainingApiProvider` is not merely error-handled when off — `app/certifications/factory.py` imports the module *inside* the enabled branch, so it is never imported, constructed, or called. Flipping this is the whole go-live change on our side |
+| `NOTIFY_LEVELS_UP` | `-1` (unlimited) | How far up the reporting chain a status resolution is reported. Full chain is the confirmed requirement today; it's a setting so narrowing it later (e.g. `1` for direct manager only, `0` to disable management notifications) needs no edit to notification logic. Still bounded by `org_chart.MAX_DEPTH`, which is the cycle guard, not a policy. Governs who gets *told*, never who may *look* — profile visibility stays the full chain regardless |
+| `TRAINING_API_*` | unset | base URL, key, timeout. Shape only; nothing reads them while sync is off |
+
+### Status, and the two notifications
+
+The stored status is the four-value enum `not_started | in_progress | failed
+| completed`. User-facing copy collapses it to `completed` / `not completed`
+— but the four values survive into the database, because the reminder
+wording depends on the distinction the label throws away. The underlying
+status never appears in any profile response, for any role.
+
+- **Employee reminder** — fires whenever `display_status` becomes
+  `not_completed`. Wording depends on the underlying status: *"you haven't
+  started X yet"* (not_started), *"you didn't pass X, you'll need to retake
+  it"* (failed).
+- **Management report** — fires on a status *resolution* (completed, or not
+  completed after an actual attempt), and walks the **full** reporting
+  chain. Reads *"completed"* or *"did not complete"*; pass/fail is never
+  exposed upward, in the body or in the stored columns.
+
+**Ordering is explicit, not incidental.** The employee's notification is
+created first with `sequence` 0, the chain follows at 1..n, and both are
+written in one transaction — so the employee is told *before or at the same
+instant as* their management, never after. This matters most in the failed
+case. There is no dispatcher and no subscriber list precisely so the order
+can't depend on registration order, and `sequence` is persisted rather than
+inferred from `created_at`, whose millisecond resolution would leave ties
+unresolved.
+
+Both routes go through `_may_receive()`, which asks the same
+`app.permissions` functions the profile API asks. Nothing calls a mailer
+directly.
+
+### Open questions for the training-courses team
+
+1. **Join key — employee id or email?** We hold both. Email is probably what
+   their sign-in uses, but our employee ids survive a name change and email
+   doesn't. Preference: they store our `employees.id` as an external id.
+   Only `_employee_key()` changes either way.
+2. **Push or pull — webhook or poll?** Pull is simplest but puts their API
+   on our page-load path and gives us no event to hang notifications off; a
+   transition is what the triggers need. Preference: push for notifications,
+   pull for backfill. The pipeline is already written against a
+   `(previous, current)` transition, so a webhook handler is a thin route
+   over the existing service function.
+3. **Timeout/error semantics.** Settled on our side, needs stating to
+   theirs: a timeout or 5xx raises `CertProviderUnavailable` and **never**
+   degrades to `not_started`. Defaulting there would mail a real employee
+   "you haven't started X yet" — and tell their whole management chain —
+   because someone else's service blipped. Still open: whether a 404 on an
+   employee/course pair means "no record, genuinely not started" or "unknown
+   employee, our join key is wrong". Those want opposite handling and the
+   status code can't distinguish them. Same conversation: their status
+   vocabulary vs. our four values, where an unrecognised value must raise
+   rather than default.
+
+Smaller assumption to confirm, flagged in code: `in_progress` also maps to
+"not completed", so the employee trigger fires for it, but only the
+not_started and failed variants were specified. It currently gets *"you've
+started X but haven't finished it yet"*.
 
 ## Architecture rules (non-negotiable)
 
@@ -229,3 +342,6 @@ resources — `GROUP3_4OPENAI*` (chat), `GROUP3_4_TEXT_EMBEDDING_3_SMALL_*`
 - [x] 14. Wired Quadrant's real Search/embedding/chat resources into both CI
       and the deployed app itself (previously credentials only reached CI's
       golden-eval step, so production silently ran on the mock resolver)
+- [x] 15. Certification tracking + notifications behind a provider interface —
+      synthetic data now, one config flip to the training team's API later
+      (see Certification tracking above)
