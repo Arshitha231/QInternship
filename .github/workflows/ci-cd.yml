@@ -180,14 +180,6 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --linux-fx-version "PYTHON|3.14"
 
-      # `appsettings set` above restarts the container. Kudu's zipdeploy
-      # endpoint returns 400 if it's hit while the site is still coming
-      # back up from that restart (observed live -- a deploy failed with
-      # Kudu Status: 400 immediately after an appsettings change recreated
-      # the web app). Give it a beat before the next step calls Kudu.
-      - name: Wait for app to come back up after settings change
-        run: sleep 30
-
       # `az webapp deployment source config-zip` is deprecated AND was
       # observed live to silently not replace wwwroot's contents on a
       # non-clean deploy (Kudu logs showed context.CleanOutputPath=False,
