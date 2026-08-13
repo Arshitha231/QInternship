@@ -279,9 +279,91 @@ per-employee statuses are ~900 rows about specific people that go stale as
 soon as anyone joins, and schema history is the wrong home for them. The
 consequence is that straight after a deploy everything reads **"Not
 completed"** — correct, since a course with no status row genuinely means not
-started. For the realistic completed/in-progress/failed mix, run
-`seed_training.py` against that database (the App Service's own SSH console
-reaches it; a CI runner isn't dependably inside the SQL firewall).
+started. Getting the realistic mix is the manual step below.
+
+### Seeding training data on the deployed app
+
+Only needed for the completed/in-progress/failed spread; the catalogue arrives
+on its own via the migration above. Run it from the **App Service's SSH
+console** (Azure portal → App Service → SSH): the only SQL firewall rule is
+`AllowAzureServices`, which is what lets the web app reach the database at
+all, and a GitHub runner or a laptop isn't dependably inside it.
+
+**1. Find the app directory.** It is *not* `/home/site/wwwroot` — that holds
+only `hostingstart.html`, `output.tar.zst` and `requirements.txt`. Oryx
+extracts and runs the app from `/tmp/<hash>`, and **that hash changes on every
+deploy**, so discover it rather than reusing a path from last time:
+
+```bash
+APP=$(dirname "$(ls -t /tmp/*/seed.py 2>/dev/null | head -1)")
+echo "app dir: $APP"; ls -1 "$APP"/seed*.py; cd "$APP"
+```
+
+**2. Confirm you're pointed at Azure SQL, not the sqlite fallback.** If the
+`DATABASE_URL` app setting isn't visible in the shell, `app/db.py` quietly
+falls back to `sqlite:///directory.db` — the seed would then report success
+while writing to a throwaway file:
+
+```bash
+python -c "from app.db import DATABASE_URL; print(DATABASE_URL[:30])"   # expect mssql+pymssql://
+```
+
+**3. Seed.**
+
+```bash
+python seed_training.py
+```
+
+`seed_training.py` exists because **`seed.py` would be a disaster here**: it
+opens by deleting every employee, project, skill and org unit before
+regenerating them, which against the deployed database means ~500 different
+people with different ids and every bookmarked profile URL broken. The
+training script only ever touches the four training tables.
+
+**4. Verify it actually committed.** Observed once: a run printed a correct
+summary (`applicable pairs: 914`, a normal status breakdown) and committed no
+status rows at all, silently. An identical re-run worked. Root cause never
+established — most likely a stale `/tmp/<hash>` from an earlier deploy — so
+check rather than trust the summary:
+
+```bash
+python -c "
+from app.db import SessionLocal
+from app.models import EmployeeCourseStatus
+from sqlalchemy import select, func
+print('status rows:', SessionLocal().execute(select(func.count()).select_from(EmployeeCourseStatus)).scalar_one())
+"
+```
+
+Expect several hundred. If it says 0, re-run step 3 from a freshly discovered
+`$APP`.
+
+**Ordering note:** `seed_training.py` deletes the `notifications` table — it
+has to, since notifications carry a foreign key to the courses it rebuilds. So
+seed *first*, then fire any demo notifications. Doing it the other way round
+silently wipes them.
+
+### Firing a notification on the deployed app
+
+The training system isn't connected, so nothing generates a status change on
+its own. `POST /people/{id}/training/{course_code}` is the stand-in (hr-only,
+and it 409s once `ENABLE_TRAINING_API_SYNC` is on):
+
+```bash
+curl -X POST -H "X-Dev-Role: hr" -H "Content-Type: application/json" \
+  -d '{"status":"failed"}' \
+  "https://tempest34.azurewebsites.net/people/<employee-id>/training/SECDEV-210"
+```
+
+It responds with `notifications_sent`. A `failed` on someone with two levels of
+management above them sends 3: the employee's own reminder plus one per level
+of the chain. Read them back at `GET /me/notifications` as each recipient.
+
+Pick an employee whose chain is also in the identity picker — that way both
+halves of the trigger are visible from the UI: the employee is told they
+didn't *pass* and must *retake*, while everyone above them is told only *did
+not complete*. `notifications_sent: 0` means the status was already that value;
+an unchanged status deliberately re-notifies nobody.
 
 ### Status, and the two notifications
 
