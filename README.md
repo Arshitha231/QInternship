@@ -200,6 +200,15 @@ Pushing to `main` runs `.github/workflows/ci-cd.yml`, three jobs in sequence:
    endpoint/key as secrets, wired into the web app's `app_settings` block so
    a future infra recreation (e.g. a region move) can't silently drop them
    again, same as it did once already.
+Database migrations run at **app startup**, not as a pipeline step — the App
+Service's startup command is `alembic upgrade head && uvicorn ...` (set in
+`terraform/main.tf`). The only SQL firewall rule is `AllowAzureServices`,
+which is what lets the web app reach the database at all; a GitHub-hosted
+runner isn't dependably covered by it, so running alembic from CI would
+depend on which IP the runner happened to get. Chained with `&&` on purpose:
+a failed migration stops the app, which fails the deploy's `/health` poll,
+rather than serving a green deploy that 500s on every profile page.
+
 3. **deploy** — builds the frontend, zips it with the backend, and deploys
    via `az webapp deploy` (OneDeploy, `--clean true`). Ends with a health-check
    poll against `/health` and `/` so a "successful" deploy that's actually
