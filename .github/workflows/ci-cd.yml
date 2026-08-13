@@ -205,15 +205,34 @@ jobs:
       # is the maintained replacement; --clean true forces Kudu to wipe
       # the target directory first so there's nothing stale left for a
       # partial/incremental Oryx build to silently keep around.
+      # The two config-changing steps just above (appsettings, runtime
+      # stack) each recycle the container -- Kudu's SCM site can 502
+      # while it's mid-restart if this fires immediately after. A blind
+      # sleep here was tried before and then removed (see git history:
+      # "wait after appsettings restart" then "drop the 30s pre-deploy
+      # sleep") -- wrong either way, since you can't know the actual
+      # restart time in advance. Retrying the deploy call itself instead
+      # survives the restart regardless of how long it actually takes,
+      # without guessing or wasting time when it's fast.
       - name: Deploy (OneDeploy, triggers Oryx build)
         run: |
-          az webapp deploy \
-            --name ${{ env.WEBAPP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --src-path deploy.zip \
-            --type zip \
-            --clean true \
-            --restart true
+          for attempt in 1 2 3; do
+            echo "Deploy attempt $attempt/3..."
+            if az webapp deploy \
+              --name ${{ env.WEBAPP_NAME }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --src-path deploy.zip \
+              --type zip \
+              --clean true \
+              --restart true; then
+              echo "Deploy succeeded."
+              exit 0
+            fi
+            echo "Deploy attempt $attempt failed, likely Kudu still recycling from the settings change above -- retrying in 20s."
+            sleep 20
+          done
+          echo "::error::Deploy failed after 3 attempts."
+          exit 1
 
       # Catches exactly the failure mode this project already hit once:
       # a deploy that "succeeds" at the API level but the container
