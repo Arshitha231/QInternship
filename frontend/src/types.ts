@@ -59,7 +59,11 @@ export interface TrainingStatusItem {
 
 export interface NotificationOut {
   id: number;
-  kind: "employee_course_reminder" | "manager_course_report";
+  kind:
+    | "employee_course_reminder"
+    | "manager_course_report"
+    | "birthday_reminder"
+    | "work_anniversary_reminder";
   subject_person: PersonRef;
   course_name: string;
   display_status: string;
@@ -94,6 +98,12 @@ export interface PersonDetail {
   hire_date?: string;
   cost_centre?: string;
   personal_mobile?: string;
+  // HR or the person themselves — never the manager. `salary` is a string,
+  // not a number: the backend sends the exact decimal so it can't be mangled
+  // by a JSON float on the way here.
+  salary?: string;
+  salary_currency?: string;
+  date_of_birth?: string;
 }
 
 export interface OrgChainNode {

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +13,7 @@ from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_
 from app.db import engine, get_db
 from app.models import Employee, TrainingCourse
 from app.models.enums import CourseStatus, display_status
-from app.notifications import notifications_for
+from app.notifications import notifications_for, notify_date_milestones
 from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
@@ -253,6 +254,43 @@ def record_training_status_route(
         "status": row.status.value,
         "display_status": display_status(row.status).value,
         "notifications_sent": len(notifications),
+    }
+
+
+@app.post("/notifications/date-milestones", status_code=201)
+def run_date_milestones_route(
+    on: date | None = Query(None, description="Date to sweep, YYYY-MM-DD. Defaults to today."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Sweep for birthdays and milestone service anniversaries, notifying HR.
+
+    A sweep rather than an event: nothing changes in the database on
+    someone's birthday, so something has to come looking. This project has no
+    scheduler, so this route is what a daily cron or Azure timer would call —
+    the logic lives in app/notifications.py and doesn't care what invoked it.
+
+    Idempotent, so a retried cron or a doubled-up timer can't produce a second
+    birthday message; re-running for the same date returns `notifications_sent:
+    0`. `on` exists so a past or future date can be swept deliberately, which
+    is also the only way to demo it without waiting for a real birthday.
+
+    hr-only: it writes notifications to HR's own inboxes on everyone's behalf.
+    """
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Running the date sweep is an HR action")
+
+    on_date = on or date.today()
+    created = notify_date_milestones(db, on_date)
+    db.commit()
+
+    by_kind: dict[str, int] = {}
+    for n in created:
+        by_kind[n.kind.value] = by_kind.get(n.kind.value, 0) + 1
+    return {
+        "date": on_date.isoformat(),
+        "notifications_sent": len(created),
+        "by_kind": by_kind,
     }
 
 

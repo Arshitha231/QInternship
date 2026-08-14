@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import delete, func, select
 
@@ -112,6 +113,8 @@ DEPT_SKILL_POOL = {
     "HR Operations": ["Employment Law", "Change Management", "Advanced Excel"],
     "Talent Acquisition": ["Applicant Tracking Systems", "Employment Law", "Change Management"],
     "Compliance": ["Employment Law", "GDPR", "SOC 2 Compliance", "Contract Negotiation"],
+    "IT Operations": ["Network Administration", "Cybersecurity", "Azure", "Docker",
+                       "Project Management", "Advanced Excel"],
 }
 
 # Team-theme -> the skills that should clearly dominate that team's holders.
@@ -256,6 +259,12 @@ DIVISION_DEPTS = {
     "Finance": ["Finance Operations", "Payroll"],
     "People & Culture": ["HR Operations", "Talent Acquisition"],
     "Legal": ["Compliance"],
+    # Its own division rather than a department under Engineering: internal
+    # IT (laptops, accounts, the service desk) reports separately from product
+    # engineering in most companies this size, and burying it under
+    # Engineering would also quietly hand everyone in it the Secure Coding
+    # Practices requirement, which is scoped to that division.
+    "IT": ["IT Operations"],
 }
 
 # department -> {theme: headcount}. Headcount includes that theme's own
@@ -276,6 +285,7 @@ DEPT_THEMES = {
     "HR Operations": {"HR Operations": 17},
     "Talent Acquisition": {"Talent Acquisition": 15},
     "Compliance": {"Compliance": 13},
+    "IT Operations": {"IT Service Desk": 16, "Identity & Endpoints": 12},
 }
 
 IC_TITLES_BY_DEPT = {
@@ -292,6 +302,9 @@ IC_TITLES_BY_DEPT = {
     "HR Operations": ["HR Generalist", "Senior HR Generalist", "HR Coordinator"],
     "Talent Acquisition": ["Recruiter", "Senior Recruiter", "Recruiting Coordinator"],
     "Compliance": ["Compliance Analyst", "Senior Compliance Analyst"],
+    "IT Operations": ["IT Support Specialist", "Senior IT Support Specialist",
+                       "Systems Administrator", "Identity & Access Analyst",
+                       "Endpoint Engineer"],
 }
 
 
@@ -318,7 +331,18 @@ def _grand_total() -> int:
     return 1 + n_divisions + n_departments + ic_total  # CEO + VPs + Directors + ICs
 
 
-_shortfall = 500 - _grand_total()
+# Backend absorbs the difference between this target and the sum of the
+# headcounts declared above, so the total stays a round number.
+#
+# Raised from 500 to 530 when the IT division was added, deliberately. Leaving
+# it at 500 meant the ~30 IT people were carved straight out of Backend
+# (50 -> 20) rather than added to the company: Backend is the flagship team
+# here — it hosts the deliberately deep reporting chain and the primary-skill
+# correlation checks — so halving it as a side effect of an unrelated change
+# would quietly weaken both. IT is additive; everything else keeps its size.
+TARGET_HEADCOUNT = 530
+
+_shortfall = TARGET_HEADCOUNT - _grand_total()
 DEPT_THEMES["Platform Engineering"]["Backend"] += _shortfall
 
 
@@ -443,6 +467,35 @@ LEVEL_HIRE_YEAR_RANGE = {
     0: (6, 9), 1: (4, 8), 2: (3, 6), 3: (2, 5), 4: (1, 4), 5: (1, 3), 6: (0.5, 3), 7: (0, 2),
 }
 
+# Current age by org level. Seniority correlates with age, loosely and with
+# wide overlapping bands — a 30-year-old director and a 55-year-old IC are
+# both ordinary, and ranges this wide keep the synthetic data from implying
+# otherwise.
+LEVEL_AGE_RANGE = {
+    0: (46, 63), 1: (41, 60), 2: (37, 57), 3: (34, 54),
+    4: (31, 51), 5: (28, 47), 6: (25, 42), 7: (22, 36),
+}
+
+# Annual gross, in USD, before the country multiplier below. Synthetic and
+# deliberately round — this is demo data for a directory, not a compensation
+# band anyone should read as Quadrant's.
+LEVEL_BASE_SALARY_USD = {
+    0: 420_000, 1: 285_000, 2: 215_000, 3: 178_000,
+    4: 150_000, 5: 128_000, 6: 108_000, 7: 88_000,
+}
+INTERN_SALARY_USD = 52_000
+
+# Rough local-market conversion, currency included. Not FX rates: an engineer
+# in Bangalore isn't paid a Seattle salary converted at spot, so these are
+# market multipliers that happen to also change the unit.
+COUNTRY_SALARY = {
+    "United States": ("USD", 1.0),
+    "United Kingdom": ("GBP", 0.62),
+    "India": ("INR", 22.0),
+    "Singapore": ("SGD", 1.15),
+    "Australia": ("AUD", 1.35),
+}
+
 # Populated as employees are created: employee.id -> department name used for
 # skill-pool assignment (None for CEO/company-wide roles), -> org level
 # (0=CEO .. 7=IC) used for incompleteness injection, and -> team theme (e.g.
@@ -451,6 +504,60 @@ EMPLOYEE_SKILL_DEPT: dict[str, str | None] = {}
 EMPLOYEE_LEVEL: dict[str, int] = {}
 EMPLOYEE_TEAM_THEME: dict[str, str | None] = {}
 ALL_EMPLOYEES: list[Employee] = []
+
+
+# Fraction of people with no date of birth on file. Real HR data has gaps —
+# a record migrated from an old system, someone who never completed onboarding
+# — and the sweep must skip them silently rather than assume anything.
+NO_DOB_RATE = 0.04
+
+
+def make_date_of_birth(level, employment_type, hire_date) -> date | None:
+    """Age from the level band, then walked back from today.
+
+    Constrained so nobody is implied to have been hired as a child: if the
+    drawn age minus tenure lands under 18, the age is pushed up until it
+    doesn't. That's a real risk with the long-tenure levels — a 25-year-old
+    with nine years of service would otherwise be an ordinary-looking row.
+    """
+    if rng.random() < NO_DOB_RATE:
+        return None
+
+    lo, hi = LEVEL_AGE_RANGE.get(level, (25, 45))
+    if employment_type == EmploymentType.intern:
+        lo, hi = 20, 25
+
+    tenure_years = (date.today() - hire_date).days / 365.25
+    min_age = tenure_years + 18
+    age = max(rng.uniform(lo, hi), min_age)
+
+    born = date.today() - timedelta(days=age * 365.25)
+    # Nudge off the exact anniversary of today so the seeded population
+    # doesn't accidentally cluster birthdays on the day it was generated —
+    # inject_date_milestones() places those deliberately instead.
+    return born - timedelta(days=rng.randint(1, 300))
+
+
+def make_salary(level, employment_type, office) -> tuple[Decimal | None, str | None]:
+    """Annual gross in the office's local currency, or (None, None).
+
+    Contractors get nothing on file on purpose: they're paid through an
+    agency, so the company genuinely doesn't hold a salary for them. That
+    makes the null meaningful rather than missing data, and gives the
+    profile's "absent" case something real to represent.
+    """
+    if employment_type == EmploymentType.contractor:
+        return None, None
+
+    base = (INTERN_SALARY_USD if employment_type == EmploymentType.intern
+            else LEVEL_BASE_SALARY_USD.get(level, 100_000))
+    country = office.country if office else "United States"
+    currency, multiplier = COUNTRY_SALARY.get(country, ("USD", 1.0))
+
+    amount = base * multiplier * rng.uniform(0.88, 1.14)  # individual spread within the band
+    step = 10_000 if currency == "INR" else 500          # INR salaries aren't quoted to the rupee
+    rounded = round(amount / step) * step
+    return Decimal(str(rounded)).quantize(Decimal("0.01")), currency
 
 
 def make_employee(session, first, last, title, org_unit, manager, level, offices,
@@ -513,6 +620,9 @@ def make_employee(session, first, last, title, org_unit, manager, level, offices
 
     directory_object_id = str(uuid.uuid4()) if rng.random() < 0.95 else None
 
+    date_of_birth = make_date_of_birth(level, employment_type, hire_date)
+    salary, salary_currency = make_salary(level, employment_type, office)
+
     emp = Employee(
         id=emp_id,
         directory_object_id=directory_object_id,
@@ -536,6 +646,9 @@ def make_employee(session, first, last, title, org_unit, manager, level, offices
         bio=bio,
         photo_url=photo_url,
         is_active=True,
+        date_of_birth=date_of_birth,
+        salary=salary,
+        salary_currency=salary_currency,
     )
     session.add(emp)
     ALL_EMPLOYEES.append(emp)
@@ -694,6 +807,64 @@ def inject_incompleteness_and_specials(ctx):
         e.availability_status = AvailabilityStatus.restricted
 
     return {"no_manager": no_manager_picks, "away": away_picks, "restricted": restricted_picks}
+
+
+def inject_date_milestones(session) -> dict:
+    """Force a handful of birthdays and milestone anniversaries onto today.
+
+    Without this the date sweep is untestable and undemoable in practice: with
+    ~500 people, roughly one birthday falls on any given day and a milestone
+    anniversary might be weeks away, so "run it and see" would usually show an
+    empty result that's indistinguishable from a broken sweep.
+
+    Picks people who are neither restricted nor the CEO, so the resulting
+    notifications are visible to ordinary HR staff and don't all concentrate
+    at the top of the org chart.
+    """
+    today = date.today()
+    candidates = [
+        e for e in ALL_EMPLOYEES
+        if e.availability_status != AvailabilityStatus.restricted
+        and e.manager_id is not None
+        and EMPLOYEE_LEVEL[e.id] >= 3
+    ]
+    picks = rng.sample(candidates, k=min(6, len(candidates)))
+
+    birthday_people = picks[:3]
+    for emp in birthday_people:
+        # Keep whatever age the level band gave them; move only month/day.
+        current_age = int((today - (emp.date_of_birth or today - timedelta(days=30 * 365))).days / 365.25)
+        emp.date_of_birth = _same_day_years_ago(today, max(current_age, 22))
+
+    anniversary_people = picks[3:6]
+    milestones = [1, 5, 10]
+    for emp, years in zip(anniversary_people, milestones):
+        emp.hire_date = _same_day_years_ago(today, years)
+        # A 10-year anniversary for someone born 25 years ago would mean they
+        # started at 15 — push the birth date back rather than leave that.
+        if emp.date_of_birth is not None:
+            youngest_allowed = _same_day_years_ago(emp.hire_date, 18)
+            if emp.date_of_birth > youngest_allowed:
+                emp.date_of_birth = _same_day_years_ago(today, years + 22)
+
+    session.flush()
+    return {
+        "birthdays_today": [(e.full_name, e.date_of_birth) for e in birthday_people],
+        "anniversaries_today": [(e.full_name, y) for e, y in zip(anniversary_people, milestones)],
+    }
+
+
+def _same_day_years_ago(reference: date, years: int) -> date:
+    """`reference` minus whole years, keeping month and day.
+
+    The 29 February case can't be expressed in a non-leap year, so it lands on
+    the 28th — the same convention app/notifications.py uses when deciding
+    which day a leap-day anniversary is observed on.
+    """
+    try:
+        return reference.replace(year=reference.year - years)
+    except ValueError:
+        return reference.replace(year=reference.year - years, day=28)
 
 
 LEADERSHIP_SKILL_POOL = ["Project Management", "Agile/Scrum", "Financial Modeling", "Change Management"]
@@ -1514,6 +1685,50 @@ def print_verification(session, ctx, specials, offices, skills, topup_stats):
     print("\n" + "=" * 78)
 
 
+def print_people_data_verification(session, date_milestones: dict) -> None:
+    print("\n" + "=" * 78)
+    print("SALARY / DATE OF BIRTH / DATE MILESTONES")
+    print("=" * 78)
+
+    with_dob = sum(1 for e in ALL_EMPLOYEES if e.date_of_birth is not None)
+    with_salary = sum(1 for e in ALL_EMPLOYEES if e.salary is not None)
+    print(f"  date of birth on file : {with_dob}/{len(ALL_EMPLOYEES)} "
+          f"({len(ALL_EMPLOYEES) - with_dob} deliberately blank)")
+    print(f"  salary on file        : {with_salary}/{len(ALL_EMPLOYEES)} "
+          f"({len(ALL_EMPLOYEES) - with_salary} contractors, paid via agency)")
+
+    ages = [int((date.today() - e.date_of_birth).days / 365.25)
+            for e in ALL_EMPLOYEES if e.date_of_birth is not None]
+    print(f"  age range             : {min(ages)}-{max(ages)} (mean {sum(ages) / len(ages):.0f})")
+
+    youngest_at_hire = min(
+        int((e.hire_date - e.date_of_birth).days / 365.25)
+        for e in ALL_EMPLOYEES if e.date_of_birth is not None
+    )
+    print(f"  youngest age at hire  : {youngest_at_hire} "
+          f"({'ok' if youngest_at_hire >= 18 else 'CONSTRAINT VIOLATED'})")
+
+    by_currency: dict[str, list] = {}
+    for e in ALL_EMPLOYEES:
+        if e.salary is not None:
+            by_currency.setdefault(e.salary_currency, []).append(e.salary)
+    print("  salary by currency:")
+    for currency, values in sorted(by_currency.items()):
+        lo, hi = min(values), max(values)
+        print(f"        {currency}  n={len(values):3d}  {lo:>12,.0f} - {hi:>12,.0f}")
+
+    print(f"\n  birthdays falling today ({date.today().isoformat()}):")
+    for name, dob in date_milestones["birthdays_today"]:
+        print(f"        {name:24s} born {dob}")
+    print("  milestone anniversaries today:")
+    for name, years in date_milestones["anniversaries_today"]:
+        print(f"        {name:24s} {years} year{'s' if years != 1 else ''}")
+
+    it_count = sum(1 for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT.get(e.id) == "IT Operations")
+    print(f"\n  IT Operations headcount: {it_count}")
+    print("\n" + "=" * 78)
+
+
 def print_training_verification(stats: dict) -> None:
     print("\n" + "=" * 78)
     print("TRAINING COURSES (synthetic provider dataset)")
@@ -1539,6 +1754,7 @@ def main():
         skills = build_skills(session)
         ctx = build_employees(session, offices, units, theme_units)
         specials = inject_incompleteness_and_specials(ctx)
+        date_milestones = inject_date_milestones(session)
         assign_skills(session, skills, ctx)
         _projects, membership_state = build_flagship_projects(session, units, ctx)
         project_pool = build_project_pool(session, units, ctx)
@@ -1553,6 +1769,7 @@ def main():
               f"{len(units)} org units, {len(skills)} skills, {len(courses)} training courses.")
         print_verification(session, ctx, specials, offices, skills, topup_stats)
         print_training_verification(training_stats)
+        print_people_data_verification(session, date_milestones)
     finally:
         session.close()
 

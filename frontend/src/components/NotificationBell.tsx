@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getMyNotifications } from "../api";
-import { AlertCircle, Bell, Check } from "../icons";
+import { AlertCircle, Award, Bell, Cake, Check } from "../icons";
 import type { Identity, NotificationOut } from "../types";
 
 interface Props {
@@ -32,6 +32,13 @@ function saveSeen(identityId: string, topId: number): void {
   } catch {
     /* storage unavailable (private mode) — the badge just stays lit */
   }
+}
+
+function presentation(n: NotificationOut): { tone: string; icon: React.ReactNode } {
+  if (n.kind === "birthday_reminder") return { tone: "celebrate", icon: <Cake /> };
+  if (n.kind === "work_anniversary_reminder") return { tone: "celebrate", icon: <Award /> };
+  if (n.display_status === "completed") return { tone: "ok", icon: <Check /> };
+  return { tone: "warn", icon: <AlertCircle /> };
 }
 
 function relativeTime(iso: string): string {
@@ -110,17 +117,23 @@ export function NotificationBell({ identity, onOpenPerson }: Props) {
           ) : (
             <ul className="notif-list">
               {items.map((n) => {
-                const completed = n.display_status === "completed";
                 const aboutSomeoneElse = n.subject_person.id !== identity.id;
+                // Tone comes from the kind, not just display_status — the
+                // date-driven kinds carry no status at all, and a birthday
+                // rendered with the amber "something needs attention" icon
+                // would read as a problem.
+                const { tone, icon } = presentation(n);
                 return (
                   <li key={n.id} className={n.id > seenId ? "unseen" : ""}>
-                    <span className={`notif-dot ${completed ? "ok" : "warn"}`} aria-hidden="true">
-                      {completed ? <Check /> : <AlertCircle />}
-                    </span>
+                    <span className={`notif-dot ${tone}`} aria-hidden="true">{icon}</span>
                     <div className="notif-text">
                       <p className="notif-body">{n.body}</p>
                       <p className="notif-meta">
-                        {n.course_name} &middot; {relativeTime(n.created_at)}
+                        {/* course_name is empty for the date-driven kinds,
+                            which aren't about a course — don't render a
+                            dangling separator in front of the timestamp. */}
+                        {n.course_name && <>{n.course_name} &middot; </>}
+                        {relativeTime(n.created_at)}
                         {aboutSomeoneElse && (
                           <>
                             {" "}&middot;{" "}

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
 import {
-  AlertCircle, Briefcase, Building, Check, ChevronLeft, Clock, GraduationCap, Mail, MapPin,
-  Phone, Slack, UserReports, Users,
+  AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
+  MapPin, Phone, Slack, UserReports, Users,
 } from "../icons";
 
 export interface ProfileStackEntry {
@@ -35,6 +35,28 @@ function groupByLevel(skills: SkillOut[]): [string, SkillOut[]][] {
     groups.get(s.level)!.push(s);
   }
   return LEVEL_ORDER.filter((l) => groups.has(l)).map((l) => [l, groups.get(l)!]);
+}
+
+// Split rather than `new Date(iso)`: "1991-08-13" parses as UTC midnight, and
+// formatting that in any negative-offset timezone renders the day before.
+function formatDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" })
+    .format(new Date(y, m - 1, d));
+}
+
+function formatSalary(amount: string, currency?: string): string {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return amount;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency", currency: currency || "USD", maximumFractionDigits: 0,
+    }).format(value);
+  } catch {
+    // Unknown/absent currency code — show the number rather than nothing.
+    return `${value.toLocaleString()}${currency ? ` ${currency}` : ""}`;
+  }
 }
 
 function localTimeInfo(tz: string): string | null {
@@ -385,6 +407,20 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
                   <Briefcase size={16} />
                   <span className="k">Cost centre<span className="hr-badge">HR only</span></span>
                   <span className="v">{detail.cost_centre}</span>
+                </li>
+              )}
+              {detail.date_of_birth && (
+                <li>
+                  <Cake size={16} />
+                  <span className="k">Date of birth<span className="abac-badge">HR/self</span></span>
+                  <span className="v">{formatDate(detail.date_of_birth)}</span>
+                </li>
+              )}
+              {detail.salary && (
+                <li>
+                  <Briefcase size={16} />
+                  <span className="k">Salary<span className="abac-badge">HR/self</span></span>
+                  <span className="v">{formatSalary(detail.salary, detail.salary_currency)}</span>
                 </li>
               )}
             </ul>

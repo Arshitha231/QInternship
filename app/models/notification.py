@@ -28,10 +28,17 @@ class Notification(Base):
 
     recipient_id: Mapped[str] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
 
-    # Who the notification is *about* — the employee whose status changed.
-    # Equals recipient_id on the employee's own reminder.
+    # Who the notification is *about* — the employee whose status changed, or
+    # whose birthday/anniversary it is. Equals recipient_id on the employee's
+    # own course reminder.
     subject_employee_id: Mapped[str] = mapped_column(ForeignKey("employees.id"), nullable=False)
-    course_id: Mapped[int] = mapped_column(ForeignKey("training_courses.id"), nullable=False)
+
+    # Nullable since the date-driven kinds (birthday, work anniversary) aren't
+    # about a course at all. It stays a real FK rather than becoming a loose
+    # "subject type + id" pair: two nullable columns that are each required
+    # for exactly one kind is easier to reason about than a polymorphic
+    # reference the database can't check.
+    course_id: Mapped[int | None] = mapped_column(ForeignKey("training_courses.id"), nullable=True)
 
     kind: Mapped[NotificationKind] = mapped_column(
         Enum(NotificationKind, native_enum=False, validate_strings=True), nullable=False
@@ -40,8 +47,20 @@ class Notification(Base):
     # The derived two-value status this notification reports. The underlying
     # four-value status is deliberately NOT stored here: management-facing
     # rows must not carry a pass/fail distinction even in the database, and
-    # the employee-facing wording already encodes it in `body`.
+    # the employee-facing wording already encodes it in `body`. Empty string
+    # for the date-driven kinds, which report no status at all.
     display_status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Identifies the real-world occurrence this notification is about, e.g.
+    # "birthday:2026-08-13:<employee id>". The date-driven triggers are a
+    # sweep rather than an event: something has to run them daily, and
+    # anything that runs daily gets run twice eventually — a retried cron, a
+    # restarted container, an operator checking it works. Deduping on this
+    # key makes a second sweep a no-op instead of a second birthday message.
+    #
+    # NULL for the course triggers, which fire from a genuine state change
+    # and are already guarded by "an unchanged status notifies nobody".
+    event_key: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
 
     body: Mapped[str] = mapped_column(Text, nullable=False)
 

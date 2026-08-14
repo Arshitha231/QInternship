@@ -1,7 +1,8 @@
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, String, Text, text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -61,6 +62,29 @@ class Employee(Base):
 
     # Visible only on own profile or to the direct manager.
     personal_mobile: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Visible to HR and to the person themselves — and to nobody else, not
+    # even their manager. That's a deliberately narrower rule than
+    # personal_mobile's (own-profile OR direct manager): a line manager
+    # having your mobile number is ordinary, a line manager reading your
+    # salary and date of birth off the directory is not.
+    #
+    # Numeric, not Float: money in binary floating point accumulates rounding
+    # error, and while nothing here does arithmetic on it yet, storing it as
+    # Float is the kind of thing that's painful to walk back once reports and
+    # exports depend on it.
+    salary: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    # ISO 4217. The dataset spans seven offices across five countries, so a
+    # bare number would be actively misleading — 95,000 means very different
+    # things in USD and INR.
+    salary_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+
+    # Full date, not month/day: HR needs it for records, and the person
+    # themselves already knows it. Nobody else ever receives it — the
+    # birthday notification names the person, never their date of birth or
+    # their age.
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     availability_status: Mapped[AvailabilityStatus] = mapped_column(
         Enum(AvailabilityStatus, native_enum=False, validate_strings=True),

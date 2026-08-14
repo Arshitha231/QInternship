@@ -107,6 +107,7 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 | `GET /people/{id}/org-chart` | manager chain + direct reports, both directions |
 | `GET /me/notifications` | your own notifications, newest first — no person-id parameter exists, so no role can read anyone else's |
 | `POST /people/{id}/training/{course_code}` | hr-only. Records a course status change and fires both notification triggers; stands in for the training system pushing us an event (409 once `ENABLE_TRAINING_API_SYNC` is on) |
+| `POST /notifications/date-milestones` | hr-only, optional `?on=YYYY-MM-DD`. Sweeps for birthdays and milestone service anniversaries and notifies HR. Idempotent per date — what a daily cron would call, since nothing in the database changes on someone's birthday |
 | `GET /search` | **the unified search+ask surface.** Classifies `q` deterministically (trailing `?` or an interrogative opener) into `direct` (plain filtered results) or `assisted` (also runs the tool-calling layer and returns an `overview` with a prose answer + citations + reasoning trace) |
 | `POST /ask` | the older direct entry point to the tool-calling layer; `/search` is what the frontend actually uses now, this is kept as a lower-level API |
 
@@ -118,10 +119,12 @@ app/
                        frontend (frontend/dist) from the same origin in prod
   auth.py             pluggable get_current_user: dev header vs. real Entra JWT validation
   db.py               SQLAlchemy engine/session, reads DATABASE_URL
-  config.py           certification-tracking settings (ENABLE_TRAINING_API_SYNC, NOTIFY_LEVELS_UP)
+  config.py           settings: ENABLE_TRAINING_API_SYNC, NOTIFY_LEVELS_UP, HR_ORG_UNIT_NAME
   permissions.py      field/record visibility rules, applied between retrieval and response
-  notifications.py    the two course-status triggers: employee reminder + full manager chain,
-                       permission-checked, explicitly ordered employee-first
+  notifications.py    all four triggers. Course status: employee reminder + full manager
+                       chain, permission-checked, explicitly ordered employee-first. Date
+                       driven: birthdays and milestone anniversaries to HR, a sweep rather
+                       than an event, idempotent per occurrence via event_key
   certifications/     course status behind an internal interface — see Certification tracking below
     base.py             CertificationProvider (Protocol) + CertStatus (DTO) + the error types
     synthetic.py        SyntheticCertProvider: seeded fake data, powers the demo
@@ -154,6 +157,8 @@ seed.py               synthetic data generator + constraint verification summary
 seed_training.py      adds only the training-course tables to a database that
                        already has a directory, touching nothing else. This is what
                        to run against the deployed database
+seed_people_data.py   backfills salary and date of birth onto a database that
+                       already has people, same non-destructive contract
 build_search_index.py CLI wrapper around search_index.py, run after seeding/migrating
 eval/                 golden evaluation set (55 questions) + scorer, run in CI when
                        AI/search-relevant files change (eval/run_golden_eval.py)
@@ -253,6 +258,7 @@ config flip, not a refactor.
 | Setting | Default | Effect |
 |---|---|---|
 | `ENABLE_TRAINING_API_SYNC` | `false` | `false` selects `SyntheticCertProvider`. `TrainingApiProvider` is not merely error-handled when off — `app/certifications/factory.py` imports the module *inside* the enabled branch, so it is never imported, constructed, or called. Flipping this is the whole go-live change on our side |
+| `HR_ORG_UNIT_NAME` | `HR Operations` | Which org unit's people receive birthday and work-anniversary notifications — everyone in it or beneath it. Resolved from the org tree because there is no role column and a scheduled sweep carries no role claim. Set to `People & Culture` for the whole division |
 | `NOTIFY_LEVELS_UP` | `-1` (unlimited) | How far up the reporting chain a status resolution is reported. Full chain is the confirmed requirement today; it's a setting so narrowing it later (e.g. `1` for direct manager only, `0` to disable management notifications) needs no edit to notification logic. Still bounded by `org_chart.MAX_DEPTH`, which is the cycle guard, not a policy. Governs who gets *told*, never who may *look* — profile visibility stays the full chain regardless |
 | `TRAINING_API_*` | unset | base URL, key, timeout. Shape only; nothing reads them while sync is off |
 
@@ -422,6 +428,92 @@ Smaller assumption to confirm, flagged in code: `in_progress` also maps to
 "not completed", so the employee trigger fires for it, but only the
 not_started and failed variants were specified. It currently gets *"you've
 started X but haven't finished it yet"*.
+
+## People data: salary, date of birth, and date-driven notifications
+
+### Fields
+
+`salary`, `salary_currency` and `date_of_birth` are visible to **HR and the
+person themselves, and to nobody else — not even their manager**. That is
+deliberately narrower than `personal_mobile`, which is own-profile *or* direct
+manager: a line manager holding your mobile number is ordinary, a line manager
+reading your salary off the directory is not. Managers get neither field at
+any level of the chain, unlike `training_status`, which the chain can see
+precisely because the chain is already notified about it.
+
+`salary` is `Numeric(12,2)`, not a float — money in binary floating point
+accumulates rounding error, and that's painful to walk back once exports
+depend on it. It's serialized as a **string** for the same reason: JSON
+numbers are IEEE 754 doubles in most clients. `salary_currency` exists because
+the dataset spans five countries and a bare number would be actively
+misleading; 95,000 means very different things in USD and INR.
+
+Nulls are meaningful. Contractors have no salary on file because they're paid
+through an agency, so the company genuinely doesn't hold one — that's an
+absent field, not missing data. A few employees have no date of birth, which
+the notification sweep skips silently rather than guessing at.
+
+### Birthday and work-anniversary notifications
+
+HR is notified of birthdays, and of **milestone service anniversaries — year
+1, then every fifth year**, unbounded (`is_milestone_year`). A 45-year
+anniversary is rarer and more worth marking, not less, so it's a rule rather
+than a list that silently stops.
+
+These are structurally different from the course triggers. Those fire from a
+state change: something happened, so something is sent. **Nothing changes in
+the database on someone's birthday**, so these have to be a sweep — a caller
+asks "what falls on this date", and the answer is computed rather than
+observed. Two consequences:
+
+- **Something external has to run it.** There is no scheduler in this project.
+  `POST /notifications/date-milestones` (hr-only, optional `?on=YYYY-MM-DD`)
+  is what a daily cron or Azure timer would call; the logic in
+  `app/notifications.py` doesn't care what invoked it.
+- **It must be safe to run twice**, because anything that runs daily
+  eventually runs twice — a retried cron, a restarted container, someone
+  checking it works. Each occurrence gets an `event_key` like
+  `birthday:2026-08-13:<employee id>`, so a second sweep is a no-op rather
+  than a second birthday message.
+
+Who counts as "HR" is resolved from the org tree, since there's no role column
+and a scheduled sweep has no request to read a role claim from.
+`HR_ORG_UNIT_NAME` (default `HR Operations`) names the unit; everyone in it or
+beneath it is a recipient. It defaults to the *department*, not the People &
+Culture division above it — the division also contains Talent Acquisition, and
+recruiters aren't the audience for a 10-year anniversary.
+
+Two details worth knowing:
+
+- **The messages name the person and nothing else.** A birthday reminder
+  carries no date of birth and no age — HR is being told to mark the occasion,
+  not handed a field that sits behind a stricter permission than the
+  notification does.
+- **29 February is observed on the 28th** in non-leap years, for both
+  birthdays and anniversaries. Otherwise those people would come round once
+  every four years.
+
+An HR person isn't told about their own birthday; their colleagues still are,
+so the day isn't missed.
+
+### Seeding these onto an existing database
+
+Same problem and same shape as `seed_training.py` — `seed.py` would delete
+every employee first. `seed_people_data.py` fills in salary and date of birth
+for people who don't have them, changes no name, id or reporting line, and
+skips already-populated rows so it's safe to re-run:
+
+```bash
+python seed_people_data.py
+```
+
+It recovers each person's org level from their depth in the management chain,
+since the level map `seed.py` uses lives only in the process that ran it. It
+also plants a few birthdays and milestone anniversaries on today's date —
+without that the sweep is undemoable, since with ~500 people roughly one
+birthday falls on any given day and the next 5-year anniversary might be weeks
+out, so "run it and see" would usually show an empty result indistinguishable
+from a broken sweep.
 
 ## Architecture rules (non-negotiable)
 
