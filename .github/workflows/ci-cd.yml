@@ -200,8 +200,14 @@ jobs:
 
       - name: Build deploy zip (backend + built frontend)
         run: |
+          # The seed_* scripts and build_search_index.py are operator tools run
+          # from the App Service's SSH console -- that's the only place inside
+          # the SQL firewall, and for the index rebuild it's the only place
+          # that won't publish a laptop's local employee ids into the shared
+          # employees-index. They have to be deployed to be runnable there.
           zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
-            seed_training.py seed_people_data.py frontend/dist \
+            seed_training.py seed_people_data.py seed_it_division.py build_search_index.py \
+            frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 
       - uses: azure/login@v2
