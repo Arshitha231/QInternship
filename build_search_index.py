@@ -140,7 +140,16 @@ def main() -> None:
     sample_doc_id: str | None = None
 
     try:
-        employees = db.execute(select(Employee).where(Employee.is_active.is_(True))).scalars().all()
+        # `.is_(True)` renders as `IS 1`, which T-SQL rejects outright ("Incorrect
+        # syntax near '1'") -- `== True` renders as `= 1` and works on every
+        # backend. app/people.py, app/org_chart.py and app/directory_tools.py all
+        # carry this same note; this script escaped the fix because it had only
+        # ever been run locally against SQLite, where `IS 1` is perfectly legal.
+        # It surfaced the first time anyone rebuilt the index from the App
+        # Service, which is the only place it can be run correctly.
+        employees = db.execute(
+            select(Employee).where(Employee.is_active == True)  # noqa: E712
+        ).scalars().all()
         total = len(employees)
         print(f"Embedding + indexing {total} employees (batches of {BATCH_SIZE}) ...")
 

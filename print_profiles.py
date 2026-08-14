@@ -28,7 +28,11 @@ def _pick_first(pool: list[Employee], picks: dict[str, Employee], predicate, lab
 
 
 def pick_samples(db) -> list[Employee]:
-    pool = db.execute(select(Employee).where(Employee.is_active.is_(True))).scalars().all()
+    # `== True` not `.is_(True)`: the latter renders as `IS 1`, which T-SQL
+    # rejects. Same note as build_search_index.py and app/people.py.
+    pool = db.execute(
+        select(Employee).where(Employee.is_active == True)  # noqa: E712
+    ).scalars().all()
     picks: dict[str, Employee] = {}
 
     _pick_first(pool, picks, lambda e: e.bio is None, "no bio")
