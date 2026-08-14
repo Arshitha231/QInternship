@@ -123,9 +123,17 @@ TOOLS = [
             "properties": {
                 "person": {"type": "string", "description": "A person's name, or 'self'."},
                 "direction": {"type": "string", "enum": ["up", "down"]},
-                "depth": {"type": "integer", "description": "Levels to traverse; capped at 10 regardless."},
+                "depth": {
+                    "type": "integer",
+                    "description": (
+                        "Levels to traverse; capped at 10 regardless. 1 for a single hop "
+                        "('my manager', 'my direct reports'); 10 only for an explicit "
+                        "'all the way to the top' / 'everyone below' request. Always "
+                        "provide this — never leave it for the caller to guess."
+                    ),
+                },
             },
-            "required": ["person", "direction"],
+            "required": ["person", "direction", "depth"],
             "additionalProperties": False,
         },
     }},
@@ -681,7 +689,17 @@ def execute_tool_call(
             args["person_id"] = caller.id
         return get_person(db, caller, view_mode=view_mode, **args)
     if name == "get_org_chain":
-        args.setdefault("depth", 10)
+        # ARCHITECTURE_2.md §11/§15 item 7: `depth` is required in the TOOLS
+        # schema now, but that's not enforced by the API without strict mode,
+        # so a model can still omit it. A single depth=10 fallback used to
+        # apply regardless of direction -- for an "up" call, that walks all
+        # the way to the top of the chain and _phrase() reports whoever's at
+        # the far end as "their manager," not the actual direct manager. 1 is
+        # the safe reading either direction: it matches the literal single-hop
+        # question ("my manager" / "my direct reports") every few-shot uses
+        # when depth is otherwise unstated, and undershoots rather than
+        # confidently answering with the wrong person when it's wrong.
+        args.setdefault("depth", 1)
         # `person` is always a name (or "self") coming from the model, never
         # a real id — resolved server-side either way, same
         # never-trust-the-model-for-identity rationale as get_person above
