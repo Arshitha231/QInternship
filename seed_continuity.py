@@ -58,6 +58,36 @@ MERIDIAN = "Meridian Health — Claims Platform Modernization"
 SOLSTICE = "Solstice Retail — POS Integration Programme"
 ARCADIA = "Arcadia Logistics — Fleet Analytics Rollout"
 
+# ARCHITECTURE_2.md §11: real descriptions, not the f"{name} — client
+# engagement." template, for the same reason seed.py's flagship/generic
+# projects got them — no semantic content to embed otherwise.
+PROJECT_DESCRIPTIONS: dict[str, str] = {
+    MERIDIAN: (
+        "Migrating a healthcare claims processor off a legacy claims engine onto a modern, "
+        "API-driven platform, with HIPAA compliance and audit trails as hard requirements "
+        "throughout. Cutover is phased by claim type rather than a single big-bang migration, "
+        "to keep any one failure's blast radius small. Early testing surfaced a discrepancy in "
+        "how the legacy system rounded partial-dollar claim adjustments, which needed sign-off "
+        "from the client's compliance team before the new logic could ship."
+    ),
+    SOLSTICE: (
+        "Integrating a national retail chain's point-of-sale terminals with a new inventory and "
+        "loyalty backend, replacing a batch nightly sync that left store-level stock counts "
+        "stale for up to a day. Rollout is staged store-by-store so a bad release only affects "
+        "a handful of locations at a time. A subset of older terminal hardware couldn't run the "
+        "new integration client at all, forcing a hardware refresh plan the original scope "
+        "hadn't budgeted for."
+    ),
+    ARCADIA: (
+        "Building a fleet telemetry and route-analytics platform for a logistics client, "
+        "ingesting GPS and fuel-sensor data from several thousand vehicles to flag inefficient "
+        "routing and maintenance risk. Includes a data-quality pass on the client's existing "
+        "sensor feeds, which turned out noisier than the pilot suggested. The first version of "
+        "the maintenance-risk model flagged too many false positives, prompting a retune before "
+        "the client would trust it enough to act on."
+    ),
+}
+
 FHIR_SKILL = "FHIR Interoperability"
 POS_SKILL = "Retail POS Integration"
 
@@ -136,7 +166,7 @@ def _pick_widely_held_skill(session, min_holders: int = 6) -> Skill | None:
 def _make_project(session, name: str, owner: Employee, unit: OrgUnit) -> Project:
     project = Project(
         name=name, type=ProjectType.project,
-        description=f"{name} — client engagement.",
+        description=PROJECT_DESCRIPTIONS.get(name, f"{name} — client engagement."),
         owning_unit_id=unit.id, owner_id=owner.id,
         classification=ProjectClassification.internal, is_client_engagement=True,
     )

@@ -87,18 +87,21 @@ def test_single_hop_phrasing_does_not_match():
 # ---------------------------------------------------------------------------
 
 def test_dispatch_resolves_name_and_walks_chain_up(db_session):
-    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up"})
+    tool_call = ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up", "depth": 2})
     result = execute_tool_call(db_session, CALLER, tool_call)
     assert [n.id for n in result] == ["chain-2", "chain-3"]
     assert [n.depth for n in result] == [1, 2]
 
 
 def test_dispatch_case_insensitive_and_typo_tolerant(db_session):
-    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "chris bottom", "direction": "up"})
+    tool_call = ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "chris bottom", "direction": "up", "depth": 2})
     result = execute_tool_call(db_session, CALLER, tool_call)
     assert [n.id for n in result] == ["chain-2", "chain-3"]
 
-    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Botom", "direction": "up"})
+    tool_call = ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Chris Botom", "direction": "up", "depth": 2})
     result = execute_tool_call(db_session, CALLER, tool_call)
     assert [n.id for n in result] == ["chain-2", "chain-3"]
 
@@ -118,6 +121,32 @@ def test_dispatch_self_sentinel_still_works(db_session):
     # Unchanged behavior -- "self" still resolves to the caller, not a name
     # lookup, same never-trust-the-model-for-identity rule as before.
     caller_as_chain1 = AuthenticatedUser(id="chain-1", role="hr")
-    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "self", "direction": "up"})
+    tool_call = ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 2})
     result = execute_tool_call(db_session, caller_as_chain1, tool_call)
     assert [n.id for n in result] == ["chain-2", "chain-3"]
+
+
+# ---------------------------------------------------------------------------
+# ARCHITECTURE_2.md §11/§15 item 7: depth omitted by the model must not
+# silently walk the whole chain.
+# ---------------------------------------------------------------------------
+
+def test_dispatch_omitted_depth_defaults_to_a_single_hop(db_session):
+    # Chris Bottom -> Charlie Middle -> Casey Top is 2 levels up. A model
+    # that forgets `depth` on an "up" call used to get the old blanket
+    # default of 10, walking the whole chain -- so "who is Chris Bottom's
+    # manager" would report Casey Top (depth 2, the top of the chain) as
+    # the answer instead of Charlie Middle (depth 1, the actual manager).
+    # Omitting depth now must return only the direct hop.
+    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up"})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [n.id for n in result] == ["chain-2"]
+    assert [n.depth for n in result] == [1]
+
+
+def test_dispatch_omitted_depth_defaults_to_a_single_hop_downward_too(db_session):
+    tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "Casey Top", "direction": "down"})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [n.id for n in result] == ["chain-2"]
+    assert [n.depth for n in result] == [1]
