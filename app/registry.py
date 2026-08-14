@@ -5,7 +5,9 @@ enforce()) reads from REGISTRY — there is no second list of field names
 anywhere else that could drift out of sync with it.
 
 Sensitivity tiers are a direct relabeling of app/permissions.py's existing
-BASE_FIELDS/HR_ONLY_FIELDS, not a new judgment call about what's sensitive
+BASE_FIELDS/INTERNAL_FIELDS (named HR_ONLY_FIELDS before view modes and the
+"it" role were introduced there — same five fields, renamed on that side,
+not re-derived on this one), not a new judgment call about what's sensitive
 — see the per-field comments below for the mapping. Deliberately only two
 populated tiers (INTERNAL, HR_ONLY): every field gets a tier and goes
 through the identical is_visible() check, including `id` and `full_name`
@@ -57,7 +59,7 @@ from sqlalchemy.engine import Engine
 
 class Sensitivity(str, Enum):
     INTERNAL = "internal"      # app.permissions.BASE_FIELDS, plus id/full_name
-    HR_ONLY = "hr_only"        # app.permissions.HR_ONLY_FIELDS
+    HR_ONLY = "hr_only"        # app.permissions.INTERNAL_FIELDS (nee HR_ONLY_FIELDS)
     DERIVED_HR = "derived_hr"  # deliberately left unpopulated, permanently for
                                 # this cycle — NOT a placeholder waiting for
                                 # Phase 4. Continuity (app/continuity.py) reads
@@ -137,7 +139,7 @@ REGISTRY: dict[str, FieldSpec] = {
     "tenure_band": _f(
         "tenure_band", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("hire_date",)),
 
-    # app.permissions.HR_ONLY_FIELDS (5 fields), relabeled HR_ONLY verbatim.
+    # app.permissions.INTERNAL_FIELDS (5 fields), relabeled HR_ONLY verbatim.
     # salary/salary_currency/date_of_birth additionally carry a self-only
     # ABAC grant (permissions.abac_extra_fields) on top of this HR_ONLY
     # floor -- see the module docstring; that grant is untouched by this
@@ -179,6 +181,16 @@ ALLOWED_SENSITIVITY: dict[str, frozenset[Sensitivity]] = {
     # `manager` gets no extra *sensitivity* tier over `employee` — its
     # extra privileges (seeing direct_reports, e.g.) are row-scoping
     # obligations (app/policy.py), not broader field access.
+    #
+    # `it` (added alongside view modes in app/permissions.py, after this
+    # registry was first built): same tier as employee/manager, per that
+    # module's own ALLOWED table -- ("it", "work") gets BASE_FIELDS plus
+    # project_desc, explicitly NOT INTERNAL_FIELDS ("it administers the
+    # directory, it does not read salaries"). project_desc itself has no
+    # REGISTRY entry (nested under project_history, not an employees-table
+    # column) -- same known-gap category as direct_reports/training_status,
+    # not something this tier needs to account for.
+    "it": frozenset({Sensitivity.INTERNAL}),
 }
 
 

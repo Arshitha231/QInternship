@@ -37,9 +37,16 @@ from app.models import (
     Skill,
 )
 from app.models.enums import AvailabilityStatus, SkillLevel
-from app.permissions import can_see_confidential_project, is_record_visible, visible_fields
+from app.permissions import (
+    ViewMode,
+    can_see_confidential_project,
+    effective_role,
+    is_record_visible,
+    visible_fields,
+)
 from app.query_compiler import enforced_person_ref
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
+from app.search_reindex import reindex_employee
 from app.search_client import search_people
 
 # Query-level restriction: one colleague's email is a lookup, every
@@ -233,6 +240,7 @@ def find_people(
     office: str | None = None,
     language: str | None = None,
     available: bool | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[PersonSummary]:
     effective_query = query or name
 
@@ -240,6 +248,12 @@ def find_people(
         name=name, query=query, skill=skill, level=level, org_unit=org_unit,
         office=office, language=language, available=available,
     ).items() if v is not None}
+
+    # The role this request is answered as. In employee mode a privileged
+    # caller is an ordinary employee for every downstream decision — here
+    # that's the restricted-record filter and the direct_reports enrichment,
+    # both of which are role-keyed.
+    acting_role = effective_role(caller.role, view_mode)
 
     # Resolve skill/language synonyms once, up front — both the Search
     # filter and the SQL fallback need the same canonical name/id, and an
@@ -403,7 +417,7 @@ def find_people(
         candidates = db.execute(stmt).scalars().all()
 
     # 2. filter records
-    visible_records = [e for e in candidates if is_record_visible(caller, e)]
+    visible_records = [e for e in candidates if is_record_visible(caller, e, view_mode)]
 
     # 3. filter fields / 4. department check — PersonSummary only ever
     # carries SUMMARY_FIELDS, which is a subset of BASE_FIELDS visible to
@@ -468,11 +482,11 @@ def find_people(
             # direct_reports: downward chain, manager/hr only — same RBAC
             # gate as get_org_chain's "down" direction, same per-record
             # is_record_visible filter as its downward traversal.
-            if caller.role in ("manager", "hr"):
+            if acting_role in ("manager", "hr"):
                 reports = db.execute(
                     select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
                 ).scalars().all()
-                visible_reports = [r for r in reports if is_record_visible(caller, r)]
+                visible_reports = [r for r in reports if is_record_visible(caller, r, view_mode)]
                 kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in visible_reports]
                 fields_returned.add("direct_reports")
         results.append(PersonSummary(**kwargs))
@@ -493,7 +507,9 @@ def _org_unit_name(db: Session, org_unit_id: int) -> str:
 # get_person(person_id)
 # ---------------------------------------------------------------------------
 
-def get_person(db: Session, caller: AuthenticatedUser, person_id: str) -> PersonDetail | None:
+def get_person(
+    db: Session, caller: AuthenticatedUser, person_id: str, view_mode: ViewMode = "work"
+) -> PersonDetail | None:
     fields_returned: set[str] = set()
     found = False
     try:
@@ -504,11 +520,11 @@ def get_person(db: Session, caller: AuthenticatedUser, person_id: str) -> Person
 
         # 2. filter records — identical response (None -> 404) whether the
         # id doesn't exist or the record is record-level restricted.
-        if not is_record_visible(caller, target):
+        if not is_record_visible(caller, target, view_mode):
             return None
 
         # 3. filter fields (RBAC + ABAC) / 4. department check
-        fields = visible_fields(db, caller, target)
+        fields = visible_fields(db, caller, target, view_mode)
         fields_returned = fields
         found = True
 
@@ -535,6 +551,10 @@ def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: 
     target.bio = bio
     db.commit()
     db.refresh(target)
+    # Rule 6: bio is in build_profile_text, so this write has to re-index.
+    # It didn't until the hook existed — an edited About was invisible to
+    # search until the next manual full rebuild.
+    reindex_employee(db, target)
     fields = visible_fields(db, caller, target)
     result = _build_detail(db, caller, target, fields)
     _write_audit(db, caller, "update_own_bio", f"person_id={person_id}", 1, fields)
@@ -604,7 +624,13 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
             kwargs["languages"] = langs_out
 
     if "project_history" in fields:
-        kwargs["project_history"] = _project_history(db, caller, target)
+        # project_desc rides on the same project_history list rather than
+        # being a top-level field: it describes a project, and the list is
+        # already the one place project data reaches the response. Whether
+        # each item carries it is the ordinary field-table decision.
+        kwargs["project_history"] = _project_history(
+            db, caller, target, include_desc="project_desc" in fields
+        )
 
     if "training_status" in fields:
         # Routed through the provider factory, never at a provider directly
@@ -638,7 +664,9 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
     return PersonDetail(**kwargs)
 
 
-def _project_history(db: Session, caller: AuthenticatedUser, target: Employee) -> list[ProjectHistoryItem]:
+def _project_history(
+    db: Session, caller: AuthenticatedUser, target: Employee, include_desc: bool = False
+) -> list[ProjectHistoryItem]:
     rows = (
         db.query(EmployeeProject, Project)
         .join(Project, EmployeeProject.project_id == Project.id)
@@ -651,9 +679,16 @@ def _project_history(db: Session, caller: AuthenticatedUser, target: Employee) -
         # fully visible in the directory — only this membership edge hides.
         if proj.classification.value == "confidential" and not can_see_confidential_project(db, caller, proj.id):
             continue
-        items.append(ProjectHistoryItem(
+        item_kwargs: dict = dict(
             project_name=proj.name, project_type=proj.type.value, role=ep.role,
             start_month=_month(ep.start_date), end_month=_month(ep.end_date),
             current=ep.end_date is None,
-        ))
+        )
+        if include_desc:
+            # Set even when empty, so a project with no description on file
+            # reads as null rather than absent — absent has to keep meaning
+            # "you may not see this", the same rule salary and
+            # away_until_month follow.
+            item_kwargs["project_desc"] = proj.description
+        items.append(ProjectHistoryItem(**item_kwargs))
     return items

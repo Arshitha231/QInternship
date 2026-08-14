@@ -22,8 +22,17 @@ from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
-Role = Literal["employee", "manager", "hr"]
-VALID_ROLES: set[str] = {"employee", "manager", "hr"}
+# "it" is the IT department's role: the people who administer the directory
+# itself. Like the other three it arrives per request (dev header or Entra
+# app-role claim) and is never stored on Employee — see app/config.py's
+# hr_org_unit_name for why the org tree is only ever the fallback signal, in
+# contexts that have no request to read a claim from.
+#
+# It is a privileged role but deliberately not a superset of hr: it may edit
+# project descriptions and review AI-extracted changes, and it may not read
+# salaries. See app/permissions.py's ALLOWED table for the split.
+Role = Literal["employee", "manager", "hr", "it"]
+VALID_ROLES: set[str] = {"employee", "manager", "hr", "it"}
 
 
 class AuthenticatedUser(BaseModel):
@@ -65,9 +74,12 @@ _JWKS_TTL_SECONDS = 3600
 _jwks_cache: dict[str, object] = {"keys": None, "fetched_at": 0.0}
 
 # Entra app-role -> internal directory role. The app registration must
-# define app roles named exactly "employee" / "manager" / "hr"; anything
-# else falls back to "employee" (least privilege), never to "hr".
-_ENTRA_ROLE_MAP: dict[str, Role] = {"employee": "employee", "manager": "manager", "hr": "hr"}
+# define app roles named exactly "employee" / "manager" / "hr" / "it";
+# anything else falls back to "employee" (least privilege), never to "hr"
+# or "it".
+_ENTRA_ROLE_MAP: dict[str, Role] = {
+    "employee": "employee", "manager": "manager", "hr": "hr", "it": "it",
+}
 
 
 async def _get_jwks(tenant_id: str) -> dict:

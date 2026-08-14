@@ -147,7 +147,7 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
 def test_execute_with_retry_never_retries_in_mock_mode(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "_mode", lambda: "mock")
     monkeypatch.setattr(tool_calling, "execute_tool_call",
-                        lambda db, caller, tool_call: (_ for _ in ()).throw(ValueError("bad arguments")))
+                        lambda db, caller, tool_call, view_mode="work": (_ for _ in ()).throw(ValueError("bad arguments")))
     monkeypatch.setattr(tool_calling, "_real_resolve",
                         lambda message, extra_messages=None: (_ for _ in ()).throw(
                             AssertionError("must not retry in mock mode")))
@@ -160,7 +160,7 @@ def test_execute_with_retry_never_retries_in_mock_mode(db_session, monkeypatch):
 
 def test_execute_with_retry_does_not_retry_on_first_success(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
-    monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call: "OK")
+    monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": "OK")
     monkeypatch.setattr(tool_calling, "_real_resolve",
                         lambda message, extra_messages=None: (_ for _ in ()).throw(
                             AssertionError("must not retry when the first attempt succeeds")))
@@ -174,7 +174,7 @@ def test_execute_with_retry_succeeds_after_one_correction(db_session, monkeypatc
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     call_log = []
 
-    def flaky_execute(db, caller, tool_call):
+    def flaky_execute(db, caller, tool_call, view_mode="work"):
         call_log.append(tool_call.arguments)
         if tool_call.arguments.get("name") == "Wrong Name":
             raise ValueError("no such person")
@@ -204,7 +204,7 @@ def test_execute_with_retry_succeeds_after_one_correction(db_session, monkeypatc
 def test_execute_with_retry_gives_up_after_max_retries(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "execute_tool_call",
-                        lambda db, caller, tool_call: (_ for _ in ()).throw(ValueError("still wrong")))
+                        lambda db, caller, tool_call, view_mode="work": (_ for _ in ()).throw(ValueError("still wrong")))
 
     retry_count = {"n": 0}
 
@@ -225,7 +225,7 @@ def test_execute_with_retry_gives_up_after_max_retries(db_session, monkeypatch):
 def test_execute_with_retry_stops_immediately_if_the_model_offers_no_correction(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "execute_tool_call",
-                        lambda db, caller, tool_call: (_ for _ in ()).throw(ValueError("still wrong")))
+                        lambda db, caller, tool_call, view_mode="work": (_ for _ in ()).throw(ValueError("still wrong")))
 
     calls = {"n": 0}
 

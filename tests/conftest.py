@@ -16,6 +16,7 @@ before Search existed.
 import os
 import tempfile
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -111,8 +112,14 @@ def _seed() -> None:
             return emp
 
         # --- RBAC (hire_date / cost_centre) + department shape -----------
-        mkemp("stranger-1", "Sam Stranger", "Financial Analyst", "sam@example.test",
-              org_unit_id=fin_dept.id, cost_centre="CC-FIN-1")
+        # salary/date_of_birth carried here rather than on a caller-related
+        # person on purpose: stranger-1 is nobody's report and nobody's self,
+        # so ABAC grants nothing and what comes back is the (role, view_mode)
+        # decision alone.
+        stranger = mkemp("stranger-1", "Sam Stranger", "Financial Analyst", "sam@example.test",
+                         org_unit_id=fin_dept.id, cost_centre="CC-FIN-1",
+                         salary=Decimal("95000.00"), salary_currency="USD",
+                         date_of_birth=date(1990, 4, 17))
 
         # --- ABAC (personal_mobile): mgr-1 is report-1's direct manager --
         mkemp("mgr-1", "Morgan Manager", "Engineering Manager", "morgan@example.test",
@@ -156,6 +163,29 @@ def _seed() -> None:
                                start_date=date(2023, 1, 1), end_date=None))
         db.add(EmployeeProject(employee_id=member.id, project_id=project.id, role="Contributor",
                                start_date=date(2023, 6, 1), end_date=None))
+
+        # --- project_desc: an ordinary (non-confidential) project with a
+        # description, so work-mode/employee-mode differences show up on a
+        # project the caller is allowed to see at all. Hung off stranger-1
+        # for the same no-ABAC-interference reason as the salary above.
+        atlas = Project(name="Project Atlas", type=ProjectType.project,
+                        description="Internal migration of the billing ledger to the new platform.",
+                        owning_unit_id=fin_dept.id, owner_id=stranger.id,
+                        classification=ProjectClassification.internal)
+        db.add(atlas)
+        db.flush()
+        db.add(EmployeeProject(employee_id=stranger.id, project_id=atlas.id, role="Analyst",
+                               start_date=date(2024, 3, 1), end_date=None))
+
+        # --- document-extraction name resolution --------------------------
+        # Three shapes the resolver has to tell apart: a name that resolves
+        # to exactly one person, a name two people share (the test-suite
+        # equivalent of the seeded duplicate "Priya Sharma", which exists in
+        # the real dataset precisely so ambiguity is testable), and a name
+        # nobody has. Only the first may ever produce an employee_id.
+        mkemp("extract-alex", "Alex Kim", "Platform Engineer", "alex.kim@example.test")
+        mkemp("extract-dup-1", "Jamie Doubleton", "Software Engineer", "jamie.d1@example.test")
+        mkemp("extract-dup-2", "Jamie Doubleton", "Data Engineer", "jamie.d2@example.test")
 
         # --- bulk pool for the result-cap test: more than MAX_RESULTS -----
         for i in range(MAX_RESULTS + 10):

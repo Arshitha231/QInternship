@@ -31,6 +31,13 @@ class ProjectHistoryItem(BaseModel):
     end_month: str | None  # None means still current
     current: bool
 
+    # Work mode, hr/it only — see permissions.PROJECT_DESC_FIELDS. Left unset
+    # (not None) for every other caller, so the routes' exclude_unset
+    # serialization drops the key entirely rather than emitting null; Pydantic
+    # applies exclude_unset recursively, so nesting it here keeps the same
+    # absent-not-null guarantee the top-level fields have.
+    project_desc: str | None = None
+
 
 class TrainingStatusItem(BaseModel):
     """One course on a person's profile.
@@ -208,6 +215,9 @@ class NotificationOut(BaseModel):
 
 class AskRequest(BaseModel):
     message: str
+    # "work" | "employee". Resolved server-side by resolve_view_mode, so an
+    # employee-role caller sending "work" is still answered in employee mode.
+    view_mode: str | None = None
 
 
 class RecordCourseStatusRequest(BaseModel):
@@ -222,6 +232,53 @@ class RecordCourseStatusRequest(BaseModel):
 
 class UpdateBioRequest(BaseModel):
     bio: str = Field(max_length=2000)
+
+
+class UpdateEmployeeRequest(BaseModel):
+    """HR's internal-field edit. Every field optional, and the route sends
+    only the keys actually supplied (model_dump(exclude_unset=True)) — so
+    `{"salary": null}` clears the salary while omitting the key leaves it
+    untouched. extra="forbid" so a typo'd or non-editable field name is a
+    422 rather than a silently ignored no-op that looks like it worked.
+
+    Which of these the caller may actually write is not decided here: it's
+    the EDITABLE table in app/permissions.py, checked by app/writes.py. This
+    model only describes the wire shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, max_length=200)
+    preferred_name: str | None = Field(default=None, max_length=200)
+    job_title: str | None = Field(default=None, max_length=200)
+    work_email: str | None = Field(default=None, max_length=320)
+    work_phone: str | None = Field(default=None, max_length=50)
+    salary: str | float | None = None  # str, for the same precision reason the response uses str
+    salary_currency: str | None = Field(default=None, max_length=3)
+    date_of_birth: date | None = None
+    hire_date: date | None = None
+    cost_centre: str | None = Field(default=None, max_length=50)
+    employment_type: Literal["fte", "contractor", "intern"] | None = None
+
+
+class ProjectDescriptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(max_length=4000)
+
+
+class ReassignProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+
+
+class CorrectProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Free text from the reviewer, sent back through the function-calling
+    # loop as data. Treated as untrusted content, same as the document.
+    instruction: str = Field(max_length=2000)
 
 
 class SkillScarcityItem(BaseModel):

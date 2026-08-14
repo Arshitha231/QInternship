@@ -72,16 +72,27 @@ def test_ignored_columns_exact_contents():
 
 # ---------------------------------------------------------------------------
 # is_visible -- direct equivalence against app.permissions' existing source
-# of truth (BASE_FIELDS / HR_ONLY_FIELDS / ALLOWED), not a hand-written
+# of truth (BASE_FIELDS / INTERNAL_FIELDS / ALLOWED), not a hand-written
 # duplicate expectation that could drift from it independently.
+#
+# permissions.ALLOWED is keyed by (role, view_mode) since view modes and the
+# "it" role were introduced (a caller-facing lens, not a sensitivity tier) --
+# compared against the ("role", "work") row here, since "work" is the
+# full-privilege, behaviour-preserving mode every role had before view modes
+# existed, i.e. what REGISTRY's static per-role model was always describing.
+# Employee-mode collapse (every role reduced to the employee view) is a
+# runtime decision app/registry.py doesn't participate in yet -- known gap,
+# same category as direct_reports/training_status below, not a silent one:
+# REGISTRY isn't wired into any live route yet either (see its DERIVED_HR
+# comment), so nothing downstream currently depends on this distinction.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("role", ROLES)
 def test_is_visible_matches_permissions_allowed_for_every_relabelled_field(role):
-    for field_name in permissions.BASE_FIELDS | permissions.HR_ONLY_FIELDS:
+    for field_name in permissions.BASE_FIELDS | permissions.INTERNAL_FIELDS:
         assert field_name in REGISTRY, f"{field_name} is in permissions.py but missing from REGISTRY"
-        assert is_visible(field_name, role) == (field_name in permissions.ALLOWED[role]), (
-            f"is_visible('{field_name}', '{role}') disagrees with permissions.ALLOWED['{role}']"
+        assert is_visible(field_name, role) == (field_name in permissions.ALLOWED[(role, "work")]), (
+            f"is_visible('{field_name}', '{role}') disagrees with permissions.ALLOWED[('{role}', 'work')]"
         )
 
 

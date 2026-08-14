@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.people import find_people
+from app.permissions import ViewMode
 from app.schemas import MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProjectOwnerResult
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
@@ -64,14 +65,15 @@ _TOOL_REASONS = {t["function"]["name"]: t["function"]["description"].split(".")[
 
 def unified_search(
     db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
+    view_mode: ViewMode = "work",
 ) -> dict:
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
     if text and is_question(text):
-        return _assisted(db, caller, text, clean_filters)
+        return _assisted(db, caller, text, clean_filters, view_mode)
 
-    results = find_people(db, caller, query=text or None, **clean_filters)
+    results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
 
     # Unique-identifier misses (an exact name/slack/email match attempted
     # and nothing came back, or came back but isn't visible to this caller)
@@ -83,15 +85,20 @@ def unified_search(
     if not results and clean_filters.get("skill"):
         tool_call = ResolvedToolCall(name="find_people", arguments=clean_filters)
         started = time.monotonic()
-        raw = execute_with_fallback(db, caller, tool_call, f"(direct query, skill miss) {clean_filters['skill']}")
+        raw = execute_with_fallback(db, caller, tool_call, f"(direct query, skill miss) {clean_filters['skill']}",
+                                    view_mode)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return _build_assisted(db, caller, raw, elapsed_ms,
-                               "No exact skill match — broadened to a semantic search across employee profiles.")
+                               "No exact skill match — broadened to a semantic search across employee profiles.",
+                               view_mode)
 
     return {"mode": "direct", "results": results}
 
 
-def _assisted(db: Session, caller: AuthenticatedUser, text: str, clean_filters: dict[str, Any] | None = None) -> dict:
+def _assisted(
+    db: Session, caller: AuthenticatedUser, text: str,
+    clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
+) -> dict:
     started = time.monotonic()
     turn = resolve_intent(text)
     if turn.tool_call is None:
@@ -108,16 +115,19 @@ def _assisted(db: Session, caller: AuthenticatedUser, text: str, clean_filters: 
     # chip shouldn't silently override what the user just typed.
     if clean_filters and turn.tool_call.name == "find_people":
         turn.tool_call.arguments = {**clean_filters, **turn.tool_call.arguments}
-    raw = execute_with_retry(db, caller, turn.tool_call, text)
+    raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
-    return _build_assisted(db, caller, raw, elapsed_ms, reason)
+    return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
 
 
-def _build_assisted(db: Session, caller: AuthenticatedUser, raw: dict, elapsed_ms: int, reason: str) -> dict:
+def _build_assisted(
+    db: Session, caller: AuthenticatedUser, raw: dict, elapsed_ms: int, reason: str,
+    view_mode: ViewMode = "work",
+) -> dict:
     tool_name = raw["tool_call"]
     result = raw["result"]
-    results, citations = _people_and_citations(db, caller, tool_name, result)
+    results, citations = _people_and_citations(db, caller, tool_name, result, view_mode)
     answer_text = raw["message"] or _phrase(tool_name, raw["arguments"] or {}, result)
     return {
         "mode": "assisted",
@@ -132,6 +142,7 @@ def _build_assisted(db: Session, caller: AuthenticatedUser, raw: dict, elapsed_m
 
 def _resolve_summaries(
     db: Session, caller: AuthenticatedUser, people: list[tuple[str, str]],
+    view_mode: ViewMode = "work",
 ) -> list[PersonSummary]:
     """MentorCandidate and ProjectOwnerResult carry only id+name, not the
     full card fields (org_unit, office, availability_status, ...) —
@@ -149,7 +160,10 @@ def _resolve_summaries(
         if person_id in seen:
             continue
         seen.add(person_id)
-        match = next((p for p in find_people(db, caller, name=full_name) if p.id == person_id), None)
+        match = next(
+            (p for p in find_people(db, caller, name=full_name, view_mode=view_mode) if p.id == person_id),
+            None,
+        )
         if match:
             summaries.append(match)
     return summaries
@@ -157,6 +171,7 @@ def _resolve_summaries(
 
 def _people_and_citations(
     db: Session, caller: AuthenticatedUser, tool_name: str, result: Any,
+    view_mode: ViewMode = "work",
 ) -> tuple[list[PersonSummary], list[PersonRef]]:
     """Every one of the seven tools already ran its own is_record_visible
     filtering before this function ever sees the result — this only
@@ -183,7 +198,7 @@ def _people_and_citations(
 
     if tool_name == "find_mentor":
         candidates = [c for c in result if isinstance(c, MentorCandidate)]
-        summaries = _resolve_summaries(db, caller, [(c.id, c.full_name) for c in candidates])
+        summaries = _resolve_summaries(db, caller, [(c.id, c.full_name) for c in candidates], view_mode)
         return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
 
     if tool_name == "get_org_chain":
@@ -199,7 +214,7 @@ def _people_and_citations(
         return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
 
     if tool_name == "find_project_owner" and isinstance(result, ProjectOwnerResult):
-        resolved = _resolve_summaries(db, caller, [(result.owner_id, result.owner_name)])
+        resolved = _resolve_summaries(db, caller, [(result.owner_id, result.owner_name)], view_mode)
         if resolved:
             return resolved, [PersonRef(id=resolved[0].id, full_name=resolved[0].full_name)]
         summary = PersonSummary(

@@ -39,6 +39,7 @@ from app.directory_tools import find_mentor, find_project_owner, skill_gap, skil
 from app.models import AuditLog
 from app.org_chart import get_org_chain, resolve_person_name
 from app.people import find_people, find_related_language_speakers, get_person
+from app.permissions import ViewMode
 
 load_dotenv()
 
@@ -652,10 +653,24 @@ def resolve_intent(message: str) -> AssistantTurn:
 # the authenticated session, never from tool_call.arguments.
 # ---------------------------------------------------------------------------
 
-def execute_tool_call(db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall):
+def execute_tool_call(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall,
+    view_mode: ViewMode = "work",
+):
     name, args = tool_call.name, dict(tool_call.arguments)
+
+    # view_mode is a server decision, resolved from the caller's role before
+    # this function is reached. It is not in the TOOLS schema, so a
+    # well-behaved model never emits it — but args come straight from model
+    # output, and `**args` would happily pass one through and let a generated
+    # argument widen the caller's own view. Dropped unconditionally, for the
+    # same never-trust-the-model-for-authorization reason find_mentor's
+    # caller_id is taken from the caller and the "self" sentinel is resolved
+    # server-side below.
+    args.pop("view_mode", None)
+
     if name == "find_people":
-        return find_people(db, caller, **args)
+        return find_people(db, caller, view_mode=view_mode, **args)
     if name == "get_person":
         # "self" is a fixed sentinel the model is taught to use for
         # first-person questions (see the get_person tool description and
@@ -664,7 +679,7 @@ def execute_tool_call(db: Session, caller: AuthenticatedUser, tool_call: Resolve
         # caller_id below.
         if args.get("person_id") == "self":
             args["person_id"] = caller.id
-        return get_person(db, caller, **args)
+        return get_person(db, caller, view_mode=view_mode, **args)
     if name == "get_org_chain":
         args.setdefault("depth", 10)
         # `person` is always a name (or "self") coming from the model, never
@@ -701,7 +716,10 @@ def _write_audit(db: Session, caller: AuthenticatedUser, query_text: str, result
     db.commit()
 
 
-def execute_with_fallback(db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, source: str) -> dict:
+def execute_with_fallback(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, source: str,
+    view_mode: ViewMode = "work",
+) -> dict:
     """Runs tool_call and applies the zero-extra-model-cost broadening
     fallback when find_people(skill=...) or find_people(language=...) comes
     back empty. `source` is only ever used for the audit_log's query_text,
@@ -711,7 +729,7 @@ def execute_with_fallback(db: Session, caller: AuthenticatedUser, tool_call: Res
     of the fallback behavior silently diverging between them.
     """
     try:
-        result = execute_tool_call(db, caller, tool_call)
+        result = execute_tool_call(db, caller, tool_call, view_mode)
     except (TypeError, ValueError, KeyError):
         _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0)
         return {
@@ -805,7 +823,10 @@ def _retry_after_execution_failure(
     return retry_turn.tool_call if retry_turn is not None else None
 
 
-def execute_with_retry(db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, message: str) -> dict:
+def execute_with_retry(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, message: str,
+    view_mode: ViewMode = "work",
+) -> dict:
     """execute_with_fallback(), preceded by the bounded retry loop above.
     `message` is the original natural-language request — needed to
     re-prompt the model with what went wrong, so this only ever makes
@@ -818,7 +839,7 @@ def execute_with_retry(db: Session, caller: AuthenticatedUser, tool_call: Resolv
     if _mode() == "real":
         for _ in range(MAX_ROUTING_RETRIES):
             try:
-                execute_tool_call(db, caller, attempt)
+                execute_tool_call(db, caller, attempt, view_mode)
             except (TypeError, ValueError, KeyError) as exc:
                 corrected = _retry_after_execution_failure(message, attempt, str(exc))
                 if corrected is None:
@@ -831,10 +852,12 @@ def execute_with_retry(db: Session, caller: AuthenticatedUser, tool_call: Resolv
     # exhausted) -- a second read-only query is a small, deliberate cost
     # for reusing execute_with_fallback's already-tested broadening/audit/
     # response-shape logic unchanged rather than duplicating it here.
-    return execute_with_fallback(db, caller, attempt, message)
+    return execute_with_fallback(db, caller, attempt, message, view_mode)
 
 
-def answer(db: Session, caller: AuthenticatedUser, message: str) -> dict:
+def answer(
+    db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work"
+) -> dict:
     """The full turn: resolve intent (the deterministic router, or the
     model) -> execute, with retry on a failed call -> respond. The chosen
     tool's own service function writes its own audit_log row (same as any
@@ -847,4 +870,4 @@ def answer(db: Session, caller: AuthenticatedUser, message: str) -> dict:
         _write_audit(db, caller, message, 0)
         return {"message": turn.message or OUT_OF_SCOPE_MESSAGE, "tool_call": None, "arguments": None, "result": None}
 
-    return execute_with_retry(db, caller, turn.tool_call, message)
+    return execute_with_retry(db, caller, turn.tool_call, message, view_mode)
