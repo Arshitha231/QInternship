@@ -89,6 +89,49 @@ def display_status(status: CourseStatus) -> CourseDisplayStatus:
     )
 
 
+class ProposedFieldType(str, enum.Enum):
+    """What a proposed change is proposing to add.
+
+    Deliberately narrow. The extraction step may only propose the two kinds
+    of thing a status document actually evidences — that someone worked on
+    something, and that they picked something up doing it. It cannot propose
+    a salary, a title, or a manager, because a document saying so is not
+    evidence that it's true.
+    """
+
+    project = "project"
+    skill = "skill"
+
+
+class ProposedChangeStatus(str, enum.Enum):
+    """Review state. Only `accepted` has ever touched a real table.
+
+    `edited` is distinct from `accepted` on purpose: both mean the change is
+    live, but `edited` records that a human changed the content before
+    committing it, which is the signal for whether the extraction step is
+    actually any good. Collapsing them would throw away the only measure of
+    that.
+
+    `rejected` rows are kept rather than deleted, for the same reason: a
+    proposal nobody accepted is the most useful thing to look at when the
+    extraction prompt is next revised.
+    """
+
+    pending = "pending"
+    accepted = "accepted"
+    edited = "edited"
+    rejected = "rejected"
+
+
+# The statuses whose content has been committed to the real tables and is
+# therefore searchable. Everything else is invisible to retrieval — see
+# app/proposals.py. One definition, so "is this live?" can never be answered
+# two different ways in two different places.
+LIVE_PROPOSAL_STATUSES: frozenset[ProposedChangeStatus] = frozenset(
+    {ProposedChangeStatus.accepted, ProposedChangeStatus.edited}
+)
+
+
 class NotificationKind(str, enum.Enum):
     """Which trigger produced a notification (see app/notifications.py).
 

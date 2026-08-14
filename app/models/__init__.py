@@ -9,8 +9,10 @@ from app.models.notification import Notification
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.project import Project
+from app.models.proposed_change import ProposedChange
 from app.models.skill import Skill
 from app.models.training_course import TrainingCourse
+from app.models.uploaded_doc import UploadedDoc
 
 __all__ = [
     "AuditLog",
@@ -24,6 +26,8 @@ __all__ = [
     "Office",
     "OrgUnit",
     "Project",
+    "ProposedChange",
     "Skill",
     "TrainingCourse",
+    "UploadedDoc",
 ]

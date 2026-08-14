@@ -65,7 +65,7 @@ uvicorn app.main:app --reload --port 8000   # http://127.0.0.1:8000/docs
 ```
 
 Auth is pluggable (`app/auth.py`). With no Entra config set, `AUTH_MODE` defaults
-to `dev`: every request needs an `X-Dev-Role: employee|manager|hr` header (plus
+to `dev`: every request needs an `X-Dev-Role: employee|manager|hr|it` header (plus
 optional `X-Dev-User-Id`, `X-Dev-Name`), enforced by the same `get_current_user`
 dependency the real Entra JWT-validation path uses — so nothing downstream
 changes when `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` show up later.
@@ -560,6 +560,76 @@ from a broken sweep.
    a 403 or an "access denied" message.
 5. Deny by default — a field not listed in the visibility config is hidden.
 6. Every write to an indexed field (skills, bio, projects, title) re-indexes.
+   Implemented by `app/search_reindex.py`, which `build_search_index.py` now
+   shares its document-building and upload code with. It no-ops when Search
+   is unconfigured (tests, most local dev) and never raises into its caller —
+   a committed row must not be reported as failed because Azure was briefly
+   unreachable.
+7. Roles are per request, never a column. `employee` / `manager` / `hr` / `it`
+   arrive from a dev header or an Entra app-role claim. The org tree
+   (`config.hr_org_unit_name`) is the fallback signal only where there is no
+   request to read a claim from — a scheduled sweep.
+8. Privilege is a table, not a ladder. `it` may edit project descriptions and
+   review AI-extracted changes; it may not read salaries. `hr` is the reverse.
+   Neither is a superset of the other, and `app/permissions.py`'s ALLOWED /
+   EDITABLE tables are where that is decided.
+9. The model's output is never a database write. Extraction emits typed
+   `propose_project_update` calls that land in `proposed_changes` as
+   `pending`; only an IT reviewer's explicit accept moves content into
+   `EmployeeProject` / `EmployeeSkill`, and only then is it searchable.
+
+## Roles and view modes
+
+Four roles, two lenses. `view_mode` is a parameter on the directory/profile
+read endpoints (`GET /people`, `GET /people/{id}`, `GET /search`, `POST /ask`)
+and on every write:
+
+| | `employee` mode | `work` mode |
+|---|---|---|
+| `employee` / `manager` | base fields | *unreachable — pinned to employee mode* |
+| `hr` | base fields | \+ salary, DOB, hire_date, cost_centre, training, project_desc |
+| `it` | base fields | \+ project_desc (**no** salary/DOB) |
+
+Three things are worth knowing before changing any of this:
+
+- **`resolve_view_mode` is the only place the client's parameter is read.**
+  Anything other than `hr`/`it` is answered in employee mode however it asks;
+  an unrecognised value narrows rather than 400s. `hr`/`it` default to work
+  mode when they don't ask, which is what they got before view modes existed.
+- **Employee-mode output is identical whoever is looking.** Enforced in three
+  places, not one — the field table, `is_record_visible`, and
+  `department_filter` — because each is a separate pipeline stage and any one
+  left role-aware leaks the caller's privilege back into a view that is
+  supposed to be anonymous. The sharp edge: **HR loses its restricted-record
+  exemption in employee mode**, so `restricted-1` 404s for them there too.
+- **ABAC survives employee mode, deliberately.** Own-profile and
+  direct-manager grants (personal_mobile, own salary/DOB, training status up
+  the chain) key on the caller's *identity*, never their role, so they return
+  the same answer for a given pair of people whoever asks — which is exactly
+  what the identity guarantee requires. An employee can still see their own
+  salary; they still cannot edit it.
+
+## Document extraction and review
+
+`POST /docs/upload` (IT, work mode) parses a .docx/.pdf, stores the extracted
+text in `uploaded_docs`, and queues what it says in `proposed_changes` as
+`pending`. Name resolution runs through the same `find_people` fuzzy search
+the directory uses, and **returns nothing on ambiguity** — the dataset
+contains two people called Priya Sharma on purpose, and `employee_id` is
+nullable precisely so "I don't know who this is" is a reviewable outcome
+rather than a coin flip.
+
+Review is IT-only, work mode: `GET /proposed_changes?doc_id=` (grouped by
+employee, unresolved first), then `accept` (commits + re-indexes + audits with
+`source=ai_extraction`), `reassign` (re-points it, stays pending), `correct`
+(back through the function-calling loop, stays pending), or `DELETE` (rejects;
+the row is kept, not deleted — a rejected proposal is the most useful row in
+the table when extraction quality is next reviewed). IT's fallback for
+anything it won't accept is the manual edit endpoints.
+
+Accepted skills land as `Learning` / `self`-sourced, never higher: a document
+saying somebody used Terraform is evidence they touched it, not that they are
+an expert `find_mentor` should be recommending.
 
 ## Build order
 
@@ -586,3 +656,11 @@ from a broken sweep.
 - [x] 15. Certification tracking + notifications behind a provider interface —
       synthetic data now, one config flip to the training team's API later
       (see Certification tracking above)
+- [x] 16. Fourth role (`it`) + view modes: visibility re-keyed by
+      `(role, view_mode)`, employee-mode output identical for every role,
+      HR/IT write endpoints enforced server-side (see Roles and view modes)
+- [x] 17. Rule 6 actually implemented — `app/search_reindex.py`, shared with
+      `build_search_index.py` and wired into every write path including the
+      pre-existing `update_own_bio`, which never re-indexed
+- [x] 18. Document upload → typed-call extraction → IT review workflow
+      (`uploaded_docs`, `proposed_changes`; see Document extraction and review)

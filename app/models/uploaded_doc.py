@@ -1,0 +1,35 @@
+from datetime import datetime
+
+from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db import Base
+
+
+class UploadedDoc(Base):
+    """A document somebody uploaded for extraction, plus the text parsed out
+    of it.
+
+    The extracted text is stored, not the original bytes. Everything
+    downstream — the extraction call, and a reviewer asking "where did this
+    come from?" — works from the text, and keeping the source file would
+    mean holding an unbounded blob of whatever a status report happens to
+    contain, in a database that has no other binary column and no lifecycle
+    policy for one. The filename and content type are kept so a reviewer can
+    still identify the document they're looking at.
+    """
+
+    __tablename__ = "uploaded_docs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(150), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    extracted_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Same not-a-foreign-key reasoning as AuditLog.actor_id: an uploaded
+    # document's provenance has to survive the uploader leaving.
+    uploaded_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

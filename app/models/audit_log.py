@@ -23,4 +23,13 @@ class AuditLog(Base):
     # portability (neither has a native array type).
     fields_returned: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Where the change came from: "ai_extraction" for anything committed out
+    # of proposed_changes, otherwise null (a person acting directly).
+    #
+    # Nullable rather than defaulting to "direct" so existing rows keep
+    # meaning exactly what they meant when written — backfilling them with a
+    # value nobody recorded would be inventing provenance, which is the one
+    # thing an audit table must not do. Read null as "not recorded".
+    source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
