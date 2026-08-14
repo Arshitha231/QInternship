@@ -1,18 +1,47 @@
 """Field visibility as a config dictionary, not scattered if-statements.
 
-RBAC sets the base field list per role. ABAC adds fields where the caller's
-relationship to the target warrants it (e.g. their own profile, or a direct
-report). A department check can further strip department-sensitive fields.
-None of this touches the database — can_see_record() / visible_fields() are
-pure functions over already-retrieved rows, applied strictly after retrieval.
+RBAC sets the base field list per (role, view_mode). ABAC adds fields where
+the caller's relationship to the target warrants it (e.g. their own profile,
+or a direct report). A department check can further strip
+department-sensitive fields. None of this touches the database —
+is_record_visible() / visible_fields() are pure functions over
+already-retrieved rows, applied strictly after retrieval.
 
-Deny by default: a field absent from BASE_FIELDS for a role is never
-returned, full stop, regardless of any other rule.
+Deny by default: a field absent from ALLOWED for a (role, view_mode) pair is
+never returned, full stop, regardless of any other rule.
+
+VIEW MODES
+----------
+Every role sees the directory through one of two lenses:
+
+    work      — the caller's full privileges. What every role got before
+                view modes existed, so "work" is the behaviour-preserving
+                mode and the default for internal callers.
+    employee  — the ordinary-colleague view. Output is identical no matter
+                who is looking, so an hr or it caller can see exactly what
+                the directory looks like to the people in it.
+
+Only hr and it may choose; resolve_view_mode() forces employee mode for
+everyone else regardless of what the client asked for. Employee mode is
+enforced in three places, not one — the field table below, the record-level
+check, and the department check — because each is a separate stage of the
+pipeline and any one of them left role-aware would leak a privileged
+caller's identity back into a view that is supposed to be anonymous.
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from app.auth import AuthenticatedUser
 from app.models import Employee, OrgUnit
+
+ViewMode = Literal["employee", "work"]
+VALID_VIEW_MODES: set[str] = {"employee", "work"}
+
+# Roles allowed to ask for work mode. Everyone else is pinned to employee
+# mode server-side — the client's request is an input to this decision, never
+# the decision itself.
+WORK_MODE_ROLES: set[str] = {"hr", "it"}
 
 # Visible to every caller who can see the record at all (record-level checks
 # happen separately, in can_see_record()).
@@ -23,13 +52,23 @@ BASE_FIELDS: set[str] = {
     "skills", "languages", "bio", "project_history", "tenure_band",
 }
 
-# HR-only, per the field table: "hire_date, cost_centre | hr only".
-# salary/salary_currency/date_of_birth are hr-only at the RBAC layer and then
-# additionally granted to the person themselves by ABAC below — HR_ONLY here
-# means "no other ROLE gets these", not "only HR ever sees them".
-HR_ONLY_FIELDS: set[str] = {
+# Internal HR information. Granted to exactly one (role, view_mode) pair —
+# ("hr", "work") — and to nobody else, including it in work mode: running the
+# directory's systems is not a reason to read what people are paid.
+#
+# Still additionally granted to the person themselves by ABAC below, in
+# either mode. INTERNAL here means "no other ROLE gets these", not "only HR
+# ever sees them" — an employee looking at their own salary is not HR
+# information leaking, it is their own record.
+INTERNAL_FIELDS: set[str] = {
     "hire_date", "cost_centre", "salary", "salary_currency", "date_of_birth",
 }
+
+# Project descriptions. Visible to hr and it in work mode; it is additionally
+# the only role that may EDIT them (see EDITABLE below). Absent in employee
+# mode for everyone, so the ordinary directory keeps showing project
+# names/roles from project_history without their internal descriptions.
+PROJECT_DESC_FIELDS: set[str] = {"project_desc"}
 
 # Own profile only. Deliberately narrower than personal_mobile's "own profile
 # OR direct manager": a line manager holding your mobile number is ordinary,
@@ -48,10 +87,59 @@ SELF_ONLY_FIELDS: set[str] = {"salary", "salary_currency", "date_of_birth"}
 # the same set of people.
 TRAINING_FIELDS: set[str] = {"training_status"}
 
-ALLOWED: dict[str, set[str]] = {
-    "employee": set(BASE_FIELDS),
-    "manager": set(BASE_FIELDS),
-    "hr": set(BASE_FIELDS) | set(HR_ONLY_FIELDS) | set(TRAINING_FIELDS),
+# The field table, keyed by (role, view_mode).
+#
+# Written out in full — all four roles x both modes — rather than derived,
+# so that "what does an it caller see in work mode?" is answered by reading
+# one line instead of simulating a collapse rule. The four employee-mode
+# rows are deliberately the identical BASE_FIELDS set: employee-mode output
+# being the same for every role is a property of this table by
+# construction, not something a downstream function has to remember to
+# enforce. test_employee_mode_table_is_role_independent asserts it here, and
+# the HTTP-level test asserts it again end to end.
+ALLOWED: dict[tuple[str, str], set[str]] = {
+    ("employee", "employee"): set(BASE_FIELDS),
+    ("manager", "employee"): set(BASE_FIELDS),
+    ("hr", "employee"): set(BASE_FIELDS),
+    ("it", "employee"): set(BASE_FIELDS),
+
+    # employee/manager can never reach work mode — resolve_view_mode() pins
+    # them to employee mode. Their rows are present so the table answers the
+    # (field, role, view_mode) question for every triple rather than raising
+    # a KeyError on one that policy says is unreachable, and they are
+    # identical to their employee-mode rows so that if the pin were ever
+    # loosened by accident, the failure mode is "no change", not "escalation".
+    ("employee", "work"): set(BASE_FIELDS),
+    ("manager", "work"): set(BASE_FIELDS),
+
+    ("hr", "work"): set(BASE_FIELDS) | set(INTERNAL_FIELDS) | set(TRAINING_FIELDS) | set(PROJECT_DESC_FIELDS),
+    # No INTERNAL_FIELDS: it administers the directory, it does not read
+    # salaries. This is the asymmetry the whole (role, view_mode) re-key
+    # exists to express — before it, "hr-only" and "privileged" were the
+    # same thing.
+    ("it", "work"): set(BASE_FIELDS) | set(PROJECT_DESC_FIELDS),
+}
+
+# Write permissions, same key shape as ALLOWED and for the same reason:
+# the endpoint asks this table, it does not re-derive the rule. Enforced in
+# the service layer so that every caller of a write path — HTTP route,
+# tool-calling layer, future batch job — hits the same gate.
+EDITABLE: dict[tuple[str, str], set[str]] = {
+    ("employee", "employee"): set(),
+    ("manager", "employee"): set(),
+    ("hr", "employee"): set(),
+    ("it", "employee"): set(),
+    ("employee", "work"): set(),
+    ("manager", "work"): set(),
+
+    # HR edits internal information on any employee.
+    ("hr", "work"): {
+        "full_name", "preferred_name", "job_title", "work_email", "work_phone",
+        "salary", "salary_currency", "date_of_birth", "hire_date", "cost_centre",
+        "employment_type",
+    },
+    # IT does project descriptions, and only project descriptions.
+    ("it", "work"): set(PROJECT_DESC_FIELDS),
 }
 
 # Department-sensitive fields ("Engineering does not see Finance-sensitive
@@ -71,10 +159,56 @@ DEPARTMENT_SENSITIVE_FIELDS: set[str] = {"cost_centre", "salary", "salary_curren
 # absent: it's personal data, not financial, and this stage is the money one.
 
 
-def is_record_visible(caller: AuthenticatedUser, target: Employee) -> bool:
+def resolve_view_mode(role: str, requested: str | None) -> ViewMode:
+    """The server's decision about which lens a request is answered through.
+
+    The client's `view_mode` parameter is an input here and nowhere else. A
+    caller whose role isn't in WORK_MODE_ROLES gets employee mode however
+    they ask — including an unrecognised value, which is pinned rather than
+    rejected so that a malformed parameter can only ever narrow what comes
+    back, never widen it.
+
+    hr/it default to work mode when they don't ask, because work mode is
+    what those roles got before view modes existed and a silent narrowing
+    would look like data loss on their existing profile pages.
+    """
+    if role not in WORK_MODE_ROLES:
+        return "employee"
+    if requested not in VALID_VIEW_MODES:
+        return "work"
+    return requested  # type: ignore[return-value]
+
+
+def effective_role(role: str, view_mode: ViewMode) -> str:
+    """The role the pipeline reasons with, as opposed to the one the caller
+    holds.
+
+    In employee mode every caller is treated as an ordinary employee. The
+    field table already encodes this for field-level filtering; this is what
+    carries the same collapse into the two stages that are keyed on the role
+    directly rather than through the table — the restricted-record check and
+    the department check.
+    """
+    return "employee" if view_mode == "employee" else role
+
+
+def is_record_visible(
+    caller: AuthenticatedUser, target: Employee, view_mode: ViewMode = "work"
+) -> bool:
     """Record-level restriction: a small number of people are flagged
-    'restricted' and don't appear at all, except to HR."""
-    if target.availability_status.value == "restricted" and caller.role != "hr":
+    'restricted' and don't appear at all, except to HR.
+
+    In employee mode HR loses that exemption, so a restricted record 404s
+    for them exactly as it does for everyone else. That is the point of the
+    mode — an HR caller who still saw restricted people while claiming to
+    look at the ordinary employee view would be reading a view nobody else
+    has, and the identity guarantee would be false.
+
+    Defaults to work mode so every existing caller (org_chart,
+    directory_tools, notifications) keeps its current behaviour without
+    having to opt in; the read endpoints pass the resolved mode explicitly.
+    """
+    if target.availability_status.value == "restricted" and effective_role(caller.role, view_mode) != "hr":
         return False
     return True
 
@@ -94,12 +228,15 @@ def division_of(db, org_unit_id: int | None) -> int | None:
     return unit.id if unit is not None else None
 
 
-def department_filter(db, fields: set[str], caller: AuthenticatedUser, target: Employee) -> set[str]:
+def department_filter(
+    db, fields: set[str], caller: AuthenticatedUser, target: Employee,
+    view_mode: ViewMode = "work",
+) -> set[str]:
     """Strip department-sensitive fields the caller's own division doesn't warrant."""
     sensitive_present = fields & DEPARTMENT_SENSITIVE_FIELDS
     if not sensitive_present:
         return fields
-    if caller.role == "hr":
+    if effective_role(caller.role, view_mode) == "hr":
         return fields  # HR operates company-wide, not division-scoped
     caller_division = division_of(db, _caller_org_unit_id(db, caller))
     target_division = division_of(db, target.org_unit_id)
@@ -154,12 +291,39 @@ def training_extra_fields(db, caller: AuthenticatedUser, target: Employee) -> se
     return set()
 
 
-def visible_fields(db, caller: AuthenticatedUser, target: Employee) -> set[str]:
-    fields = set(ALLOWED[caller.role]) | abac_extra_fields(caller, target)
+def visible_fields(
+    db, caller: AuthenticatedUser, target: Employee, view_mode: ViewMode = "work"
+) -> set[str]:
+    """The full pipeline: RBAC table -> ABAC -> training chain -> department.
+
+    ABAC and the training-chain walk are deliberately NOT collapsed in
+    employee mode. Both key on the caller's identity and relationships
+    (caller.id == target.id, target.manager_id, the reporting chain), never
+    on their role — so they return the same answer for a given pair of
+    people whoever is asking, which is exactly what the identity guarantee
+    requires. Stripping them in employee mode would make an hr caller's own
+    profile show less than their colleague's does, which isn't a truer
+    employee view, just a broken one.
+    """
+    fields = set(ALLOWED[(caller.role, view_mode)]) | abac_extra_fields(caller, target)
     if not TRAINING_FIELDS <= fields:  # hr already has it from RBAC — don't walk the chain for nothing
         fields |= training_extra_fields(db, caller, target)
-    fields = department_filter(db, fields, caller, target)
+    fields = department_filter(db, fields, caller, target, view_mode)
     return fields
+
+
+def can_edit(role: str, view_mode: ViewMode, field: str) -> bool:
+    """Write-side counterpart to visible_fields, same table shape.
+
+    Called by the service layer on every write, so a request that never
+    performed the read the UI would have done still hits the same gate. The
+    UI hiding an edit control is a convenience; this is the enforcement.
+    """
+    return field in EDITABLE.get((role, view_mode), set())
+
+
+def editable_fields(role: str, view_mode: ViewMode) -> set[str]:
+    return set(EDITABLE.get((role, view_mode), set()))
 
 
 def can_see_confidential_project(db, caller: AuthenticatedUser, project_id: int) -> bool:

@@ -24,8 +24,9 @@ from sqlalchemy import select
 load_dotenv()
 
 from app.db import SessionLocal  # noqa: E402
-from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill  # noqa: E402
-from app.search_index import INDEX_SCHEMA, build_profile_text  # noqa: E402
+from app.models import Employee  # noqa: E402
+from app.search_index import INDEX_SCHEMA  # noqa: E402
+from app.search_reindex import build_search_document, upload_documents  # noqa: E402
 
 REQUIRED_ENV = ["SEARCH_ENDPOINT", "SEARCH_KEY", "EMBEDDING_ENDPOINT", "EMBEDDING_KEY", "OPENAI_EMBEDDING_DEPLOYMENT"]
 missing = [v for v in REQUIRED_ENV if not os.environ.get(v)]
@@ -75,49 +76,18 @@ def create_index() -> None:
     resp.raise_for_status()
 
 
-def build_search_document(db, employee: Employee) -> dict:
-    org_unit = db.get(OrgUnit, employee.org_unit_id) if employee.org_unit_id else None
-    office = db.get(Office, employee.office_id) if employee.office_id else None
-    skill_rows = (
-        db.query(EmployeeSkill, Skill)
-        .join(Skill, EmployeeSkill.skill_id == Skill.id)
-        .filter(EmployeeSkill.employee_id == employee.id)
-        .all()
-    )
-    skills = [
-        {"name": sk.name, "level": es.level.value, "category": sk.category.value, "source": es.source.value}
-        for es, sk in skill_rows
-    ]
-    return {
-        "id": employee.id,
-        "full_name": employee.full_name,
-        "preferred_name": employee.preferred_name,
-        "job_title": employee.job_title,
-        "org_unit": org_unit.name if org_unit else None,
-        "office": office.name if office else None,
-        "office_city": office.city if office else None,
-        "skills": skills,
-        "availability_status": employee.availability_status.value,
-        "is_active": employee.is_active,
-        "profile_text": build_profile_text(db, employee),
-    }
-
-
 def embed_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
     response = _with_retries(client.embeddings.create, model=EMBEDDING_DEPLOYMENT, input=texts)
     return [d.embedding for d in response.data]
 
 
 def upload_batch(docs: list[dict]) -> dict:
-    url = f"{SEARCH_ENDPOINT}/indexes/{INDEX_NAME}/docs/index?api-version={SEARCH_API_VERSION}"
-    payload = {"value": [{"@search.action": "mergeOrUpload", **doc} for doc in docs]}
-
-    def _post():
-        r = httpx.post(url, headers=_search_headers(), json=payload, timeout=60.0)
-        r.raise_for_status()
-        return r.json()
-
-    return _with_retries(_post)
+    """The shared single-request upload, wrapped in this script's retry
+    policy. The hook in app/search_reindex.py deliberately does not retry —
+    it runs inside a request and degrades instead of blocking — whereas a
+    bulk rebuild is a long offline job where backing off is the right
+    behaviour."""
+    return _with_retries(upload_documents, docs)
 
 
 def fetch_document(doc_id: str) -> dict:
