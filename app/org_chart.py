@@ -16,14 +16,16 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import literal, select
+from rapidfuzz import fuzz, process
+from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
 from app.permissions import is_record_visible
-from app.schemas import OrgChainNode, PersonRef
+from app.query_compiler import enforced_person_ref
+from app.schemas import OrgChainNode
 
 # The recursive CTE always stops here, no matter what depth is requested or
 # how malformed the manager_id data is — this IS the cycle guard. A tight
@@ -31,6 +33,63 @@ from app.schemas import OrgChainNode, PersonRef
 # hops the WHERE clause in the recursive term simply stops adding rows,
 # same as it would for a legitimately deep chain.
 MAX_DEPTH = 10
+
+# Below this rapidfuzz score (0-100), a name is unresolvable rather than a
+# guess — ARCHITECTURE_2.md §11/RC2: the model gets a UUID-shaped tool
+# argument to fill in, but users ask by name ("who is above Shaun
+# Anderson"), and there was no resolver between the two. Chosen to catch
+# real typos ("Shon Wilson" -> "Sean Wilson") without matching two
+# unrelated short names against each other.
+FUZZY_MATCH_THRESHOLD = 80
+
+
+def resolve_person_name(db: Session, name: str) -> str | None:
+    """Resolve a plain name string to exactly one active employee id: exact
+    match, then case-insensitive, then fuzzy (rapidfuzz) above
+    FUZZY_MATCH_THRESHOLD. In-process over every active employee's name —
+    500 rows, not worth a fuzzy-search DB feature for.
+
+    Two employees can legitimately share an exact full name (the seeded
+    "Priya Sharma" duplicate) — the org chain needs exactly one root to
+    walk from, and picking either one silently would answer a different
+    question than the one asked, so an exact match that isn't unique is
+    treated as unresolved, same as no match at all. Callers get "I
+    couldn't find that person" either way, never a wrong-but-confident
+    chain.
+    """
+    name = name.strip()
+    if not name:
+        return None
+
+    exact = db.execute(
+        select(Employee.id).where(Employee.full_name == name, Employee.is_active == True)
+    ).scalars().all()
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+
+    ci = db.execute(
+        select(Employee.id).where(func.lower(Employee.full_name) == name.lower(), Employee.is_active == True)
+    ).scalars().all()
+    if len(ci) == 1:
+        return ci[0]
+    if len(ci) > 1:
+        return None
+
+    active_names = db.execute(
+        select(Employee.id, Employee.full_name).where(Employee.is_active == True)
+    ).all()
+    by_name: dict[str, list[str]] = {}
+    for emp_id, full_name in active_names:
+        by_name.setdefault(full_name, []).append(emp_id)
+
+    match = process.extractOne(name, by_name.keys(), scorer=fuzz.WRatio, score_cutoff=FUZZY_MATCH_THRESHOLD)
+    if match is None:
+        return None
+    matched_name, _score, _index = match
+    matched_ids = by_name[matched_name]
+    return matched_ids[0] if len(matched_ids) == 1 else None
 
 
 def _org_unit_name(db: Session, org_unit_id: int) -> str:
@@ -128,14 +187,12 @@ def get_org_chain(
             emp = db.get(Employee, emp_id)
             if emp is None or not emp.is_active or not is_record_visible(caller, emp):
                 continue  # 3. filter records again, for every node in the chain
-            delegate = None
-            if emp.delegate_id:
-                # manager/delegate: visible to all, no is_record_visible check
-                # on the referenced person — same precedent as find_people's
-                # single-match enrichment and get_person's _build_detail().
-                delegate_emp = db.get(Employee, emp.delegate_id)
-                if delegate_emp:
-                    delegate = PersonRef(id=delegate_emp.id, full_name=delegate_emp.full_name)
+            # manager/delegate: policy-gated via enforce()+compile_query(),
+            # not a raw db.get() -- ARCHITECTURE_2.md §15 item 6 / Phase 3
+            # Round 2 (app/query_compiler.py's enforced_person_ref), same
+            # fix as find_people's single-match enrichment and
+            # get_person's _build_detail().
+            delegate = enforced_person_ref(db, caller, emp.delegate_id) if emp.delegate_id else None
             result.append(OrgChainNode(
                 id=emp.id, full_name=emp.full_name, job_title=emp.job_title,
                 org_unit=_org_unit_name(db, emp.org_unit_id), depth=node_depth,

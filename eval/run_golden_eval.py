@@ -30,9 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from openai import OpenAIError  # noqa: E402
 
+import independent_truth  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
-from app.directory_tools import find_mentor, skill_gap, skill_scarcity  # noqa: E402
-from app.people import find_people  # noqa: E402
+from app.directory_tools import skill_gap, skill_scarcity  # noqa: E402
 from app.tool_calling import (  # noqa: E402
     OUT_OF_SCOPE_MESSAGE,
     ResolvedToolCall,
@@ -66,6 +66,11 @@ def resolve_intent_strict(message: str) -> AssistantTurn:
                 messages=build_messages(message),
                 tools=TOOLS,
                 tool_choice="auto",
+                # Same fix as app.tool_calling._real_resolve -- keeping this
+                # eval's call shape identical to production's is the point;
+                # a slower, higher-reasoning eval run would not be measuring
+                # what production actually does. See ARCHITECTURE_2.md §6/RC1.
+                reasoning_effort="minimal",
             )
             choice = response.choices[0].message
             if choice.tool_calls:
@@ -89,7 +94,7 @@ def resolve_intent_strict(message: str) -> AssistantTurn:
 
 # ---------------------------------------------------------------------------
 # Extractors: raw tool result -> ordered list of comparable items. Ordering
-# matters -- it's what "top 3" means for recall@3/precision@3.
+# matters -- it's what "top k" means for recall@k/precision@k (see score()).
 # ---------------------------------------------------------------------------
 
 def _ex_find_people(r):
@@ -174,27 +179,50 @@ EXTRACTORS = {
     "skill_scarcity": _ex_skill_scarcity,
 }
 
+# Ground truth by calling the real service function directly -- legitimate
+# only where the eval isn't grading that function's own logic (skill_gap/
+# skill_scarcity's aggregation math). See golden_set.py's module docstring.
 DYNAMIC_CALLS = {
-    "find_mentor": lambda db, caller, args: find_mentor(db, caller, skill=args["skill"], caller_id=caller.id),
     "skill_gap": lambda db, caller, args: skill_gap(db, caller, required_skills=args["required_skills"]),
     "skill_scarcity": lambda db, caller, args: skill_scarcity(db, caller, **args),
-    "find_people": lambda db, caller, args: find_people(db, caller, **args),
+}
+
+# Ground truth via eval/independent_truth.py's own SQLAlchemy queries/walks
+# -- never find_people/get_org_chain/find_mentor, which is exactly what
+# these questions grade. Each already returns a comparable set/list of ids
+# directly, so no EXTRACTORS entry is applied to it (unlike DYNAMIC_CALLS
+# above, whose raw result IS tool-response-shaped).
+INDEPENDENT_CALLS = {
+    "direct_reports": lambda db, caller, args: independent_truth.direct_reports(db, caller, **args),
+    "org_chain": lambda db, caller, args: independent_truth.org_chain(db, caller, **args),
+    "filter_people": lambda db, caller, args: independent_truth.filter_people(db, caller, **args),
+    "find_mentor": lambda db, caller, args: independent_truth.find_mentor(
+        db, caller, skill=args["skill"], caller_id=caller.id),
 }
 
 
 def score(relevant: set, returned: list) -> tuple[float, float]:
-    """recall@3, precision@3 over an ordered `returned` list against the
-    full `relevant` ground-truth set. Empty-relevant is a valid case (the
-    correct answer is "nothing") and scores 1.0/1.0 only if nothing came
-    back either -- any returned item is then a straightforward false
-    positive.
+    """recall@k, precision@k where k = |relevant| -- not a fixed top-3.
+
+    A fixed top-3 cap makes anything with more than 3 correct answers
+    structurally incapable of scoring above 3/|relevant|: t1-04's ground
+    truth has 14 correct direct reports, the pipeline returned all 14, and
+    it scored 0.21 (`hit` capped at 3, divided by 14). k=|relevant| keeps
+    the thing top-3 was actually checking -- are the right results at the
+    top of a ranked list -- without punishing a correct answer for having
+    a large ground-truth set.
+
+    Empty-relevant is a valid case (the correct answer is "nothing") and
+    scores 1.0/1.0 only if nothing came back either -- any returned item
+    is then a straightforward false positive.
     """
-    top3 = returned[:3]
-    hit = len(relevant & set(top3))
+    k = max(len(relevant), 1)
+    topk = returned[:k]
+    hit = len(relevant & set(topk))
     if not relevant:
-        return (1.0, 1.0) if not top3 else (0.0, 0.0)
+        return (1.0, 1.0) if not topk else (0.0, 0.0)
     recall = hit / len(relevant)
-    precision = hit / len(top3) if top3 else 0.0
+    precision = hit / len(topk) if topk else 0.0
     return recall, precision
 
 
@@ -248,18 +276,22 @@ def run() -> list[dict]:
             _, tool_name, args = gt
             ref_raw = DYNAMIC_CALLS[tool_name](db, caller, args)
             relevant = set(extractor(ref_raw))
+        elif isinstance(gt, tuple) and gt[0] == "independent":
+            _, fn_name, args = gt
+            relevant = set(INDEPENDENT_CALLS[fn_name](db, caller, args))
         else:
             relevant = set(gt)
 
         recall, precision = score(relevant, returned_list)
+        k = max(len(relevant), 1)
         record.update(
             relevant_count=len(relevant), returned_count=len(returned_list),
-            top3_returned=returned_list[:3], exec_error=exec_error,
-            recall_at_3=recall, precision_at_3=precision,
+            topk_returned=returned_list[:k], exec_error=exec_error,
+            recall_at_k=recall, precision_at_k=precision,
         )
         results.append(record)
         RESULTS_PATH.write_text(json.dumps(results, indent=2, default=str))
-        print(f"    -> {record['tool_call']}({record['arguments']}) recall@3={recall:.2f} precision@3={precision:.2f}",
+        print(f"    -> {record['tool_call']}({record['arguments']}) recall@{k}={recall:.2f} precision@{k}={precision:.2f}",
               flush=True)
         time.sleep(CALL_DELAY_SECONDS)
 
@@ -273,18 +305,18 @@ def summarize(results: list[dict]) -> None:
     print("=" * 72)
 
     for tier in (1, 2, 3):
-        tier_results = [r for r in results if r["tier"] == tier and "recall_at_3" in r]
+        tier_results = [r for r in results if r["tier"] == tier and "recall_at_k" in r]
         if not tier_results:
             continue
-        avg_recall = sum(r["recall_at_3"] for r in tier_results) / len(tier_results)
-        avg_precision = sum(r["precision_at_3"] for r in tier_results) / len(tier_results)
+        avg_recall = sum(r["recall_at_k"] for r in tier_results) / len(tier_results)
+        avg_precision = sum(r["precision_at_k"] for r in tier_results) / len(tier_results)
         print(f"\nTier {tier}  (n={len(tier_results)})")
-        print(f"  recall@3:    {avg_recall:.3f}")
-        print(f"  precision@3: {avg_precision:.3f}")
-        weak = sorted(tier_results, key=lambda r: r["recall_at_3"] + r["precision_at_3"])[:5]
+        print(f"  recall@k:    {avg_recall:.3f}")
+        print(f"  precision@k: {avg_precision:.3f}")
+        weak = sorted(tier_results, key=lambda r: r["recall_at_k"] + r["precision_at_k"])[:5]
         print("  weakest questions:")
         for r in weak:
-            print(f"    [{r['id']}] recall={r['recall_at_3']:.2f} precision={r['precision_at_3']:.2f}"
+            print(f"    [{r['id']}] recall={r['recall_at_k']:.2f} precision={r['precision_at_k']:.2f}"
                   f"  \"{r['text']}\"  (tool={r.get('tool_call')})")
 
     oos_results = [r for r in results if r["tier"] == 0]

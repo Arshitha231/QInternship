@@ -13,12 +13,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "24a49b42-6c9d-43c0-abd0-8caca7d04a70"
+    "topk_returned": [
+      "97847d4c-d684-4c85-906d-125cbe2c75a1"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-02",
@@ -34,12 +34,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "95990358-61ae-44f5-bc6e-684863181d2b"
+    "topk_returned": [
+      "dc7d40bc-dbd1-49aa-9697-917adf1d4f0e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-03",
@@ -55,14 +55,20 @@
     "refusal_message": null,
     "relevant_count": 9,
     "returned_count": 9,
-    "top3_returned": [
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6",
-      "28b84a96-8808-4532-bea9-c215e0f347e4",
-      "e1251cf5-d7eb-4ead-ad49-2917a26f3c65"
+    "topk_returned": [
+      "448ccc4e-885f-41b1-bd43-8c60ff89552c",
+      "6aa391fd-7575-40f6-a371-1ee055ae239d",
+      "728440bf-eeef-4d61-82d5-81f9bfa36402",
+      "1909c1a2-bde1-4b44-8266-661e8b6babec",
+      "6e31ab37-3fc4-4812-8ecc-8965084f07b8",
+      "1498ba12-bbc4-4440-9090-ce38eb0ef186",
+      "b807dca9-7ca5-4303-9541-9345bce434cc",
+      "fac512ec-d513-4f54-9d5e-90f45a2b1fe0",
+      "6dec2d03-a3ad-43de-ae5b-c66645bb6c83"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.8888888888888888,
+    "precision_at_k": 0.8888888888888888
   },
   {
     "id": "t1-04",
@@ -78,14 +84,25 @@
     "refusal_message": null,
     "relevant_count": 14,
     "returned_count": 14,
-    "top3_returned": [
-      "af7f7812-be03-48e9-b81e-ee99a2b183ef",
-      "abb9b001-2c7c-4c62-8092-59da1a8173df",
-      "e194ab05-a08a-4189-b676-7f6d3ad97e0f"
+    "topk_returned": [
+      "a1ce4f8e-3f2a-42c9-807d-e0673d36e44a",
+      "29faa5de-2e92-4eb1-bbfd-2aecf04af2d2",
+      "f4db80aa-8643-41c5-8c62-246c99904ee4",
+      "599b59f7-1b3e-4d74-a101-702124802909",
+      "f74553e9-40c4-44be-af38-e5da3f62a167",
+      "d2f9855b-953b-44b7-a298-3c27b89db716",
+      "fbd3fee8-e3e3-43aa-98cc-6137ea260edb",
+      "d1eb8dcb-870f-4444-9fb4-5efeffb4b8dd",
+      "dc7d40bc-dbd1-49aa-9697-917adf1d4f0e",
+      "211b06f6-39a9-4e36-afea-d3b98580cf70",
+      "eed476c9-e6da-47ca-b540-75fa52b86cb9",
+      "d647d4d6-1a14-4ac5-ae6a-36e3dd62c6be",
+      "97f5fe26-4e13-4c6a-a757-0916c47feacc",
+      "39207f20-b63b-4de9-a815-88eb5657e534"
     ],
     "exec_error": null,
-    "recall_at_3": 0.21428571428571427,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.14285714285714285,
+    "precision_at_k": 0.14285714285714285
   },
   {
     "id": "t1-05",
@@ -94,19 +111,19 @@
     "text": "Who is above Shaun Anderson, all the way up to the top?",
     "caller": "Shaun Anderson",
     "caller_role": "employee",
-    "tool_call": "find_people",
+    "tool_call": "get_org_chain",
     "arguments": {
-      "name": "Shaun Anderson"
+      "person": "Shaun Anderson",
+      "direction": "up",
+      "depth": 10
     },
     "refusal_message": null,
     "relevant_count": 7,
-    "returned_count": 1,
-    "top3_returned": [
-      "fa37c2c1-ab69-4972-ab4c-0a1ee3832980"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.14285714285714285,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t1-06",
@@ -115,19 +132,19 @@
     "text": "Show me everyone Katherine Byrne reports up to.",
     "caller": "Shaun Anderson",
     "caller_role": "employee",
-    "tool_call": "find_people",
+    "tool_call": "get_org_chain",
     "arguments": {
-      "name": "Katherine Byrne"
+      "person": "Katherine Byrne",
+      "direction": "up",
+      "depth": 10
     },
     "refusal_message": null,
     "relevant_count": 4,
-    "returned_count": 1,
-    "top3_returned": [
-      "abb9b001-2c7c-4c62-8092-59da1a8173df"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.25,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t1-07",
@@ -143,12 +160,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574"
+    "topk_returned": [
+      "0edd3391-4a2f-40f7-bc02-dfeea12c99ce"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-08",
@@ -164,12 +181,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574"
+    "topk_returned": [
+      "0edd3391-4a2f-40f7-bc02-dfeea12c99ce"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-09",
@@ -185,12 +202,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "c654a5fb-1c09-45a1-ac0f-d81c9a77aee8"
+    "topk_returned": [
+      "46d8b150-1498-4b4d-b8c3-114084b3222e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-10",
@@ -206,12 +223,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "c654a5fb-1c09-45a1-ac0f-d81c9a77aee8"
+    "topk_returned": [
+      "46d8b150-1498-4b4d-b8c3-114084b3222e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-11",
@@ -227,12 +244,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "e97db514-88a1-48ae-9a1b-d15300620b63"
+    "topk_returned": [
+      "863f7537-7ae9-4176-a9e5-42f775844e9a"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-12",
@@ -248,12 +265,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "aa87dad8-a9bf-4bb6-a6dd-3b67b58f4eee"
+    "topk_returned": [
+      "5ac9fbe5-93f8-4ada-abdc-f77bab965b06"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-13",
@@ -269,12 +286,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "647a0d15-9025-4bb4-ba05-495dc5d7937b"
+    "topk_returned": [
+      "824f06ce-faee-4688-9eeb-fcc4f8270112"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-14",
@@ -290,12 +307,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "1d1176af-7415-40f6-ba1e-118d48157cca"
+    "topk_returned": [
+      "f402cde7-11b3-4933-92bf-fdc85af4556e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-15",
@@ -310,15 +327,11 @@
     },
     "refusal_message": null,
     "relevant_count": 0,
-    "returned_count": 5,
-    "top3_returned": [
-      "e8f28c0a-4a8f-4fea-833a-1e0f8c2a9065",
-      "c87bcfdb-8229-406f-b9de-83d172dcff59",
-      "d9bdcff1-8e57-4a6e-8e27-8c2a2ac2d66c"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-16",
@@ -333,15 +346,13 @@
     },
     "refusal_message": null,
     "relevant_count": 1,
-    "returned_count": 5,
-    "top3_returned": [
-      "161a4bf6-5db3-4ec2-a8d6-03455935213a",
-      "e8f28c0a-4a8f-4fea-833a-1e0f8c2a9065",
-      "c87bcfdb-8229-406f-b9de-83d172dcff59"
+    "returned_count": 1,
+    "topk_returned": [
+      "a0c782c1-2ac8-49f3-9c87-d8b9d5e17f3a"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.3333333333333333
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-17",
@@ -357,10 +368,10 @@
     "refusal_message": null,
     "relevant_count": 0,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-18",
@@ -376,12 +387,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "24a49b42-6c9d-43c0-abd0-8caca7d04a70"
+    "topk_returned": [
+      "97847d4c-d684-4c85-906d-125cbe2c75a1"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-19",
@@ -396,15 +407,58 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "93e25d07-6f1b-4079-869b-3fb6b286dd8f"
+    "returned_count": 2,
+    "topk_returned": [
+      "1284d91a-5733-45c4-87ba-0e9b729c403d",
+      "6b7b8950-4cf4-46a9-92c5-833920a807fe"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
+  },
+  {
+    "id": "t1-20",
+    "tier": 1,
+    "category": "self_manager_lookup",
+    "text": "Who is my manager?",
+    "caller": "Priya Brown",
+    "caller_role": "employee",
+    "tool_call": "get_org_chain",
+    "arguments": {
+      "person": "self",
+      "direction": "up",
+      "depth": 1
+    },
+    "refusal_message": null,
+    "relevant_count": 1,
+    "returned_count": 1,
+    "topk_returned": [
+      "dc7d40bc-dbd1-49aa-9697-917adf1d4f0e"
+    ],
+    "exec_error": null,
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
+  },
+  {
+    "id": "t1-21",
+    "tier": 1,
+    "category": "manager_lookup",
+    "text": "Who does Shaun Anderson report to?",
+    "caller": "Eval HR",
+    "caller_role": "hr",
+    "tool_call": "find_people",
+    "arguments": {
+      "name": "Shaun Anderson"
+    },
+    "refusal_message": null,
+    "relevant_count": 1,
+    "returned_count": 1,
+    "topk_returned": [
+      "c0088593-3fda-434b-8587-234a98e699c5"
+    ],
+    "exec_error": null,
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-01",
@@ -419,15 +473,11 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "1fc84b41-27f3-449c-ac91-19c20440787f",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-02",
@@ -442,15 +492,11 @@
     },
     "refusal_message": null,
     "relevant_count": 1,
-    "returned_count": 5,
-    "top3_returned": [
-      "5f65656b-f1de-4dc3-919a-79cbb6b14ea0",
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574",
-      "509c7fe4-5908-4b36-bcba-9ef89c370353"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.3333333333333333
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-03",
@@ -465,15 +511,11 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "abb9b001-2c7c-4c62-8092-59da1a8173df",
-      "2d4f5710-186c-483a-931d-18725358fc69",
-      "c3086c65-7b6c-437e-ab2d-f392dafbc6da"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-04",
@@ -488,15 +530,11 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "28b84a96-8808-4532-bea9-c215e0f347e4",
-      "25907716-1f15-4fb4-92c0-8cda7b15e873",
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-05",
@@ -507,20 +545,16 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "query": "reporting tools and dashboards",
+      "query": "sharp with reporting tools and dashboards",
       "office": "Bangalore"
     },
     "refusal_message": null,
     "relevant_count": 4,
-    "returned_count": 5,
-    "top3_returned": [
-      "5b6faea5-4063-4f41-b9d3-9c18d736219d",
-      "85c83620-0c3e-4216-ace1-44afb04131f4",
-      "f4d0d48b-1fab-4687-856d-e5aa51c44ffd"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.5,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-06",
@@ -531,20 +565,25 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Terraform",
-      "org_unit": "Cloud Operations Team"
+      "org_unit": "Cloud Operations Team",
+      "skill": "Terraform"
     },
     "refusal_message": null,
     "relevant_count": 8,
-    "returned_count": 5,
-    "top3_returned": [
-      "637903d9-5331-4282-965d-c555e4fdb5cd",
-      "a77dd10b-e1f3-434c-b299-eba1d47a58ac",
-      "601e0f31-cca2-495a-8b84-314a6af20035"
+    "returned_count": 8,
+    "topk_returned": [
+      "7a7801a4-56ce-4184-af6b-4db8f46f14bc",
+      "b49b7fc6-38b4-4b21-89fc-3034d420d4b1",
+      "55d2eabb-6858-47da-b4ec-abcf841dd361",
+      "507bd6bb-fc51-44a1-b58a-52cd4b893cb3",
+      "7e307c36-f6a3-460d-897d-68ee3a8e29fd",
+      "75b64c39-7545-4c79-9ba3-be06dfe37a4c",
+      "abf9af5b-0aa3-469e-aa2a-a889cc7e30e9",
+      "ecd0184b-97c8-46a2-8aa2-b7795d96055d"
     ],
     "exec_error": null,
-    "recall_at_3": 0.375,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.125,
+    "precision_at_k": 0.125
   },
   {
     "id": "t2-07",
@@ -555,16 +594,16 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Terraform",
+      "query": "comfortable with Terraform",
       "org_unit": "Cloud Infrastructure"
     },
     "refusal_message": null,
     "relevant_count": 8,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-08",
@@ -580,15 +619,21 @@
     },
     "refusal_message": null,
     "relevant_count": 9,
-    "returned_count": 5,
-    "top3_returned": [
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e",
-      "601e0f31-cca2-495a-8b84-314a6af20035",
-      "f2319a0f-82cc-4de1-82bc-eae6a5d2e51c"
+    "returned_count": 9,
+    "topk_returned": [
+      "bcd355b1-4440-47ac-aff2-afc07b7a5f34",
+      "7a7801a4-56ce-4184-af6b-4db8f46f14bc",
+      "b49b7fc6-38b4-4b21-89fc-3034d420d4b1",
+      "fd2b11c1-fb40-49e9-9535-d2fdbbad8591",
+      "444b624a-7bed-468e-a854-e15c8fae23cb",
+      "55d2eabb-6858-47da-b4ec-abcf841dd361",
+      "6aaa2113-6c7f-4bc6-8a83-10e17767190c",
+      "507bd6bb-fc51-44a1-b58a-52cd4b893cb3",
+      "0b70fcaa-5425-48e5-a100-ed0dd634be65"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-09",
@@ -604,15 +649,27 @@
     },
     "refusal_message": null,
     "relevant_count": 15,
-    "returned_count": 5,
-    "top3_returned": [
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6",
-      "a24daf94-8d52-47b9-aa21-e63fcc7201f1",
-      "a588ae75-26eb-4e32-8e14-269daa4393a3"
+    "returned_count": 15,
+    "topk_returned": [
+      "9f7172a8-31f9-46de-8d86-8012c7d31068",
+      "88f7093d-9ab2-4783-b71e-a0d1e74ef9ab",
+      "30b0acb3-0194-4402-a741-8c73b4a1c5e3",
+      "1498ba12-bbc4-4440-9090-ce38eb0ef186",
+      "448ccc4e-885f-41b1-bd43-8c60ff89552c",
+      "66588126-ed3f-4c1a-885f-c9821615bbd7",
+      "ec54a4c7-7603-4987-8cd2-48419a358b48",
+      "21f14991-7b18-4d46-8502-b280b37dd709",
+      "befb7efc-f3d4-4e38-af70-5bbd7b11049c",
+      "07a2ca81-20ee-45a0-8609-b90462c1267e",
+      "46d8b150-1498-4b4d-b8c3-114084b3222e",
+      "9ac67634-b6b3-4df0-ab2f-05e1eb828434",
+      "f5fea601-cd02-4318-9913-a026864c21bd",
+      "e3eb2780-d24c-46cd-bea9-8f1740ff58e3",
+      "35d72bb8-cea4-4c57-8468-011b85f82b96"
     ],
     "exec_error": null,
-    "recall_at_3": 0.2,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.26666666666666666,
+    "precision_at_k": 0.26666666666666666
   },
   {
     "id": "t2-10",
@@ -628,15 +685,18 @@
     },
     "refusal_message": null,
     "relevant_count": 6,
-    "returned_count": 5,
-    "top3_returned": [
-      "af7f7812-be03-48e9-b81e-ee99a2b183ef",
-      "fa37c2c1-ab69-4972-ab4c-0a1ee3832980",
-      "11817341-9b66-4fba-b2bd-7afd6bcae822"
+    "returned_count": 6,
+    "topk_returned": [
+      "128dbf75-fea6-4074-80bb-32da0aee908c",
+      "c0088593-3fda-434b-8587-234a98e699c5",
+      "1284d91a-5733-45c4-87ba-0e9b729c403d",
+      "9bf2a779-fa62-420d-9e0a-d7b49f060565",
+      "4fc0e700-7c3b-444c-9b6d-622f583c9b3f",
+      "a1ce4f8e-3f2a-42c9-807d-e0673d36e44a"
     ],
     "exec_error": null,
-    "recall_at_3": 0.5,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.5,
+    "precision_at_k": 0.5
   },
   {
     "id": "t2-11",
@@ -652,15 +712,21 @@
     },
     "refusal_message": null,
     "relevant_count": 9,
-    "returned_count": 5,
-    "top3_returned": [
-      "23e05803-2e66-4ec8-894a-80f0dc9c6a17",
-      "f5d3c2e0-c27a-4e88-9ae5-22f94988c6fe",
-      "65948ca8-135e-4901-babe-b599c6ed4e32"
+    "returned_count": 9,
+    "topk_returned": [
+      "636ed224-dffa-4520-8404-4220931a3c04",
+      "d2f9855b-953b-44b7-a298-3c27b89db716",
+      "fad57924-24d6-4492-a478-f4d0c9eb3ef3",
+      "c0c6fd03-59b6-4d75-8e14-0d8b863f0b9a",
+      "563ab59c-0335-4813-ba29-e5dbe63c934d",
+      "2653c49b-b9ee-472d-8c92-2a67687ec394",
+      "799d26b9-3c1c-4e49-b59e-407a8ccec1c4",
+      "aa154dbd-1dbb-446c-95ff-8bd15b6ce47b",
+      "425f617d-bf99-4f6a-b37a-e169d1de9cec"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-12",
@@ -676,15 +742,19 @@
     },
     "refusal_message": null,
     "relevant_count": 7,
-    "returned_count": 5,
-    "top3_returned": [
-      "dd6a143c-a069-4028-b92e-3ee91225e378",
-      "5cc2c468-28dd-427a-af81-9f26ff449012",
-      "b4ec6f23-421d-4979-ab7b-ab00158675e9"
+    "returned_count": 7,
+    "topk_returned": [
+      "eed476c9-e6da-47ca-b540-75fa52b86cb9",
+      "f8297748-a66d-4d61-bbec-a4ab3cda2768",
+      "390c46e4-cfbf-4744-aad2-9f80968f5492",
+      "7149726f-53ea-4209-9305-53e21859f7ec",
+      "60d6cd99-0991-4430-b5a2-ade54c61c81f",
+      "50959250-a272-495c-9211-836fa37d9b24",
+      "28b93a9e-e9cd-40b3-97e0-696d6bdc9384"
     ],
     "exec_error": null,
-    "recall_at_3": 0.42857142857142855,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-13",
@@ -693,21 +763,17 @@
     "text": "search the directory for people connected to Project Nightingale",
     "caller": "Sean Wilson",
     "caller_role": "manager",
-    "tool_call": "find_people",
+    "tool_call": "find_project_owner",
     "arguments": {
-      "query": "Project Nightingale"
+      "name": "Project Nightingale"
     },
     "refusal_message": null,
     "relevant_count": 0,
-    "returned_count": 5,
-    "top3_returned": [
-      "71077397-0474-4c23-ada5-1ae9701dbd2d",
-      "e97db514-88a1-48ae-9a1b-d15300620b63",
-      "4d17e5c2-4bf9-46fe-9035-51d97177aa48"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-14",
@@ -722,15 +788,14 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "93e25d07-6f1b-4079-869b-3fb6b286dd8f"
+    "returned_count": 2,
+    "topk_returned": [
+      "1284d91a-5733-45c4-87ba-0e9b729c403d",
+      "6b7b8950-4cf4-46a9-92c5-833920a807fe"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-15",
@@ -746,12 +811,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "dbf57c4d-eec1-4bfd-b33b-1b03c0b2b70b"
+    "topk_returned": [
+      "ddca41d5-50e4-4055-adc7-a353c4ff8d58"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-16",
@@ -767,15 +832,24 @@
     },
     "refusal_message": null,
     "relevant_count": 12,
-    "returned_count": 5,
-    "top3_returned": [
-      "7dced597-0d92-4ca6-adc0-c2345687b69c",
-      "ef2c341d-fdb7-4379-9e70-1b17e1ddff17",
-      "34e96099-1566-476f-8252-92ba5ec951ee"
+    "returned_count": 12,
+    "topk_returned": [
+      "5c3506ff-f118-4423-a446-0cc86d2b6a1a",
+      "e0421638-9193-4251-af3a-b0dd1f918770",
+      "5073d6c5-83bb-41e4-82e4-95c015f567c6",
+      "25e2eb50-075e-4a7c-99cf-d2e8ce349885",
+      "f17afd21-d6c7-4cc5-aea4-903d07f8d4e2",
+      "df4a1be2-b8a1-487a-badc-a2c0227ae197",
+      "59710d01-19a2-4ffe-8e36-9b8c35be6a10",
+      "32d6a070-0c3e-4e52-b57a-a8c66a470797",
+      "42828d1e-72bf-4f3e-9f6a-7b707fb41339",
+      "fc63505c-7e4f-45e2-8bdd-530b771c4b7f",
+      "526c9958-c120-4018-af13-37cdd705b7ef",
+      "9d18ae77-f4a6-42a0-9576-3d32d7764b2e"
     ],
     "exec_error": null,
-    "recall_at_3": 0.25,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-17",
@@ -787,18 +861,18 @@
     "tool_call": "find_people",
     "arguments": {
       "skill": "Power BI",
-      "office": "Bangalore",
-      "level": "Expert"
+      "level": "Expert",
+      "office": "Bangalore"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "f4d0d48b-1fab-4687-856d-e5aa51c44ffd"
+    "topk_returned": [
+      "9fadf735-2b3c-44ce-a2a3-5d5174556618"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-18",
@@ -809,20 +883,15 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Kubernetes",
-      "org_unit": "Infrastructure"
+      "query": "someone who can help with Kubernetes and works in Infrastructure"
     },
     "refusal_message": null,
-    "relevant_count": 5,
-    "returned_count": 5,
-    "top3_returned": [
-      "637903d9-5331-4282-965d-c555e4fdb5cd",
-      "a77dd10b-e1f3-434c-b299-eba1d47a58ac",
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e"
-    ],
+    "relevant_count": 30,
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t3-01",
@@ -838,14 +907,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e62941a3-abc2-4233-9655-1e4cbd60fed8",
-      "b9b04385-3798-4313-8e1d-1c81a5d08564",
-      "44695afa-1c99-40e0-9454-6e3d6b044902"
+    "topk_returned": [
+      "1a27fca4-9403-4dcc-9a4c-73ebe789f239",
+      "ee58eb92-b985-4ae3-b053-0ee29d9e8ca6",
+      "26b689cc-4949-43f5-b586-47114a3bf9ab",
+      "fcd7a701-cd1e-43c3-b65d-5881b543f7dc",
+      "8357fcfa-1592-40d4-a320-76d941e39aa3"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-02",
@@ -861,14 +932,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "601e0f31-cca2-495a-8b84-314a6af20035",
-      "b2beee80-4aec-4ff9-8d20-df4290339210",
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e"
+    "topk_returned": [
+      "7a7801a4-56ce-4184-af6b-4db8f46f14bc",
+      "bcd355b1-4440-47ac-aff2-afc07b7a5f34",
+      "fd2b11c1-fb40-49e9-9535-d2fdbbad8591",
+      "444b624a-7bed-468e-a854-e15c8fae23cb",
+      "55d2eabb-6858-47da-b4ec-abcf841dd361"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-03",
@@ -884,14 +957,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "083e8285-84e9-4402-b2e1-1a1f7be7739c",
-      "e43c6d46-e973-40d0-80de-c56b7111fb26",
-      "f53c2c7f-a200-4519-acee-7c38ad427300"
+    "topk_returned": [
+      "8646fbc2-4d25-4db7-80a1-34afa3c54761",
+      "e8a83b8c-244b-447f-a959-c771c4ea6e10",
+      "36e4f277-c5ef-4d7e-a166-de16a67d86c2",
+      "16719152-64aa-46cf-9fc8-b682312bb80f",
+      "fb0fe885-74df-4c3f-b775-a69f320fd20e"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-04",
@@ -907,14 +982,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "17f7f8eb-2bbf-4979-a07a-e24f552750f5",
-      "11817341-9b66-4fba-b2bd-7afd6bcae822"
+    "topk_returned": [
+      "6b7b8950-4cf4-46a9-92c5-833920a807fe",
+      "57d30152-8dd1-445e-a59d-b2464a5c06bf",
+      "1284d91a-5733-45c4-87ba-0e9b729c403d",
+      "cc48777f-cd3c-4982-ac30-a49b140ba59e",
+      "0689d341-7bd5-4947-82b1-430cd863cc2a"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-05",
@@ -930,14 +1007,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e62941a3-abc2-4233-9655-1e4cbd60fed8",
-      "b9b04385-3798-4313-8e1d-1c81a5d08564",
-      "44695afa-1c99-40e0-9454-6e3d6b044902"
+    "topk_returned": [
+      "1a27fca4-9403-4dcc-9a4c-73ebe789f239",
+      "ee58eb92-b985-4ae3-b053-0ee29d9e8ca6",
+      "26b689cc-4949-43f5-b586-47114a3bf9ab",
+      "fcd7a701-cd1e-43c3-b65d-5881b543f7dc",
+      "8357fcfa-1592-40d4-a320-76d941e39aa3"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-06",
@@ -957,14 +1036,14 @@
     "refusal_message": null,
     "relevant_count": 3,
     "returned_count": 3,
-    "top3_returned": [
-      "frozenset({('working_count', 0), ('skill', 'Rust'), ('gap', True), ('learning_count', 0), ('expert_count', 0), ('recognized', True)})",
-      "frozenset({('working_count', 26), ('expert_count', 15), ('recognized', True), ('gap', False), ('skill', 'React'), ('learning_count', 1)})",
-      "frozenset({('skill', 'Terraform'), ('recognized', True), ('gap', False), ('learning_count', 2), ('expert_count', 12), ('working_count', 17)})"
+    "topk_returned": [
+      "frozenset({('skill', 'Rust'), ('recognized', True), ('expert_count', 0), ('working_count', 0), ('learning_count', 0), ('gap', True)})",
+      "frozenset({('gap', False), ('learning_count', 1), ('recognized', True), ('working_count', 26), ('skill', 'React'), ('expert_count', 15)})",
+      "frozenset({('learning_count', 2), ('gap', False), ('working_count', 17), ('recognized', True), ('skill', 'Terraform'), ('expert_count', 12)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-07",
@@ -983,13 +1062,13 @@
     "refusal_message": null,
     "relevant_count": 2,
     "returned_count": 2,
-    "top3_returned": [
-      "frozenset({('working_count', 17), ('expert_count', 7), ('skill', 'GDPR'), ('recognized', True), ('gap', False), ('learning_count', 1)})",
-      "frozenset({('working_count', 15), ('expert_count', 10), ('recognized', True), ('gap', False), ('learning_count', 2), ('skill', 'SOC 2 Compliance')})"
+    "topk_returned": [
+      "frozenset({('expert_count', 7), ('gap', False), ('learning_count', 1), ('recognized', True), ('working_count', 17), ('skill', 'GDPR')})",
+      "frozenset({('learning_count', 2), ('expert_count', 10), ('skill', 'SOC 2 Compliance'), ('gap', False), ('recognized', True), ('working_count', 15)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-08",
@@ -998,17 +1077,17 @@
     "text": "do we have anyone who knows Quantum Computing",
     "caller": "Eval HR",
     "caller_role": "hr",
-    "tool_call": "skill_scarcity",
+    "tool_call": "find_people",
     "arguments": {
       "skill": "Quantum Computing"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t3-09",
@@ -1024,12 +1103,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "frozenset({('expert_count', 14), ('working_count', 16), ('skill', 'Site Reliability Engineering'), ('capable_count', 30), ('learning_count', 2)})"
+    "topk_returned": [
+      "frozenset({('learning_count', 2), ('skill', 'Site Reliability Engineering'), ('capable_count', 30), ('working_count', 16), ('expert_count', 14)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-10",
@@ -1043,14 +1122,21 @@
     "refusal_message": null,
     "relevant_count": 10,
     "returned_count": 10,
-    "top3_returned": [
-      "frozenset({('working_count', 0), ('skill', 'Rust'), ('learning_count', 0), ('expert_count', 0), ('capable_count', 0)})",
-      "frozenset({('working_count', 0), ('learning_count', 0), ('expert_count', 0), ('skill', 'C++'), ('capable_count', 0)})",
-      "frozenset({('working_count', 0), ('learning_count', 0), ('expert_count', 0), ('skill', 'Penetration Testing'), ('capable_count', 0)})"
+    "topk_returned": [
+      "frozenset({('skill', 'Rust'), ('expert_count', 0), ('working_count', 0), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('expert_count', 0), ('working_count', 0), ('skill', 'C++'), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('skill', 'Penetration Testing'), ('expert_count', 0), ('working_count', 0), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('learning_count', 1), ('expert_count', 0), ('skill', 'GCP'), ('working_count', 3), ('capable_count', 3)})",
+      "frozenset({('working_count', 4), ('learning_count', 4), ('expert_count', 2), ('capable_count', 6), ('skill', 'Payroll Systems')})",
+      "frozenset({('capable_count', 8), ('skill', 'Docker'), ('learning_count', 4), ('expert_count', 2), ('working_count', 6)})",
+      "frozenset({('working_count', 8), ('skill', 'Machine Learning'), ('learning_count', 5), ('capable_count', 9), ('expert_count', 1)})",
+      "frozenset({('expert_count', 4), ('skill', 'Network Administration'), ('learning_count', 3), ('capable_count', 9), ('working_count', 5)})",
+      "frozenset({('capable_count', 11), ('learning_count', 3), ('working_count', 6), ('skill', 'Applicant Tracking Systems'), ('expert_count', 5)})",
+      "frozenset({('skill', 'Enterprise Procurement'), ('expert_count', 4), ('capable_count', 11), ('working_count', 7), ('learning_count', 0)})"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-11",
@@ -1070,14 +1156,14 @@
     "refusal_message": null,
     "relevant_count": 3,
     "returned_count": 3,
-    "top3_returned": [
-      "frozenset({('expert_count', 14), ('working_count', 16), ('skill', 'Site Reliability Engineering'), ('recognized', True), ('gap', False), ('learning_count', 2)})",
-      "frozenset({('skill', 'Terraform'), ('recognized', True), ('gap', False), ('learning_count', 2), ('expert_count', 12), ('working_count', 17)})",
-      "frozenset({('learning_count', 3), ('recognized', True), ('expert_count', 9), ('working_count', 21), ('gap', False), ('skill', 'Kubernetes')})"
+    "topk_returned": [
+      "frozenset({('learning_count', 2), ('gap', False), ('skill', 'Site Reliability Engineering'), ('recognized', True), ('working_count', 16), ('expert_count', 14)})",
+      "frozenset({('learning_count', 2), ('gap', False), ('working_count', 17), ('recognized', True), ('skill', 'Terraform'), ('expert_count', 12)})",
+      "frozenset({('gap', False), ('recognized', True), ('expert_count', 9), ('learning_count', 3), ('skill', 'Kubernetes'), ('working_count', 21)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-12",
@@ -1093,12 +1179,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
+    "topk_returned": [
       "Project Nightingale"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-13",
@@ -1114,10 +1200,10 @@
     "refusal_message": null,
     "relevant_count": 0,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "oos-01",

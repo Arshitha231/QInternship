@@ -1,5 +1,6 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,14 +14,28 @@ from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
+from app.registry import assert_registry_covers_schema
 from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary, UpdateBioRequest
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Fails loudly at startup if a DB column has no app/registry.py entry
+    # and isn't in IGNORED_COLUMNS -- the same protection
+    # assert_registry_covers_schema's own docstring describes: a teammate
+    # adding employee.home_address must add a registry entry (or a
+    # justified ignore) before it can ever become queryable, not after.
+    assert_registry_covers_schema(engine)
+    yield
+
 
 app = FastAPI(
     title="Employee Directory API",
     description="Internal employee directory with permission-filtered natural-language search.",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 # Local frontend dev server only (Vite default port) — the API has no

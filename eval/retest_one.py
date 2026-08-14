@@ -72,14 +72,15 @@ for n, question_id in enumerate(question_ids):
         relevant = set(gt)
 
     recall, precision = score(relevant, returned_list)
+    k = max(len(relevant), 1)
     record.update(
         relevant_count=len(relevant), returned_count=len(returned_list),
-        top3_returned=returned_list[:3], exec_error=exec_error,
-        recall_at_3=recall, precision_at_3=precision,
+        topk_returned=returned_list[:k], exec_error=exec_error,
+        recall_at_k=recall, precision_at_k=precision,
     )
     print(f"  -> relevant={len(relevant)} returned={len(returned_list)} "
-          f"recall@3={recall:.2f} precision@3={precision:.2f}", flush=True)
-    print(f"  -> top3_returned: {returned_list[:3]}", flush=True)
+          f"recall@{k}={recall:.2f} precision@{k}={precision:.2f}", flush=True)
+    print(f"  -> topk_returned: {returned_list[:k]}", flush=True)
 
     results = [r for r in results if r["id"] != question_id]
     results.append(record)

@@ -95,8 +95,9 @@ async def test_assisted_trace_reflects_the_real_tool_call(client):
 # ---------------------------------------------------------------------------
 # Self-referential relationship/attribute questions ("who is my manager?",
 # "who are my direct reports?") must resolve through a typed lookup
-# (get_person / get_org_chain, person_id="self") on the caller's own
-# record — never fall through to find_people's free-text/vector search,
+# (get_person's person_id="self" / get_org_chain's person="self") on the
+# caller's own record — never fall through to find_people's free-text/
+# vector search,
 # which has no name to match against a first-person question.
 #
 # "who is my manager?" specifically must surface the MANAGER as the
@@ -114,7 +115,7 @@ async def test_self_referential_manager_query_uses_get_org_chain_not_get_person(
     assert body["mode"] == "assisted"
     trace = body["overview"]["trace"]
     assert trace[0]["tool"] == "get_org_chain"
-    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 1}
+    assert trace[0]["args"] == {"person": "self", "direction": "up", "depth": 1}
     result_ids = {p["id"] for p in body["results"]}
     assert "report-1" not in result_ids  # never highlights the caller
     assert "mgr-1" in result_ids  # highlights the manager instead
@@ -130,7 +131,7 @@ async def test_self_referential_direct_reports_query_uses_get_org_chain_self(cli
     assert body["mode"] == "assisted"
     trace = body["overview"]["trace"]
     assert trace[0]["tool"] == "get_org_chain"
-    assert trace[0]["args"] == {"person_id": "self", "direction": "down", "depth": 1}
+    assert trace[0]["args"] == {"person": "self", "direction": "down", "depth": 1}
     assert any(p["id"] == "report-1" for p in body["results"])
 
 
@@ -151,7 +152,7 @@ async def test_self_referential_manager_single_hop_uses_org_chain_depth_one(clie
     body = resp.json()
     trace = body["overview"]["trace"]
     assert trace[0]["tool"] == "get_org_chain"
-    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 1}
+    assert trace[0]["args"] == {"person": "self", "direction": "up", "depth": 1}
     result_ids = {p["id"] for p in body["results"]}
     assert "chain-1" not in result_ids
     assert "chain-2" in result_ids
@@ -166,7 +167,7 @@ async def test_self_referential_manager_of_manager_walks_two_hops(client):
     assert body["mode"] == "assisted"
     trace = body["overview"]["trace"]
     assert trace[0]["tool"] == "get_org_chain"
-    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 2}
+    assert trace[0]["args"] == {"person": "self", "direction": "up", "depth": 2}
     result_ids = {p["id"] for p in body["results"]}
     assert "chain-1" not in result_ids  # never defaults back to self
     assert "chain-3" in result_ids  # Casey Top, two hops above Chris Bottom
@@ -186,7 +187,7 @@ async def test_self_referential_manager_chain_three_hops(client):
     body = resp.json()
     trace = body["overview"]["trace"]
     assert trace[0]["tool"] == "get_org_chain"
-    assert trace[0]["args"] == {"person_id": "self", "direction": "up", "depth": 3}
+    assert trace[0]["args"] == {"person": "self", "direction": "up", "depth": 3}
     result_ids = {p["id"] for p in body["results"]}
     assert "chain-1" not in result_ids
     assert "chain-3" in result_ids
@@ -278,7 +279,7 @@ async def test_org_chain_cards_omit_unset_fields_not_null(client, monkeypatch):
     monkeypatch.setattr(
         "app.unified_search.resolve_intent",
         lambda _msg: AssistantTurn(
-            tool_call=ResolvedToolCall(name="get_org_chain", arguments={"person_id": "chain-1", "direction": "up"})
+            tool_call=ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up"})
         ),
     )
     resp = await client.get("/search", params={"q": "who is above chain-1?"}, headers=auth_headers("manager"))
