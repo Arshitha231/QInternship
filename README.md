@@ -496,6 +496,40 @@ Two details worth knowing:
 An HR person isn't told about their own birthday; their colleagues still are,
 so the day isn't missed.
 
+### Adding the IT division to an existing database
+
+`seed_it_division.py` is the only one of these scripts that **hires** rather
+than backfills: it creates the IT division, the IT Operations department, its
+teams, and ~30 people, and never modifies, reparents or deletes an existing
+employee or org unit. Idempotent — if an org unit named `IT` exists it does
+nothing.
+
+```bash
+python seed_it_division.py
+python build_search_index.py    # REQUIRED, see below
+```
+
+Two traps it handles, and one it can't:
+
+- **`seed.next_name()` drains a forced queue first**, and that queue is a
+  *search fixture*, not a name pool — two exact "Priya Sharma"s so an
+  exact-name lookup is genuinely ambiguous, plus near-duplicate pairs for
+  fuzzy matching. A fresh process refills it, so hiring re-injects them:
+  observed four Priya Sharmas, which quietly destroys the ambiguity the golden
+  eval tests for. The script clears it.
+- **Email and Slack uniqueness** dedupe against sets that start empty in a new
+  process, so a new hire could be handed an address that already belongs to
+  someone. The script reserves every existing identifier first.
+- **The search index is shared.** `find_people` retrieves through Azure AI
+  Search whenever it's configured, and the index is a snapshot — new hires
+  have profiles that load fine by id but return nothing for a name or
+  `org_unit` filter until `build_search_index.py` runs. Both local development
+  and the deployed app point at the same Search resource and the same
+  `employees-index`, so **rebuilding from a laptop publishes local-only
+  employee ids into the index the deployed app queries**, producing search
+  results that 404 when opened. Seed the deployed database, then rebuild from
+  the deployed side.
+
 ### Seeding these onto an existing database
 
 Same problem and same shape as `seed_training.py` — `seed.py` would delete
