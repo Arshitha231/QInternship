@@ -25,6 +25,7 @@ from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
+from app.certifications import employee_training_status
 from app.models import (
     AuditLog,
     Employee,
@@ -605,12 +606,34 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
     if "project_history" in fields:
         kwargs["project_history"] = _project_history(db, caller, target)
 
+    if "training_status" in fields:
+        # Routed through the provider factory, never at a provider directly
+        # — with ENABLE_TRAINING_API_SYNC off this reads seeded synthetic
+        # data, and with it on the same call reaches the training team's
+        # API, with nothing here changing. None means the provider couldn't
+        # answer; leaving the key unset makes it genuinely absent from the
+        # response rather than an empty list that reads as "no courses".
+        items = employee_training_status(db, target)
+        if items is not None:
+            kwargs["training_status"] = items
+
     if "hire_date" in fields:
         kwargs["hire_date"] = target.hire_date
     if "cost_centre" in fields:
         kwargs["cost_centre"] = target.cost_centre
     if "personal_mobile" in fields:
         kwargs["personal_mobile"] = target.personal_mobile
+    # str() rather than float() — see the schema comment. Set even when empty,
+    # so a contractor with no salary on file comes back as null rather than
+    # absent: absent has to keep meaning "you may not see this", or HR can't
+    # tell "no salary held" from "hidden from me". Same rule away_until_month
+    # follows.
+    if "salary" in fields:
+        kwargs["salary"] = str(target.salary) if target.salary is not None else None
+    if "salary_currency" in fields:
+        kwargs["salary_currency"] = target.salary_currency
+    if "date_of_birth" in fields:
+        kwargs["date_of_birth"] = target.date_of_birth
 
     return PersonDetail(**kwargs)
 

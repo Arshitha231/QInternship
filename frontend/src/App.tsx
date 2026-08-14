@@ -159,6 +159,11 @@ export default function App() {
           setSavedSearch(null);
           resetProfile(next.id, next.name);
         }}
+        onOpenPerson={(id, name) => {
+          resetProfile(id, name);
+          setMode("profile");
+          setQuery("");
+        }}
       />
 
       <div className="tabs" role="tablist" aria-label="Section">

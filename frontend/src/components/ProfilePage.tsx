@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
 import {
-  Briefcase, Building, ChevronLeft, Clock, Mail, MapPin, Phone, Slack, UserReports, Users,
+  AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
+  MapPin, Phone, Slack, UserReports, Users,
 } from "../icons";
 
 export interface ProfileStackEntry {
@@ -34,6 +35,28 @@ function groupByLevel(skills: SkillOut[]): [string, SkillOut[]][] {
     groups.get(s.level)!.push(s);
   }
   return LEVEL_ORDER.filter((l) => groups.has(l)).map((l) => [l, groups.get(l)!]);
+}
+
+// Split rather than `new Date(iso)`: "1991-08-13" parses as UTC midnight, and
+// formatting that in any negative-offset timezone renders the day before.
+function formatDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" })
+    .format(new Date(y, m - 1, d));
+}
+
+function formatSalary(amount: string, currency?: string): string {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return amount;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency", currency: currency || "USD", maximumFractionDigits: 0,
+    }).format(value);
+  } catch {
+    // Unknown/absent currency code — show the number rather than nothing.
+    return `${value.toLocaleString()}${currency ? ` ${currency}` : ""}`;
+  }
 }
 
 function localTimeInfo(tz: string): string | null {
@@ -269,6 +292,50 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
             </section>
           )}
 
+          {/* Absent for a caller who isn't the person, their reporting
+              chain, or HR — and also absent when the provider couldn't be
+              reached, which is why an empty list still renders the card
+              (nothing required) but a missing key renders nothing at all. */}
+          {detail.training_status && (
+            <section className="card">
+              <div className="card-head">
+                <h2><GraduationCap size={15} className="reports-icon" />Training</h2>
+                <span className="abac-badge">Self/chain/HR</span>
+              </div>
+              {detail.training_status.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  No courses are expected for this role.
+                </p>
+              ) : (
+                <ul className="training-list">
+                  {detail.training_status.map((t) => {
+                    const completed = t.display_status === "completed";
+                    return (
+                      <li key={t.course_code}>
+                        <span className={`training-icon ${completed ? "ok" : "warn"}`} aria-hidden="true">
+                          {completed ? <Check /> : <AlertCircle />}
+                        </span>
+                        <div className="training-text">
+                          <p className="training-name">
+                            {t.course_name}
+                            {!t.expected && <span className="training-tag">Not required</span>}
+                          </p>
+                          <p className="training-meta">
+                            {/* display_label is the backend's copy, not ours — the
+                                four-value status behind it never reaches the client. */}
+                            <span className={completed ? "training-ok" : "training-warn"}>{t.display_label}</span>
+                            {completed && t.completed_month ? ` · ${t.completed_month}` : ""}
+                            {!completed && t.attempted_month ? ` · last attempt ${t.attempted_month}` : ""}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
+
           {detail.project_history && detail.project_history.length > 0 && (
             <section className="card">
               <h2>Project history</h2>
@@ -340,6 +407,20 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
                   <Briefcase size={16} />
                   <span className="k">Cost centre<span className="hr-badge">HR only</span></span>
                   <span className="v">{detail.cost_centre}</span>
+                </li>
+              )}
+              {detail.date_of_birth && (
+                <li>
+                  <Cake size={16} />
+                  <span className="k">Date of birth<span className="abac-badge">HR/self</span></span>
+                  <span className="v">{formatDate(detail.date_of_birth)}</span>
+                </li>
+              )}
+              {detail.salary && (
+                <li>
+                  <Briefcase size={16} />
+                  <span className="k">Salary<span className="abac-badge">HR/self</span></span>
+                  <span className="v">{formatSalary(detail.salary, detail.salary_currency)}</span>
                 </li>
               )}
             </ul>

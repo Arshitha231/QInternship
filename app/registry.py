@@ -11,25 +11,39 @@ populated tiers (INTERNAL, HR_ONLY): every field gets a tier and goes
 through the identical is_visible() check, including `id` and `full_name`
 — there is no "public" tier that skips the check.
 
-app/permissions.py's ABAC exception (personal_mobile: self or direct
-manager) doesn't fit this per-role static model at all — "who comes back"
-isn't known until the query runs, so it stays exactly where it already is,
-applied post-retrieval. personal_mobile is registered here anyway (every
-real column must be, per assert_registry_covers_schema below) but with
-sensitivity=None: the static registry always denies it for select/filter/
-order_by, and the only way it ever reaches a response is through
-permissions.abac_extra_fields's existing post-retrieval grant, entirely
-outside this system.
+app/permissions.py's ABAC exceptions don't fit this per-role static model
+at all — "who comes back" isn't known until the query runs, so they stay
+exactly where they already are, applied post-retrieval, on top of
+whatever this registry says statically:
+
+  * personal_mobile (self or direct manager): registered anyway (every
+    real column must be, per assert_registry_covers_schema below) but with
+    sensitivity=None — the static registry always denies it for
+    select/filter/order_by, and the only way it ever reaches a response is
+    permissions.abac_extra_fields's post-retrieval grant, entirely outside
+    this system.
+  * salary / salary_currency / date_of_birth (self only, layered on a REAL
+    HR_ONLY tier, not sensitivity=None): hr sees these statically, same as
+    hire_date/cost_centre — that part IS a mechanical relabeling. The
+    additional "the record's own subject can also see their own" grant is
+    the same post-retrieval ABAC mechanism as personal_mobile, just added
+    on top of a populated tier instead of an empty one. This registry only
+    ever governs the RBAC floor; it was never the whole visibility story
+    for any field ABAC touches.
 
 `direct_reports` (PersonSummary/OrgChainNode's downward-chain field,
-manager+hr only) is deliberately NOT registered here. It's governed today
-by an inline role check in app/people.py/app/org_chart.py, not by
-permissions.py's BASE_FIELDS/HR_ONLY_FIELDS system — there's no existing
-sensitivity tier to relabel for a "manager and hr, but not employee" field,
-and inventing one is a real design decision, not a mechanical relabeling
-pass. Flagged here as a known gap rather than silently folded into INTERNAL
-(visible to employee too — wrong) or HR_ONLY (invisible to manager — also
-wrong).
+manager+hr only) and `training_status` (own profile, or anywhere in the
+target's upward reporting chain, per permissions.training_extra_fields)
+are deliberately NOT registered here. Both are governed by an inline
+check elsewhere (app/people.py/app/org_chart.py; app/permissions.py),
+not by a static per-role sensitivity tier — there's no existing tier to
+relabel for "manager and hr, but not employee" or "self and your whole
+reporting chain, but no one else," and inventing one is a real design
+decision, not a mechanical relabeling pass. Flagged here as known gaps
+rather than silently folded into INTERNAL (visible to employee too —
+wrong for both) or HR_ONLY (invisible to manager/chain — also wrong for
+both). Neither is a real `employees` column, so neither trips
+assert_registry_covers_schema's drift check either.
 """
 from __future__ import annotations
 
@@ -109,9 +123,16 @@ REGISTRY: dict[str, FieldSpec] = {
     "tenure_band": _f(
         "tenure_band", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("hire_date",)),
 
-    # app.permissions.HR_ONLY_FIELDS (2 fields), relabeled HR_ONLY verbatim.
+    # app.permissions.HR_ONLY_FIELDS (5 fields), relabeled HR_ONLY verbatim.
+    # salary/salary_currency/date_of_birth additionally carry a self-only
+    # ABAC grant (permissions.abac_extra_fields) on top of this HR_ONLY
+    # floor -- see the module docstring; that grant is untouched by this
+    # registry, same as personal_mobile's ABAC grant below is.
     "hire_date": _f("hire_date", "date", set(), Sensitivity.HR_ONLY, filterable=False),
     "cost_centre": _f("cost_centre", "str", set(), Sensitivity.HR_ONLY, filterable=False),
+    "salary": _f("salary", "str", set(), Sensitivity.HR_ONLY, filterable=False),
+    "salary_currency": _f("salary_currency", "str", set(), Sensitivity.HR_ONLY, filterable=False),
+    "date_of_birth": _f("date_of_birth", "date", set(), Sensitivity.HR_ONLY, filterable=False),
 
     # ABAC-only — see module docstring. Unlabelled on purpose: the static
     # registry always denies it; permissions.abac_extra_fields grants it

@@ -6,6 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# Two pushes a minute apart used to produce two runs racing each other to the
+# same App Service, each deploying with `--clean true`, and whichever finished
+# LAST won regardless of which commit was newer. That's how seed_training.py
+# went missing from wwwroot: the run that added it to the zip finished first,
+# and the older run's zip -- built before that change -- landed on top and
+# wiped it out. Silent, and indistinguishable from "the deploy hasn't finished
+# yet" from outside.
+#
+# Grouped per ref so main and a PR branch never queue behind each other.
+#
+# cancel-in-progress stays FALSE deliberately. Cancelling mid-run is the usual
+# choice for CI, but this workflow's tail is `az webapp deploy` followed by an
+# alembic-at-startup restart -- killing that partway can leave the App Service
+# with a half-extracted wwwroot or a half-applied migration. Queueing costs a
+# few minutes; a torn deploy costs an outage.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PYTHON_VERSION: "3.14"
   WEBAPP_NAME: Tempest34
@@ -33,7 +52,7 @@ jobs:
       - name: Run pytest
         run: pytest
 
-      # Only used to decide whether the golden eval step below runs --
+      # Only used to decide whether the golden-eval JOB below runs --
       # doesn't gate pytest, doesn't gate anything else.
       - uses: dorny/paths-filter@v3
         id: filter
@@ -48,20 +67,54 @@ jobs:
               - 'eval/**'
               - 'requirements.txt'
 
-      # Hits the real Azure OpenAI + Azure AI Search resources, so it's
-      # slow (rate-limited, deliberately paced -- see eval/run_golden_eval.py)
-      # and needs its own secrets. Only runs when AI/search-relevant files
-      # actually changed, and never blocks deploy on its own -- a
-      # regression here is a signal to look at, not a hard gate.
-      #
-      # Chat, embeddings, and search each have their own secret pair --
-      # GROUP3_4OPENAI* (chat), GROUP3_4_TEXT_EMBEDDING_3_SMALL_* (embedding),
-      # AISEARCH_* (Azure AI Search). Deployment names aren't secrets (not
-      # sensitive), hardcoded directly rather than added as repo secrets.
+  # ---------------------------------------------------------------------
+  # Golden evaluation set. Its own job, and deliberately NOT in anything
+  # else's `needs`, so it runs in parallel with terraform/deploy instead of
+  # in front of them.
+  #
+  # It used to be a step inside `test`, marked continue-on-error so it
+  # couldn't fail the build. But continue-on-error only stops a step
+  # FAILING the job -- it doesn't stop it BLOCKING one, and terraform
+  # (needs: test) and deploy (needs: [test, terraform]) both wait for the
+  # whole test job regardless. So a stuck eval bought 30 minutes of deploy
+  # latency for a result that was explicitly non-binding: observed live at
+  # 13 minutes to reach question 4 of 57, every question exhausting its
+  # retries against an unset CHAT_ENDPOINT. As its own job it can hang for
+  # the full timeout and cost the deploy nothing.
+  #
+  # continue-on-error is gone with it, on purpose. It existed to keep a
+  # non-binding step from failing the build; now that this job blocks
+  # nothing, a red X here is free signal, and the alternative is what
+  # actually happened -- a broken eval sitting green and unnoticed while
+  # every deploy quietly ran half an hour late. eval/run_golden_eval.py
+  # fails fast with a diagnosis when the chat resource isn't configured,
+  # so a red job here is a real finding, not a timeout.
+  #
+  # Hits the real Azure OpenAI + Azure AI Search resources, so it's slow
+  # (rate-limited, deliberately paced -- see eval/run_golden_eval.py) and
+  # needs its own secrets. Only runs when AI/search-relevant files changed.
+  #
+  # Chat, embeddings, and search each have their own secret pair --
+  # GROUP3_4OPENAI* (chat), GROUP3_4_TEXT_EMBEDDING_3_SMALL_* (embedding),
+  # AISEARCH_* (Azure AI Search). Deployment names aren't secrets (not
+  # sensitive), hardcoded directly rather than added as repo secrets.
+  # ---------------------------------------------------------------------
+  golden-eval:
+    runs-on: ubuntu-latest
+    needs: test
+    if: needs.test.outputs.ai-changed == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
       - name: Golden evaluation set (55 questions)
-        if: steps.filter.outputs.ai == 'true'
-        continue-on-error: true
-        timeout-minutes: 30
         env:
           CHAT_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
           CHAT_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
@@ -147,7 +200,14 @@ jobs:
 
       - name: Build deploy zip (backend + built frontend)
         run: |
-          zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py frontend/dist \
+          # The seed_* scripts and build_search_index.py are operator tools run
+          # from the App Service's SSH console -- that's the only place inside
+          # the SQL firewall, and for the index rebuild it's the only place
+          # that won't publish a laptop's local employee ids into the shared
+          # employees-index. They have to be deployed to be runnable there.
+          zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
+            seed_training.py seed_people_data.py seed_it_division.py build_search_index.py \
+            frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 
       - uses: azure/login@v2

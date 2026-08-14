@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
@@ -9,13 +10,26 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
+from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
 from app.db import engine, get_db
+from app.models import Employee, TrainingCourse
+from app.models.enums import CourseStatus, display_status
+from app.notifications import notifications_for, notify_date_milestones
 from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.registry import assert_registry_covers_schema
-from app.schemas import AskRequest, OrgChainNode, PersonDetail, PersonSummary, UpdateBioRequest
+from app.schemas import (
+    AskRequest,
+    NotificationOut,
+    OrgChainNode,
+    PersonDetail,
+    PersonRef,
+    PersonSummary,
+    RecordCourseStatusRequest,
+    UpdateBioRequest,
+)
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
 
@@ -177,6 +191,122 @@ def get_org_chart_route(
         # different case — that's an empty list, handled inside the service.
         raise HTTPException(status_code=404, detail="Person not found")
     return result
+
+
+@app.get("/me/notifications", response_model=list[NotificationOut])
+def my_notifications_route(
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[NotificationOut]:
+    """Your own notifications, newest first.
+
+    Keyed on the caller's id with no person_id parameter at all — there is
+    deliberately no route shape that could read someone else's inbox, for
+    any role. An hr caller reading a manager's course reports would be a
+    second, unaudited way to learn who failed what.
+    """
+    out: list[NotificationOut] = []
+    for n in notifications_for(db, user.id):
+        subject = db.get(Employee, n.subject_employee_id)
+        course = db.get(TrainingCourse, n.course_id)
+        out.append(NotificationOut(
+            id=n.id, kind=n.kind.value,
+            subject_person=PersonRef(
+                id=n.subject_employee_id,
+                full_name=subject.full_name if subject else "",
+            ),
+            course_name=course.name if course else "",
+            display_status=n.display_status, body=n.body,
+            levels_up=n.levels_up, created_at=n.created_at,
+        ))
+    return out
+
+
+@app.post("/people/{person_id}/training/{course_code}", status_code=201)
+def record_training_status_route(
+    person_id: str,
+    course_code: str,
+    body: RecordCourseStatusRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Record a course status change and fire both notification triggers.
+
+    Stands in for the training system telling us something happened, which
+    is the event neither provider can invent — it's what makes the triggers
+    demoable while ENABLE_TRAINING_API_SYNC is off. When the push-vs-pull
+    question is settled with the other team, their webhook handler calls the
+    same service function; this route stays as the manual/backfill path.
+
+    hr-only: it is the one inbound surface that speaks the four-value status,
+    and an employee marking their own course completed would make the whole
+    pipeline decorative. 409 once real sync is on — see
+    LocalStatusWritesDisabled.
+    """
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Recording course status is an HR action")
+
+    employee = db.get(Employee, person_id)
+    if employee is None or not employee.is_active:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    try:
+        row, notifications = record_course_status(
+            db, employee=employee, course_code=course_code,
+            status=CourseStatus(body.status),
+            attempted_on=body.attempted_on, completed_on=body.completed_on,
+        )
+    except LocalStatusWritesDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except UnknownCourse as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # The four-value status echoes back here — this endpoint's caller is hr
+    # and already sent it. It stays out of every profile response.
+    return {
+        "employee_id": row.employee_id,
+        "course_code": course_code,
+        "status": row.status.value,
+        "display_status": display_status(row.status).value,
+        "notifications_sent": len(notifications),
+    }
+
+
+@app.post("/notifications/date-milestones", status_code=201)
+def run_date_milestones_route(
+    on: date | None = Query(None, description="Date to sweep, YYYY-MM-DD. Defaults to today."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Sweep for birthdays and milestone service anniversaries, notifying HR.
+
+    A sweep rather than an event: nothing changes in the database on
+    someone's birthday, so something has to come looking. This project has no
+    scheduler, so this route is what a daily cron or Azure timer would call —
+    the logic lives in app/notifications.py and doesn't care what invoked it.
+
+    Idempotent, so a retried cron or a doubled-up timer can't produce a second
+    birthday message; re-running for the same date returns `notifications_sent:
+    0`. `on` exists so a past or future date can be swept deliberately, which
+    is also the only way to demo it without waiting for a real birthday.
+
+    hr-only: it writes notifications to HR's own inboxes on everyone's behalf.
+    """
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Running the date sweep is an HR action")
+
+    on_date = on or date.today()
+    created = notify_date_milestones(db, on_date)
+    db.commit()
+
+    by_kind: dict[str, int] = {}
+    for n in created:
+        by_kind[n.kind.value] = by_kind.get(n.kind.value, 0) + 1
+    return {
+        "date": on_date.isoformat(),
+        "notifications_sent": len(created),
+        "by_kind": by_kind,
+    }
 
 
 @app.post("/ask")

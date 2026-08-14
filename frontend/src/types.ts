@@ -43,6 +43,35 @@ export interface ProjectHistoryItem {
   current: boolean;
 }
 
+export interface TrainingStatusItem {
+  course_code: string;
+  course_name: string;
+  // The two-value derivation. The underlying four-value status
+  // (not_started / in_progress / failed / completed) never leaves the
+  // backend — don't add it here expecting it to arrive.
+  display_status: "completed" | "not_completed";
+  display_label: string;
+  expected: boolean;
+  attempted_month?: string | null;
+  completed_month?: string | null;
+  source: string;
+}
+
+export interface NotificationOut {
+  id: number;
+  kind:
+    | "employee_course_reminder"
+    | "manager_course_report"
+    | "birthday_reminder"
+    | "work_anniversary_reminder";
+  subject_person: PersonRef;
+  course_name: string;
+  display_status: string;
+  body: string;
+  levels_up: number;
+  created_at: string;
+}
+
 export interface PersonDetail {
   id: string;
   full_name: string;
@@ -65,9 +94,16 @@ export interface PersonDetail {
   skills?: SkillOut[];
   languages?: SkillOut[];
   project_history?: ProjectHistoryItem[];
+  training_status?: TrainingStatusItem[];
   hire_date?: string;
   cost_centre?: string;
   personal_mobile?: string;
+  // HR or the person themselves — never the manager. `salary` is a string,
+  // not a number: the backend sends the exact decimal so it can't be mangled
+  // by a JSON float on the way here.
+  salary?: string;
+  salary_currency?: string;
+  date_of_birth?: string;
 }
 
 export interface OrgChainNode {

@@ -9,22 +9,28 @@ from __future__ import annotations
 import random
 import uuid
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import delete, func, select
 
 from app.db import SessionLocal
 from app.models import (
+    CourseRequirement,
     Employee,
     EmployeeCertification,
+    EmployeeCourseStatus,
     EmployeeProject,
     EmployeeSkill,
+    Notification,
     Office,
     OrgUnit,
     Project,
     Skill,
+    TrainingCourse,
 )
 from app.models.enums import (
     AvailabilityStatus,
+    CourseStatus,
     EmploymentType,
     ProjectClassification,
     ProjectType,
@@ -107,6 +113,8 @@ DEPT_SKILL_POOL = {
     "HR Operations": ["Employment Law", "Change Management", "Advanced Excel"],
     "Talent Acquisition": ["Applicant Tracking Systems", "Employment Law", "Change Management"],
     "Compliance": ["Employment Law", "GDPR", "SOC 2 Compliance", "Contract Negotiation"],
+    "IT Operations": ["Network Administration", "Cybersecurity", "Azure", "Docker",
+                       "Project Management", "Advanced Excel"],
 }
 
 # Team-theme -> the skills that should clearly dominate that team's holders.
@@ -251,6 +259,12 @@ DIVISION_DEPTS = {
     "Finance": ["Finance Operations", "Payroll"],
     "People & Culture": ["HR Operations", "Talent Acquisition"],
     "Legal": ["Compliance"],
+    # Its own division rather than a department under Engineering: internal
+    # IT (laptops, accounts, the service desk) reports separately from product
+    # engineering in most companies this size, and burying it under
+    # Engineering would also quietly hand everyone in it the Secure Coding
+    # Practices requirement, which is scoped to that division.
+    "IT": ["IT Operations"],
 }
 
 # department -> {theme: headcount}. Headcount includes that theme's own
@@ -271,6 +285,7 @@ DEPT_THEMES = {
     "HR Operations": {"HR Operations": 17},
     "Talent Acquisition": {"Talent Acquisition": 15},
     "Compliance": {"Compliance": 13},
+    "IT Operations": {"IT Service Desk": 16, "Identity & Endpoints": 12},
 }
 
 IC_TITLES_BY_DEPT = {
@@ -287,6 +302,9 @@ IC_TITLES_BY_DEPT = {
     "HR Operations": ["HR Generalist", "Senior HR Generalist", "HR Coordinator"],
     "Talent Acquisition": ["Recruiter", "Senior Recruiter", "Recruiting Coordinator"],
     "Compliance": ["Compliance Analyst", "Senior Compliance Analyst"],
+    "IT Operations": ["IT Support Specialist", "Senior IT Support Specialist",
+                       "Systems Administrator", "Identity & Access Analyst",
+                       "Endpoint Engineer"],
 }
 
 
@@ -313,7 +331,18 @@ def _grand_total() -> int:
     return 1 + n_divisions + n_departments + ic_total  # CEO + VPs + Directors + ICs
 
 
-_shortfall = 500 - _grand_total()
+# Backend absorbs the difference between this target and the sum of the
+# headcounts declared above, so the total stays a round number.
+#
+# Raised from 500 to 530 when the IT division was added, deliberately. Leaving
+# it at 500 meant the ~30 IT people were carved straight out of Backend
+# (50 -> 20) rather than added to the company: Backend is the flagship team
+# here — it hosts the deliberately deep reporting chain and the primary-skill
+# correlation checks — so halving it as a side effect of an unrelated change
+# would quietly weaken both. IT is additive; everything else keeps its size.
+TARGET_HEADCOUNT = 530
+
+_shortfall = TARGET_HEADCOUNT - _grand_total()
 DEPT_THEMES["Platform Engineering"]["Backend"] += _shortfall
 
 
@@ -322,7 +351,10 @@ DEPT_THEMES["Platform Engineering"]["Backend"] += _shortfall
 # ---------------------------------------------------------------------------
 
 def reset_tables(session) -> None:
-    for model in (EmployeeCertification, EmployeeProject, EmployeeSkill, Project,
+    # Training/notification tables first: they reference employees and
+    # training_courses, so they have to go before either of those does.
+    for model in (Notification, EmployeeCourseStatus, CourseRequirement, TrainingCourse,
+                  EmployeeCertification, EmployeeProject, EmployeeSkill, Project,
                   Employee, OrgUnit, Office, Skill):
         session.execute(delete(model))
     session.commit()
@@ -435,6 +467,35 @@ LEVEL_HIRE_YEAR_RANGE = {
     0: (6, 9), 1: (4, 8), 2: (3, 6), 3: (2, 5), 4: (1, 4), 5: (1, 3), 6: (0.5, 3), 7: (0, 2),
 }
 
+# Current age by org level. Seniority correlates with age, loosely and with
+# wide overlapping bands — a 30-year-old director and a 55-year-old IC are
+# both ordinary, and ranges this wide keep the synthetic data from implying
+# otherwise.
+LEVEL_AGE_RANGE = {
+    0: (46, 63), 1: (41, 60), 2: (37, 57), 3: (34, 54),
+    4: (31, 51), 5: (28, 47), 6: (25, 42), 7: (22, 36),
+}
+
+# Annual gross, in USD, before the country multiplier below. Synthetic and
+# deliberately round — this is demo data for a directory, not a compensation
+# band anyone should read as Quadrant's.
+LEVEL_BASE_SALARY_USD = {
+    0: 420_000, 1: 285_000, 2: 215_000, 3: 178_000,
+    4: 150_000, 5: 128_000, 6: 108_000, 7: 88_000,
+}
+INTERN_SALARY_USD = 52_000
+
+# Rough local-market conversion, currency included. Not FX rates: an engineer
+# in Bangalore isn't paid a Seattle salary converted at spot, so these are
+# market multipliers that happen to also change the unit.
+COUNTRY_SALARY = {
+    "United States": ("USD", 1.0),
+    "United Kingdom": ("GBP", 0.62),
+    "India": ("INR", 22.0),
+    "Singapore": ("SGD", 1.15),
+    "Australia": ("AUD", 1.35),
+}
+
 # Populated as employees are created: employee.id -> department name used for
 # skill-pool assignment (None for CEO/company-wide roles), -> org level
 # (0=CEO .. 7=IC) used for incompleteness injection, and -> team theme (e.g.
@@ -443,6 +504,60 @@ EMPLOYEE_SKILL_DEPT: dict[str, str | None] = {}
 EMPLOYEE_LEVEL: dict[str, int] = {}
 EMPLOYEE_TEAM_THEME: dict[str, str | None] = {}
 ALL_EMPLOYEES: list[Employee] = []
+
+
+# Fraction of people with no date of birth on file. Real HR data has gaps —
+# a record migrated from an old system, someone who never completed onboarding
+# — and the sweep must skip them silently rather than assume anything.
+NO_DOB_RATE = 0.04
+
+
+def make_date_of_birth(level, employment_type, hire_date) -> date | None:
+    """Age from the level band, then walked back from today.
+
+    Constrained so nobody is implied to have been hired as a child: if the
+    drawn age minus tenure lands under 18, the age is pushed up until it
+    doesn't. That's a real risk with the long-tenure levels — a 25-year-old
+    with nine years of service would otherwise be an ordinary-looking row.
+    """
+    if rng.random() < NO_DOB_RATE:
+        return None
+
+    lo, hi = LEVEL_AGE_RANGE.get(level, (25, 45))
+    if employment_type == EmploymentType.intern:
+        lo, hi = 20, 25
+
+    tenure_years = (date.today() - hire_date).days / 365.25
+    min_age = tenure_years + 18
+    age = max(rng.uniform(lo, hi), min_age)
+
+    born = date.today() - timedelta(days=age * 365.25)
+    # Nudge off the exact anniversary of today so the seeded population
+    # doesn't accidentally cluster birthdays on the day it was generated —
+    # inject_date_milestones() places those deliberately instead.
+    return born - timedelta(days=rng.randint(1, 300))
+
+
+def make_salary(level, employment_type, office) -> tuple[Decimal | None, str | None]:
+    """Annual gross in the office's local currency, or (None, None).
+
+    Contractors get nothing on file on purpose: they're paid through an
+    agency, so the company genuinely doesn't hold a salary for them. That
+    makes the null meaningful rather than missing data, and gives the
+    profile's "absent" case something real to represent.
+    """
+    if employment_type == EmploymentType.contractor:
+        return None, None
+
+    base = (INTERN_SALARY_USD if employment_type == EmploymentType.intern
+            else LEVEL_BASE_SALARY_USD.get(level, 100_000))
+    country = office.country if office else "United States"
+    currency, multiplier = COUNTRY_SALARY.get(country, ("USD", 1.0))
+
+    amount = base * multiplier * rng.uniform(0.88, 1.14)  # individual spread within the band
+    step = 10_000 if currency == "INR" else 500          # INR salaries aren't quoted to the rupee
+    rounded = round(amount / step) * step
+    return Decimal(str(rounded)).quantize(Decimal("0.01")), currency
 
 
 def make_employee(session, first, last, title, org_unit, manager, level, offices,
@@ -505,6 +620,9 @@ def make_employee(session, first, last, title, org_unit, manager, level, offices
 
     directory_object_id = str(uuid.uuid4()) if rng.random() < 0.95 else None
 
+    date_of_birth = make_date_of_birth(level, employment_type, hire_date)
+    salary, salary_currency = make_salary(level, employment_type, office)
+
     emp = Employee(
         id=emp_id,
         directory_object_id=directory_object_id,
@@ -528,6 +646,9 @@ def make_employee(session, first, last, title, org_unit, manager, level, offices
         bio=bio,
         photo_url=photo_url,
         is_active=True,
+        date_of_birth=date_of_birth,
+        salary=salary,
+        salary_currency=salary_currency,
     )
     session.add(emp)
     ALL_EMPLOYEES.append(emp)
@@ -686,6 +807,64 @@ def inject_incompleteness_and_specials(ctx):
         e.availability_status = AvailabilityStatus.restricted
 
     return {"no_manager": no_manager_picks, "away": away_picks, "restricted": restricted_picks}
+
+
+def inject_date_milestones(session) -> dict:
+    """Force a handful of birthdays and milestone anniversaries onto today.
+
+    Without this the date sweep is untestable and undemoable in practice: with
+    ~500 people, roughly one birthday falls on any given day and a milestone
+    anniversary might be weeks away, so "run it and see" would usually show an
+    empty result that's indistinguishable from a broken sweep.
+
+    Picks people who are neither restricted nor the CEO, so the resulting
+    notifications are visible to ordinary HR staff and don't all concentrate
+    at the top of the org chart.
+    """
+    today = date.today()
+    candidates = [
+        e for e in ALL_EMPLOYEES
+        if e.availability_status != AvailabilityStatus.restricted
+        and e.manager_id is not None
+        and EMPLOYEE_LEVEL[e.id] >= 3
+    ]
+    picks = rng.sample(candidates, k=min(6, len(candidates)))
+
+    birthday_people = picks[:3]
+    for emp in birthday_people:
+        # Keep whatever age the level band gave them; move only month/day.
+        current_age = int((today - (emp.date_of_birth or today - timedelta(days=30 * 365))).days / 365.25)
+        emp.date_of_birth = _same_day_years_ago(today, max(current_age, 22))
+
+    anniversary_people = picks[3:6]
+    milestones = [1, 5, 10]
+    for emp, years in zip(anniversary_people, milestones):
+        emp.hire_date = _same_day_years_ago(today, years)
+        # A 10-year anniversary for someone born 25 years ago would mean they
+        # started at 15 — push the birth date back rather than leave that.
+        if emp.date_of_birth is not None:
+            youngest_allowed = _same_day_years_ago(emp.hire_date, 18)
+            if emp.date_of_birth > youngest_allowed:
+                emp.date_of_birth = _same_day_years_ago(today, years + 22)
+
+    session.flush()
+    return {
+        "birthdays_today": [(e.full_name, e.date_of_birth) for e in birthday_people],
+        "anniversaries_today": [(e.full_name, y) for e, y in zip(anniversary_people, milestones)],
+    }
+
+
+def _same_day_years_ago(reference: date, years: int) -> date:
+    """`reference` minus whole years, keeping month and day.
+
+    The 29 February case can't be expressed in a non-leap year, so it lands on
+    the 28th — the same convention app/notifications.py uses when deciding
+    which day a leap-day anniversary is observed on.
+    """
+    try:
+        return reference.replace(year=reference.year - years)
+    except ValueError:
+        return reference.replace(year=reference.year - years, day=28)
 
 
 LEADERSHIP_SKILL_POOL = ["Project Management", "Agile/Scrum", "Financial Modeling", "Change Management"]
@@ -1081,6 +1260,174 @@ def build_certifications(session, skills):
 
 
 # ---------------------------------------------------------------------------
+# Training courses — the synthetic dataset SyntheticCertProvider reads.
+#
+# Entirely fabricated, same hard constraint as the rest of this file: no real
+# Quadrant training records exist anywhere in this project. Once
+# ENABLE_TRAINING_API_SYNC flips on, the other team's system supplies these
+# statuses instead and this section stops being the source of truth.
+# ---------------------------------------------------------------------------
+
+# code, name, description
+TRAINING_COURSES = [
+    ("SEC-101", "Information Security Awareness",
+     "Annual security basics: phishing, device hygiene, incident reporting."),
+    ("CONDUCT-102", "Code of Conduct & Ethics",
+     "Company conduct standards, conflicts of interest, and how to raise a concern."),
+    ("SECDEV-210", "Secure Coding Practices",
+     "Threat modelling, input validation, secrets handling, dependency risk."),
+    ("FINCTRL-150", "Financial Controls Basics",
+     "Segregation of duties, approval thresholds, and audit evidence."),
+    ("LEAD-301", "Manager Essentials: Leading a Team",
+     "First-line management: feedback, one-to-ones, and performance conversations."),
+]
+
+# course code -> (org_unit name or None, job_title_keyword or None,
+#                 employment_type or None, note)
+#
+# The scoping clauses are what let a profile say "doesn't apply" instead of
+# "not completed" — an Account Executive is not out of compliance for never
+# having taken Secure Coding Practices.
+#
+# Scoped so every employee lands on exactly ONE or TWO courses: SEC-101 is
+# company-wide, and the other four are keyed to divisions that don't overlap,
+# so nothing can stack a third onto anyone. Real compliance training doesn't
+# partition itself this tidily — this is demo data, shaped to keep every
+# profile's Training card short and readable rather than to model an actual
+# training programme.
+#
+# The four narrow rows also cover one scoping clause each, so the resolver is
+# exercised end to end: division alone (SECDEV-210, FINCTRL-150), division +
+# job title (LEAD-301), division + employment type (CONDUCT-102).
+#
+# Note LEAD-301's keyword: job_title is the only role signal in this schema,
+# so a title substring is exactly as precise as titles are. Within Product it
+# catches Product Managers, who have no reports — a real limitation of
+# deriving role from title rather than a bug in the matcher. If it bites, the
+# fix is a proper track taxonomy on the employee, which CourseRequirement is
+# already shaped to accept.
+#
+# Divisions with no second row (People & Culture, Legal) get exactly one
+# course, which is the point: one course everywhere is the floor, never zero.
+TRAINING_REQUIREMENTS = [
+    ("SEC-101", None, None, None, "Everyone, annually."),
+    ("SECDEV-210", "Engineering", None, None, "Anyone in the Engineering division."),
+    ("FINCTRL-150", "Finance", None, None, "Anyone in the Finance division."),
+    ("LEAD-301", "Product", "Manager", None, "Product managers — division AND title must match."),
+    ("CONDUCT-102", "Sales & Marketing", None, EmploymentType.fte,
+     "Sales & Marketing employees — contractors sign an equivalent through their agency."),
+]
+
+# Weighted so the demo has a realistic spread rather than a uniform one:
+# most people are compliant, a minority are mid-course, a few failed.
+STATUS_WEIGHTS = [
+    (CourseStatus.completed, 0.55),
+    (CourseStatus.in_progress, 0.15),
+    (CourseStatus.not_started, 0.20),
+    (CourseStatus.failed, 0.10),
+]
+
+# Fraction of (employee, required course) pairs left with NO row at all.
+# Distinct from a stored not_started: it exercises the "provider has no
+# record for a course we expect" path, which is the one place not_started is
+# legitimately inferred rather than reported.
+NO_RECORD_RATE = 0.15
+
+# Fraction of employees given a course they were never required to take, so
+# the profile's expected/not-expected distinction has something to show.
+EXTRA_COURSE_RATE = 0.07
+
+
+def build_training_courses(session) -> dict[str, TrainingCourse]:
+    courses: dict[str, TrainingCourse] = {}
+    for code, name, description in TRAINING_COURSES:
+        course = TrainingCourse(code=code, name=name, description=description, is_active=True)
+        session.add(course)
+        session.flush()
+        courses[code] = course
+    return courses
+
+
+def build_course_requirements(session, courses, units) -> None:
+    for code, unit_name, title_keyword, employment_type, note in TRAINING_REQUIREMENTS:
+        session.add(CourseRequirement(
+            course_id=courses[code].id,
+            org_unit_id=units[unit_name].id if unit_name else None,
+            job_title_keyword=title_keyword,
+            employment_type=employment_type,
+            note=note,
+        ))
+    session.flush()
+
+
+def _roll_status() -> CourseStatus:
+    roll = rng.random()
+    cumulative = 0.0
+    for status, weight in STATUS_WEIGHTS:
+        cumulative += weight
+        if roll < cumulative:
+            return status
+    return STATUS_WEIGHTS[-1][0]
+
+
+def build_course_statuses(session, courses, units) -> dict:
+    """One row per (employee, applicable course), minus a deliberate slice
+    left with no row at all.
+
+    Uses the same requirements resolver the API uses, rather than
+    reimplementing the scoping rules here — if the two ever disagreed, the
+    seeded data would be quietly testing the wrong thing.
+    """
+    from app.certifications.requirements import required_courses
+
+    counts = {status: 0 for status, _ in STATUS_WEIGHTS}
+    no_record = 0
+    extra = 0
+    applicable_pairs = 0
+    all_codes = [code for code, _, _ in TRAINING_COURSES]
+
+    for emp in ALL_EMPLOYEES:
+        expected = required_courses(session, emp)
+        expected_codes = {c.code for c in expected}
+        applicable_pairs += len(expected)
+
+        for course in expected:
+            if rng.random() < NO_RECORD_RATE:
+                no_record += 1
+                continue
+            status = _roll_status()
+            counts[status] += 1
+            session.add(_course_status_row(emp, course, status))
+
+        # A course nobody required of them — shows up on the profile flagged
+        # as not expected, never as an outstanding requirement.
+        if rng.random() < EXTRA_COURSE_RATE:
+            spare = [c for c in all_codes if c not in expected_codes]
+            if spare:
+                course = courses[rng.choice(spare)]
+                extra += 1
+                session.add(_course_status_row(emp, course, CourseStatus.completed))
+
+    session.flush()
+    return {"applicable_pairs": applicable_pairs, "by_status": counts,
+            "no_record": no_record, "extra": extra}
+
+
+def _course_status_row(emp: Employee, course: TrainingCourse, status: CourseStatus) -> EmployeeCourseStatus:
+    attempted = None
+    completed = None
+    if status is not CourseStatus.not_started:
+        attempted = date.today() - timedelta(days=rng.randint(5, 400))
+    if status is CourseStatus.completed:
+        completed = attempted
+    return EmployeeCourseStatus(
+        employee_id=emp.id, course_id=course.id, status=status,
+        attempted_at=attempted, completed_at=completed,
+        source="synthetic", last_synced_at=datetime.now(),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
 
@@ -1338,6 +1685,66 @@ def print_verification(session, ctx, specials, offices, skills, topup_stats):
     print("\n" + "=" * 78)
 
 
+def print_people_data_verification(session, date_milestones: dict) -> None:
+    print("\n" + "=" * 78)
+    print("SALARY / DATE OF BIRTH / DATE MILESTONES")
+    print("=" * 78)
+
+    with_dob = sum(1 for e in ALL_EMPLOYEES if e.date_of_birth is not None)
+    with_salary = sum(1 for e in ALL_EMPLOYEES if e.salary is not None)
+    print(f"  date of birth on file : {with_dob}/{len(ALL_EMPLOYEES)} "
+          f"({len(ALL_EMPLOYEES) - with_dob} deliberately blank)")
+    print(f"  salary on file        : {with_salary}/{len(ALL_EMPLOYEES)} "
+          f"({len(ALL_EMPLOYEES) - with_salary} contractors, paid via agency)")
+
+    ages = [int((date.today() - e.date_of_birth).days / 365.25)
+            for e in ALL_EMPLOYEES if e.date_of_birth is not None]
+    print(f"  age range             : {min(ages)}-{max(ages)} (mean {sum(ages) / len(ages):.0f})")
+
+    youngest_at_hire = min(
+        int((e.hire_date - e.date_of_birth).days / 365.25)
+        for e in ALL_EMPLOYEES if e.date_of_birth is not None
+    )
+    print(f"  youngest age at hire  : {youngest_at_hire} "
+          f"({'ok' if youngest_at_hire >= 18 else 'CONSTRAINT VIOLATED'})")
+
+    by_currency: dict[str, list] = {}
+    for e in ALL_EMPLOYEES:
+        if e.salary is not None:
+            by_currency.setdefault(e.salary_currency, []).append(e.salary)
+    print("  salary by currency:")
+    for currency, values in sorted(by_currency.items()):
+        lo, hi = min(values), max(values)
+        print(f"        {currency}  n={len(values):3d}  {lo:>12,.0f} - {hi:>12,.0f}")
+
+    print(f"\n  birthdays falling today ({date.today().isoformat()}):")
+    for name, dob in date_milestones["birthdays_today"]:
+        print(f"        {name:24s} born {dob}")
+    print("  milestone anniversaries today:")
+    for name, years in date_milestones["anniversaries_today"]:
+        print(f"        {name:24s} {years} year{'s' if years != 1 else ''}")
+
+    it_count = sum(1 for e in ALL_EMPLOYEES if EMPLOYEE_SKILL_DEPT.get(e.id) == "IT Operations")
+    print(f"\n  IT Operations headcount: {it_count}")
+    print("\n" + "=" * 78)
+
+
+def print_training_verification(stats: dict) -> None:
+    print("\n" + "=" * 78)
+    print("TRAINING COURSES (synthetic provider dataset)")
+    print("=" * 78)
+    print(f"  applicable (employee, required course) pairs : {stats['applicable_pairs']}")
+    total_rows = sum(stats["by_status"].values())
+    for status, count in stats["by_status"].items():
+        pct = (count / total_rows * 100) if total_rows else 0
+        print(f"        {status.value:14s} {count:5d} rows ({pct:5.1f}%)")
+    print(f"  left with no record at all                   : {stats['no_record']} "
+          "(reads as not_started — the inferred case)")
+    print(f"  non-required courses taken anyway            : {stats['extra']} "
+          "(shown flagged, never as an outstanding requirement)")
+    print("\n" + "=" * 78)
+
+
 def main():
     session = SessionLocal()
     try:
@@ -1347,16 +1754,22 @@ def main():
         skills = build_skills(session)
         ctx = build_employees(session, offices, units, theme_units)
         specials = inject_incompleteness_and_specials(ctx)
+        date_milestones = inject_date_milestones(session)
         assign_skills(session, skills, ctx)
         _projects, membership_state = build_flagship_projects(session, units, ctx)
         project_pool = build_project_pool(session, units, ctx)
         build_portfolios(session, project_pool, membership_state)
         topup_stats = top_up_confidential_members(session, project_pool)
         build_certifications(session, skills)
+        courses = build_training_courses(session)
+        build_course_requirements(session, courses, units)
+        training_stats = build_course_statuses(session, courses, units)
         session.commit()
         print(f"Seeded {len(ALL_EMPLOYEES)} employees, {len(offices)} offices, "
-              f"{len(units)} org units, {len(skills)} skills.")
+              f"{len(units)} org units, {len(skills)} skills, {len(courses)} training courses.")
         print_verification(session, ctx, specials, offices, skills, topup_stats)
+        print_training_verification(training_stats)
+        print_people_data_verification(session, date_milestones)
     finally:
         session.close()
 

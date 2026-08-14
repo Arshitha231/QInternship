@@ -24,12 +24,34 @@ BASE_FIELDS: set[str] = {
 }
 
 # HR-only, per the field table: "hire_date, cost_centre | hr only".
-HR_ONLY_FIELDS: set[str] = {"hire_date", "cost_centre"}
+# salary/salary_currency/date_of_birth are hr-only at the RBAC layer and then
+# additionally granted to the person themselves by ABAC below — HR_ONLY here
+# means "no other ROLE gets these", not "only HR ever sees them".
+HR_ONLY_FIELDS: set[str] = {
+    "hire_date", "cost_centre", "salary", "salary_currency", "date_of_birth",
+}
+
+# Own profile only. Deliberately narrower than personal_mobile's "own profile
+# OR direct manager": a line manager holding your mobile number is ordinary,
+# a line manager reading your salary and date of birth off the directory is
+# not. Managers get neither, at any level of the chain — unlike
+# training_status, which the chain can see precisely because the chain is
+# already told about it.
+SELF_ONLY_FIELDS: set[str] = {"salary", "salary_currency", "date_of_birth"}
+
+# Training/certification status. Deliberately NOT in BASE_FIELDS: whether a
+# colleague has finished their compliance training is nobody's business by
+# default, the way a job title or an office is. Granted by RBAC to hr, and by
+# ABAC to the person themself and to their reporting chain (see
+# training_extra_fields below) — the same audience the notification triggers
+# write to, so what management is told and what management can look up stay
+# the same set of people.
+TRAINING_FIELDS: set[str] = {"training_status"}
 
 ALLOWED: dict[str, set[str]] = {
     "employee": set(BASE_FIELDS),
     "manager": set(BASE_FIELDS),
-    "hr": set(BASE_FIELDS) | set(HR_ONLY_FIELDS),
+    "hr": set(BASE_FIELDS) | set(HR_ONLY_FIELDS) | set(TRAINING_FIELDS),
 }
 
 # Department-sensitive fields ("Engineering does not see Finance-sensitive
@@ -40,7 +62,13 @@ ALLOWED: dict[str, set[str]] = {
 # wired exactly where the pipeline calls for it — even though with today's
 # 3-role setup it's a no-op on top of RBAC. It's what lets a future
 # division-scoped role plug in without restructuring the pipeline.
-DEPARTMENT_SENSITIVE_FIELDS: set[str] = {"cost_centre"}
+DEPARTMENT_SENSITIVE_FIELDS: set[str] = {"cost_centre", "salary", "salary_currency"}
+# salary belongs here as the most obviously finance-sensitive field in the
+# schema. It changes nothing today — HR is exempt as a company-wide function,
+# and the only other holder is the person themselves, who is by definition in
+# their own division — but leaving the pay field out of the department check
+# would be the wrong thing to find here later. date_of_birth is deliberately
+# absent: it's personal data, not financial, and this stage is the money one.
 
 
 def is_record_visible(caller: AuthenticatedUser, target: Employee) -> bool:
@@ -86,14 +114,50 @@ def _caller_org_unit_id(db, caller: AuthenticatedUser) -> int | None:
 
 
 def abac_extra_fields(caller: AuthenticatedUser, target: Employee) -> set[str]:
-    """personal_mobile: own profile, OR direct manager only."""
-    if caller.id == target.id or target.manager_id == caller.id:
-        return {"personal_mobile"}
+    """personal_mobile: own profile, OR direct manager.
+    salary / salary_currency / date_of_birth: own profile ONLY."""
+    fields: set[str] = set()
+    if caller.id == target.id:
+        fields |= {"personal_mobile"} | set(SELF_ONLY_FIELDS)
+    elif target.manager_id == caller.id:
+        fields |= {"personal_mobile"}
+    return fields
+
+
+def training_extra_fields(db, caller: AuthenticatedUser, target: Employee) -> set[str]:
+    """training_status: own profile, OR anywhere in the target's upward
+    reporting chain.
+
+    Not just the direct manager (unlike personal_mobile): a skip-level
+    manager is told when their report's report resolves a course, so they
+    can plainly already know — making the profile pretend otherwise would be
+    theatre, not privacy. Peers and unrelated colleagues get nothing.
+
+    The chain walk is the same traversal get_org_chain uses, minus the
+    audit/RBAC wrapper (this IS the permission decision, so it can't depend
+    on one). Only reached when the cheap checks above it fail, so the common
+    case — viewing a stranger's profile — never runs a query.
+    """
+    if caller.id == target.id:
+        return set(TRAINING_FIELDS)
+
+    # Imported inside the function: org_chart imports people, which imports
+    # this module, so a module-level import here would close the cycle. Same
+    # local-import precedent as can_see_confidential_project below.
+    from app.org_chart import manager_chain_ids
+
+    # Full chain, independent of NOTIFY_LEVELS_UP: that setting controls who
+    # gets *told*, and turning it down must not silently revoke a manager's
+    # ability to *look*.
+    if caller.id in manager_chain_ids(db, target.id):
+        return set(TRAINING_FIELDS)
     return set()
 
 
 def visible_fields(db, caller: AuthenticatedUser, target: Employee) -> set[str]:
     fields = set(ALLOWED[caller.role]) | abac_extra_fields(caller, target)
+    if not TRAINING_FIELDS <= fields:  # hr already has it from RBAC — don't walk the chain for nothing
+        fields |= training_extra_fields(db, caller, target)
     fields = department_filter(db, fields, caller, target)
     return fields
 

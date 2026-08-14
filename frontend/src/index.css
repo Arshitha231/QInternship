@@ -307,6 +307,54 @@ button { font: inherit; }
 .reports-list button:hover { background: var(--page); color: var(--purple); }
 .reports-list .sub { color: var(--muted); font-size: 12.5px; }
 
+/* ---------- training status (profile card) ---------- */
+.training-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.training-list li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; }
+.training-icon {
+  width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; margin-top: 1px;
+}
+.training-icon.ok { background: var(--green-100); color: var(--green-800); }
+.training-icon.warn { background: var(--amber-100); color: var(--amber); }
+.training-name { margin: 0; font-size: 13.5px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.training-meta { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.training-ok { color: var(--green-800); font-weight: 500; }
+.training-warn { color: var(--amber); font-weight: 500; }
+.training-tag {
+  font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--muted); background: var(--page); border: 1px solid var(--border);
+  padding: 1px 7px; border-radius: 20px;
+}
+
+/* ---------- notification bell ---------- */
+.notif { position: relative; flex-shrink: 0; }
+.notif-btn {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; border: 0; background: none;
+  color: var(--muted); cursor: pointer;
+}
+.notif-btn:hover { background: var(--page); color: var(--ink); }
+.notif-badge {
+  position: absolute; top: 1px; right: 0; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 20px; background: var(--red); color: var(--white);
+  font-size: 9.5px; font-weight: 600; line-height: 15px; text-align: center;
+  border: 1.5px solid var(--white);
+}
+.notif-panel { width: 340px; max-height: 60vh; overflow-y: auto; }
+.notif-empty { margin: 4px 10px 8px; font-size: 13px; color: var(--muted); }
+.notif-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.notif-list li {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px;
+  align-items: start; padding: 8px 10px; border-radius: 6px;
+}
+.notif-list li.unseen { background: var(--purple-100); }
+.notif-dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; margin-top: 1px; }
+.notif-dot.ok { background: var(--green-100); color: var(--green-800); }
+.notif-dot.warn { background: var(--amber-100); color: var(--amber); }
+/* Birthdays and work anniversaries: neither "done" nor "needs attention". */
+.notif-dot.celebrate { background: var(--purple-100); color: var(--purple-800); }
+.notif-body { margin: 0; font-size: 13px; line-height: 1.45; }
+.notif-meta { margin: 3px 0 0; font-size: 11.5px; color: var(--muted); }
+
 .timeline { list-style: none; margin: 0; padding: 0 0 0 20px; position: relative; }
 .timeline::before { content: ""; position: absolute; left: 4px; top: 7px; bottom: 9px; width: 1px; background: var(--border); }
 .timeline li { position: relative; padding-bottom: 18px; }

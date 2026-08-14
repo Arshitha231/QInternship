@@ -141,6 +141,34 @@ def _traverse(db: Session, start_id: str, direction: Literal["up", "down"], max_
     return [(r.id, r.depth) for r in rows]
 
 
+def manager_chain_ids(db: Session, employee_id: str, levels: int = -1) -> list[str]:
+    """Everyone above `employee_id`, nearest first — ids only.
+
+    The raw graph walk, with no permission filtering, no capping and no
+    audit entry, for callers that ARE the permission decision (field
+    visibility) or that apply their own rules per recipient afterwards
+    (notification fan-out). get_org_chain above stays the only caller-facing
+    traversal; this is the shared primitive underneath, so "the reporting
+    chain" means one thing in this codebase.
+
+    `levels` < 0 means unlimited, still bounded by MAX_DEPTH — the cycle
+    guard is not negotiable by a config value. Duplicates from a cyclic
+    manager_id are dropped, same as get_org_chain does.
+    """
+    depth = MAX_DEPTH if levels < 0 else min(levels, MAX_DEPTH)
+    if depth <= 0:
+        return []
+
+    ordered: list[str] = []
+    seen: set[str] = {employee_id}
+    for emp_id, _node_depth in _traverse(db, employee_id, "up", depth):
+        if emp_id in seen:
+            continue
+        seen.add(emp_id)
+        ordered.append(emp_id)
+    return ordered
+
+
 def get_org_chain(
     db: Session,
     caller: AuthenticatedUser,
