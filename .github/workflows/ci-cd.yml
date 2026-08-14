@@ -201,7 +201,7 @@ jobs:
       - name: Build deploy zip (backend + built frontend)
         run: |
           zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
-            seed_training.py frontend/dist \
+            seed_training.py seed_people_data.py frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 
       - uses: azure/login@v2
