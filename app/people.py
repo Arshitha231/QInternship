@@ -44,6 +44,7 @@ from app.permissions import (
     is_record_visible,
     visible_fields,
 )
+from app.query_compiler import enforced_person_ref
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
@@ -184,6 +185,27 @@ def _office_out(office: Office | None) -> OfficeOut | None:
     return OfficeOut(id=office.id, name=office.name, city=office.city, country=office.country)
 
 
+def _resolve_office_name(db: Session, office: str) -> str:
+    """Case-insensitive resolution of a user-typed office/city string to a
+    canonical Office.name — exact match first, substring second (so a
+    partial city like "Bang" still finds "Bangalore"), mirroring the
+    tolerance the SQL fallback path already has via its own ilike. Needed
+    because Search's OData filter (app.search_client) is an exact,
+    case-sensitive `eq` — unlike the free-text UI input feeding it
+    (Filters.tsx) — and, unlike org_unit (_org_unit_and_descendant_ids
+    above), office never got this treatment. Returns the original input
+    unchanged when nothing matches at all: Search then correctly finds
+    nothing for a genuinely nonexistent office, same outcome as today —
+    this only fixes the case where a real office exists but the raw
+    input's casing or partiality didn't land on it exactly.
+    """
+    match = (
+        db.query(Office).filter(or_(Office.name.ilike(office), Office.city.ilike(office))).first()
+        or db.query(Office).filter(or_(Office.name.ilike(f"%{office}%"), Office.city.ilike(f"%{office}%"))).first()
+    )
+    return match.name if match else office
+
+
 def _write_audit(db: Session, caller: AuthenticatedUser, action: str, query_text: str,
                   result_count: int, fields_returned: set[str]) -> None:
     db.add(AuditLog(
@@ -269,6 +291,12 @@ def find_people(
             return []
         org_unit_names = db.execute(select(OrgUnit.name).where(OrgUnit.id.in_(org_unit_ids))).scalars().all()
 
+    # office resolves once, up front, to its canonical Office.name — see
+    # _resolve_office_name for why (Search's OData `eq` needs an exact,
+    # correctly-cased value; the SQL fallback below stays on the raw input
+    # since its own ilike is already case/substring-tolerant).
+    resolved_office = _resolve_office_name(db, office) if office else None
+
     # Exact-match short-circuit: a query that exactly matches a unique
     # identifier (work email, Slack handle) or a full/preferred name
     # shouldn't be diluted by fuzzy/semantic neighbors at all. Verified
@@ -304,36 +332,55 @@ def find_people(
         if found_ids:
             exact_match_ids = found_ids
 
-    # 1. retrieve — hybrid Search for anything there's a criterion to search
-    # or filter on, name/description query or not: a plain filter combo
-    # ("Terraform" + "Cloud Operations Team") still goes through Search's
-    # OData filter and gets the tight relevance cap below, same as a ranked
-    # text query. SQL is reserved for genuine Search-unavailable
-    # degradation (search_people() returns None), an exact-identifier
-    # match (above), or a call with no criteria at all.
-    has_criteria = bool(effective_query or resolved_skill or org_unit_ids or office or resolved_lang or available)
+    # 1. retrieve — Search is for ranking (a name/description to score
+    # against) and semantic/fuzzy work only, per ARCHITECTURE_2.md §11 and
+    # §16's non-goal ("moving structured filters into Search... reverted by
+    # mode 1"). A plain filter combo ("Terraform" + "Cloud Operations Team")
+    # has no text to rank, so it skips Search's OData filter entirely and
+    # goes straight to the SQL branch below — no embedding round-trip, no
+    # network call to a resource that isn't doing any ranking for it
+    # anyway. This used to route filter-only queries through Search too
+    # (superseded reasoning: "Search already knows the hierarchy-expanded
+    # org_unit set... reusing it beats re-deriving the same filter in
+    # SQL") — but org_unit_ids/resolved_skill/resolved_office/resolved_lang
+    # are already fully resolved right above, before either branch runs, so
+    # the SQL branch below needs no re-derivation either way; there was
+    # nothing left for routing through Search to actually save.
+    #
+    # Whether there's actual free text for Search to rank against — decides
+    # both whether Search is even called at all now, and later which result
+    # cap applies. A pure filter combo has no ranking to trust a *tight*
+    # cap on regardless of retrieval path — see the cap comment below.
+    is_ranked_query = bool(effective_query and effective_query.strip())
 
     candidates: list[Employee] | None = None
-    if exact_match_ids is None and has_criteria:
+    if exact_match_ids is None and is_ranked_query:
         ranked_ids = search_people(
             name=effective_query, skill=resolved_skill.name if resolved_skill else None,
             level=parsed_level.value if parsed_level else None,
-            org_unit=org_unit_names, office=office,
+            org_unit=org_unit_names, office=resolved_office,
             language=resolved_lang.name if resolved_lang else None, available=available,
-            top=MAX_SEARCH_RESULTS * 4,  # buffer for record-level filtering losses below
+            # A small buffer over the tight cap below, to absorb
+            # record-level filtering losses -- this branch is only ever
+            # reached when is_ranked_query is True (a pure filter combo
+            # never calls Search at all now), so there's no "wide headroom"
+            # case left to size for here.
+            top=MAX_SEARCH_RESULTS * 4,
         )
         if ranked_ids is not None:
             rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
             by_id = {e.id: e for e in rows}
             candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
 
-    # Only real, successful Search results are relevance-ranked — a SQL
-    # fallback (Search unconfigured/unavailable/erroring, or nothing to
-    # search on at all) is just an alphabetical filter match with no
-    # ranking to trust a tight cutoff on, so it gets the same cap as plain
-    # browsing. An exact-identifier match gets the tight cap too — it's a
-    # stronger signal than a ranked result, not a weaker one.
-    used_search = candidates is not None or exact_match_ids is not None
+    # A result is only relevance-ranked — and therefore only trustworthy
+    # under a tight cutoff — when there was actual free text for Search to
+    # rank against (`effective_query`), or an exact-identifier short-circuit
+    # (a stronger signal than ranking, not a weaker one). A pure filter
+    # combo no longer touches Search at all (see the retrieve comment
+    # above), so it always lands on the wide SQL-fallback cap below via
+    # this same used_search=False path — RC3 (ARCHITECTURE_2.md §2) is now
+    # structurally impossible for this case, not just capped correctly.
+    used_search = is_ranked_query or exact_match_ids is not None
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active == True)
@@ -417,19 +464,21 @@ def find_people(
             availability_status=e.availability_status.value,
         )
         if e is single:
-            # manager/delegate: visible to all, same as get_person — no
-            # is_record_visible check on the referenced person, matching
-            # get_person's own _build_detail() precedent.
-            if e.manager_id:
-                manager = db.get(Employee, e.manager_id)
-                if manager:
-                    kwargs["manager"] = PersonRef(id=manager.id, full_name=manager.full_name)
-                    fields_returned.add("manager")
-            if e.delegate_id:
-                delegate = db.get(Employee, e.delegate_id)
-                if delegate:
-                    kwargs["delegate"] = PersonRef(id=delegate.id, full_name=delegate.full_name)
-                    fields_returned.add("delegate")
+            # manager/delegate: policy-gated via enforce()+compile_query(),
+            # not a raw db.get() -- ARCHITECTURE_2.md §15 item 6 / Phase 3
+            # Round 2 (app/query_compiler.py's enforced_person_ref). Both
+            # are INTERNAL in the registry (visible to every role), so this
+            # only changes behavior for the one case a raw lookup missed:
+            # the referenced manager/delegate is themself a restricted
+            # record and the caller isn't hr.
+            manager_ref = enforced_person_ref(db, caller, e.manager_id) if e.manager_id else None
+            if manager_ref:
+                kwargs["manager"] = manager_ref
+                fields_returned.add("manager")
+            delegate_ref = enforced_person_ref(db, caller, e.delegate_id) if e.delegate_id else None
+            if delegate_ref:
+                kwargs["delegate"] = delegate_ref
+                fields_returned.add("delegate")
             # direct_reports: downward chain, manager/hr only — same RBAC
             # gate as get_org_chain's "down" direction, same per-record
             # is_record_visible filter as its downward traversal.
@@ -540,13 +589,13 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
         kwargs["photo_url"] = target.photo_url
 
     if "manager" in fields and target.manager_id:
-        manager = db.get(Employee, target.manager_id)
-        if manager:
-            kwargs["manager"] = PersonRef(id=manager.id, full_name=manager.full_name)
+        manager_ref = enforced_person_ref(db, caller, target.manager_id)
+        if manager_ref:
+            kwargs["manager"] = manager_ref
     if "delegate" in fields and target.delegate_id:
-        delegate = db.get(Employee, target.delegate_id)
-        if delegate:
-            kwargs["delegate"] = PersonRef(id=delegate.id, full_name=delegate.full_name)
+        delegate_ref = enforced_person_ref(db, caller, target.delegate_id)
+        if delegate_ref:
+            kwargs["delegate"] = delegate_ref
 
     if "availability_status" in fields:
         kwargs["availability_status"] = target.availability_status.value

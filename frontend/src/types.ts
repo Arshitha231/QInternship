@@ -147,3 +147,80 @@ export interface Identity {
   id: string;
   name: string;
 }
+
+// Staffing Continuity Intelligence (app/continuity.py) — HR-only. Mirrors
+// app/schemas.py's continuity response types. Never rendered for a
+// non-"hr" identity — see App.tsx's tab gating, the entire
+// non-HR-invisibility guarantee on this side of the wire.
+
+export interface DeliveryDependency {
+  type: "skill" | "project_role";
+  name: string;
+  project_id: number;
+  employee: PersonRef;
+  project_backup_count: number;
+  org_backup_count: number;
+  // "declared": a real recorded fact -- either a required-skill entry
+  // (GET/PUT /projects/{id}/required-skills) this person meets, or the
+  // project_role dependency (always a recorded fact). "inferred": no
+  // required-skill list exists for this project, so this is a heuristic
+  // -- any Working/Expert skill the person happens to hold while staffed
+  // here, whether or not the engagement actually needs it.
+  source: "declared" | "inferred";
+}
+
+export interface BackupCandidate {
+  id: string;
+  full_name: string;
+  matching_evidence: string;
+}
+
+export interface EngagementExposure {
+  project_id: number;
+  project_name: string;
+  exposure: "none" | "low" | "medium" | "high";
+  rule_version: number;
+  reasons: string[];
+  intersecting_review_count: number;
+  days_until_hr_review: number | null;
+  days_of_assignment_remaining_after_review: number | null;
+  dependencies: DeliveryDependency[];
+  backups: Record<string, BackupCandidate[]>;
+}
+
+export interface ContinuityOverview {
+  rule_version: number;
+  window_days: number;
+  by_severity: Record<string, number>;
+  engagements: EngagementExposure[];
+}
+
+export interface AuthorizationRecordOut {
+  id: number;
+  authorization_type: string;
+  effective_from: string;
+  effective_until: string | null;
+  next_hr_review_date: string | null;
+  verification_status: string;
+  is_current: boolean;
+  verified_at: string | null;
+}
+
+export interface EmployeeContinuityDetail {
+  employee: PersonRef;
+  current_record: AuthorizationRecordOut | null;
+  history: AuthorizationRecordOut[];
+  engagements: EngagementExposure[];
+}
+
+// GET /continuity/review-queue — the proactive "who is nearing a review
+// date" list, independent of engagement intersection. engagements_affected
+// can legitimately be 0 (a review with zero delivery consequence is still
+// something HR needs to track and verify).
+export interface HrReviewQueueItem {
+  employee: PersonRef;
+  current_record: AuthorizationRecordOut;
+  days_until_hr_review: number;
+  engagements_affected: number;
+  highest_exposure: "none" | "low" | "medium" | "high";
+}

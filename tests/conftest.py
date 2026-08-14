@@ -134,6 +134,17 @@ def _seed() -> None:
         mkemp("restricted-1", "Rory Restricted", "Legal Counsel", "rory@example.test",
               availability_status=AvailabilityStatus.restricted)
 
+        # --- ARCHITECTURE_2.md §15 item 6: a restricted employee who is
+        # someone else's manager/delegate. Nothing in the fixture set above
+        # exercises this -- restricted-1 doesn't manage or delegate for
+        # anyone -- which is exactly why the raw db.get() lookups this
+        # covers were "currently unexploitable" before being routed through
+        # enforce()+compile_query() (app.query_compiler.enforced_person_ref).
+        mkemp("managed-by-restricted-1", "Quinn Reports", "Software Engineer", "quinn@example.test",
+              manager_id="restricted-1")
+        mkemp("delegates-to-restricted-1", "Drew Delegator", "Software Engineer", "drew@example.test",
+              manager_id="mgr-1", delegate_id="restricted-1", availability_status=AvailabilityStatus.away)
+
         # --- confidential project membership: member-1's manager
         # (member-manager-1) is deliberately NOT a project member, to prove
         # the "line manager gets no access unless also a member" rule.
@@ -201,6 +212,13 @@ def _seed() -> None:
               manager_id="cyclic-b")
         mkemp("cyclic-b", "Bailey Cyclic", "Engineering Manager", "cyclic-b@example.test",
               manager_id="cyclic-a")
+
+        # --- duplicate exact name: resolve_person_name (app/org_chart.py)
+        # must treat this as unresolved, not silently pick one -- an org
+        # chain walked from the wrong "Dana Ambiguous" answers a different
+        # question than the one asked.
+        mkemp("dup-name-1", "Dana Ambiguous", "Software Engineer", "danaambiguous1@example.test")
+        mkemp("dup-name-2", "Dana Ambiguous", "Product Manager", "danaambiguous2@example.test")
 
         # --- search fixtures (step 8 hybrid search tests) ------------------
         satellite_office = Office(name="Satellite Office", city="Satellite City", country="Testland", timezone="UTC")

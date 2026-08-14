@@ -35,6 +35,7 @@ from app.tool_calling import (
     TOOLS,
     ResolvedToolCall,
     execute_with_fallback,
+    execute_with_retry,
     resolve_intent,
 )
 
@@ -70,7 +71,7 @@ def unified_search(
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
     if text and is_question(text):
-        return _assisted(db, caller, text, view_mode)
+        return _assisted(db, caller, text, clean_filters, view_mode)
 
     results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
 
@@ -95,7 +96,8 @@ def unified_search(
 
 
 def _assisted(
-    db: Session, caller: AuthenticatedUser, text: str, view_mode: ViewMode = "work"
+    db: Session, caller: AuthenticatedUser, text: str,
+    clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
 ) -> dict:
     started = time.monotonic()
     turn = resolve_intent(text)
@@ -105,7 +107,15 @@ def _assisted(
             "results": [],
             "overview": {"answer": turn.message or OUT_OF_SCOPE_MESSAGE, "citations": [], "trace": []},
         }
-    raw = execute_with_fallback(db, caller, turn.tool_call, text, view_mode)
+    # UI filter chips share a vocabulary with find_people's own arguments —
+    # without this they narrowed the direct path (above) but were silently
+    # dropped the instant a question-shaped query took this path instead.
+    # Model-extracted args win ties (spread second): if the model pulled a
+    # more specific value out of the question text itself, a stale filter
+    # chip shouldn't silently override what the user just typed.
+    if clean_filters and turn.tool_call.name == "find_people":
+        turn.tool_call.arguments = {**clean_filters, **turn.tool_call.arguments}
+    raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
     return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)

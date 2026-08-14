@@ -1,0 +1,26 @@
+# Staffing Continuity Intelligence — severity thresholds. Read by
+# app/continuity.py's _load_thresholds(). ARCHITECTURE_2.md §10.
+#
+# provenance: engineering defaults, chosen to produce a usable spread over
+# the synthetic dataset. NOT stakeholder-validated. No business owner set
+# these numbers and none is available. Superseded by real thresholds if and
+# when they become available — bump rule_version when that happens. Every
+# stored/returned result records the rule_version it was computed under, so
+# a past result stays explainable even after this file changes.
+rule_version: 1
+
+# Dashboard filtering only (?window_days= on /continuity/exposure and
+# /continuity/engagement-exposure) — NOT the primary business signal. The
+# primary signal is whether an HR review date falls inside an employee's
+# client-engagement assignment window at all (app/continuity.py's
+# _review_intersects_assignment), independent of this lookahead.
+lookahead_days: 90
+
+# redundancy = org-wide backup count for a delivery dependency, excluding
+# the at-risk employee and anyone already on the same engagement. "low" is
+# a floor (>= 3), not an exact match — there's no natural ceiling on how
+# redundant a capability can be.
+severity:
+  high:   { redundancy: 0 }
+  medium: { redundancy: [1, 2] }
+  low:    { redundancy: 3 }
