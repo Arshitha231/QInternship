@@ -1,4 +1,5 @@
 import type {
+  ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem,
   Identity, NotificationOut, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse,
 } from "./types";
 
@@ -111,4 +112,49 @@ export function unifiedSearch(
   }
   const qs = params.toString();
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
+}
+
+// --- Staffing Continuity Intelligence — HR-only. Every call here 403s for
+// a non-"hr" identity; App.tsx never renders the calling UI at all for one.
+
+export function getContinuityOverview(identity: Identity, windowDays?: number): Promise<ContinuityOverview> {
+  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
+  return request<ContinuityOverview>(`/continuity/exposure${qs}`, identity);
+}
+
+export interface ContinuityFilters {
+  exposure?: string;
+  client?: string;
+  project?: string;
+  office?: string;
+  org_unit?: string;
+  dependency_type?: string;
+  window_days?: number;
+}
+
+export function getEngagementExposure(
+  identity: Identity, filters: ContinuityFilters = {},
+): Promise<EngagementExposure[]> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== "") params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return request<EngagementExposure[]>(`/continuity/engagement-exposure${qs ? `?${qs}` : ""}`, identity);
+}
+
+export async function getEmployeeContinuity(
+  identity: Identity, employeeId: string,
+): Promise<EmployeeContinuityDetail | null> {
+  try {
+    return await request<EmployeeContinuityDetail>(`/continuity/employees/${employeeId}`, identity);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+export function getHrReviewQueue(identity: Identity, windowDays?: number): Promise<HrReviewQueueItem[]> {
+  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
+  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs}`, identity);
 }

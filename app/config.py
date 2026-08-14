@@ -10,6 +10,7 @@ app/auth.py — no new config framework.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -76,6 +77,16 @@ def hr_org_unit_name() -> str:
     to "People & Culture" to notify the whole division.
     """
     return os.environ.get("HR_ORG_UNIT_NAME", "HR Operations")
+
+
+def continuity_thresholds_path() -> Path:
+    """Where the versioned continuity severity-threshold config lives
+    (app/continuity.py's _load_thresholds). A function, not a module
+    constant read once at import time, so a test can point this at a
+    fixture file via CONTINUITY_THRESHOLDS_PATH without reimporting
+    app.continuity — same convention as every other setting in this file.
+    """
+    return Path(os.environ.get("CONTINUITY_THRESHOLDS_PATH", "config/continuity_thresholds.yml"))
 
 
 # --- Training API connection settings -------------------------------------

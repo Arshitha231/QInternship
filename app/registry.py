@@ -58,10 +58,24 @@ from sqlalchemy.engine import Engine
 class Sensitivity(str, Enum):
     INTERNAL = "internal"      # app.permissions.BASE_FIELDS, plus id/full_name
     HR_ONLY = "hr_only"        # app.permissions.HR_ONLY_FIELDS
-    DERIVED_HR = "derived_hr"  # unpopulated in Round 1 — Phase 4 adds
-                                # continuity_exposure here once it exists;
-                                # the label exists now so Phase 4 doesn't
-                                # need to touch this file's shape.
+    DERIVED_HR = "derived_hr"  # deliberately left unpopulated, permanently for
+                                # this cycle — NOT a placeholder waiting for
+                                # Phase 4. Continuity (app/continuity.py) reads
+                                # WorkAuthorizationRecord directly and is never
+                                # joined into find_people/PeopleQuery at all, so
+                                # keeping it out of REGISTRY entirely makes it
+                                # structurally unreachable through this pipeline
+                                # — stronger than labeling it DERIVED_HR and
+                                # relying on enforce() to block it, since Field
+                                # in app/query_plan.py is generated from
+                                # REGISTRY.keys() and a labeled entry would be a
+                                # legal PeopleQuery value for every role at the
+                                # type level, gated only at runtime. It also has
+                                # no coherent per-employee scalar shape to
+                                # register: continuity classifies the client
+                                # ENGAGEMENT, not the employee. Isolation is
+                                # proven by tests/test_continuity_isolation.py
+                                # instead — see that file and app/continuity.py.
 
 
 FieldType = Literal["str", "int", "bool", "date", "list[str]"]

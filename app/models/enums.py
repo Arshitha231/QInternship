@@ -39,6 +39,35 @@ class ProjectType(str, enum.Enum):
     policy = "policy"
 
 
+class WorkAuthorizationType(str, enum.Enum):
+    """Legal basis for working, not employment/payroll classification --
+    deliberately kept separate from EmploymentType (fte/contractor/intern)
+    per the continuity design doc: HR mentioned W-2 alongside CPT/OPT in the
+    same breath, but they are different HR concepts and conflating them into
+    one field would make neither queryable correctly."""
+
+    citizen = "citizen"
+    permanent_resident = "permanent_resident"
+    cpt = "cpt"
+    opt = "opt"
+    stem_opt = "stem_opt"
+    h1b = "h1b"
+    l1 = "l1"
+    other = "other"
+
+
+class VerificationStatus(str, enum.Enum):
+    """Lifecycle of a single WorkAuthorizationRecord row. The continuity
+    engine only ever reads a record that is both is_current=True AND
+    verified here -- a pending_verification row (e.g. employee-submitted,
+    not yet HR-confirmed) must never affect organizational analysis."""
+
+    pending_verification = "pending_verification"
+    verified = "verified"
+    superseded = "superseded"
+    expired_record = "expired_record"
+
+
 class ProjectClassification(str, enum.Enum):
     public = "public"
     internal = "internal"
