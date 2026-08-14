@@ -6,17 +6,30 @@ and merge results into results.json. Usage:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Pinned fixture, not live directory.db -- see golden_set.py's module
+# docstring and run_golden_eval.py's matching setup. Set before any app.*
+# import.
+os.environ["DATABASE_URL"] = f"sqlite:///{Path(__file__).resolve().parent / 'fixture.db'}"
+
 from app.db import SessionLocal  # noqa: E402
 from app.tool_calling import OUT_OF_SCOPE_MESSAGE, execute_tool_call  # noqa: E402
 
 from golden_set import ALL_QUESTIONS  # noqa: E402
-from run_golden_eval import CALL_DELAY_SECONDS, DYNAMIC_CALLS, EXTRACTORS, resolve_intent_strict, score  # noqa: E402
+from run_golden_eval import (  # noqa: E402
+    CALL_DELAY_SECONDS,
+    DYNAMIC_CALLS,
+    EXTRACTORS,
+    INDEPENDENT_CALLS,
+    resolve_intent_strict,
+    score,
+)
 
 RESULTS_PATH = Path(__file__).resolve().parent / "results.json"
 
@@ -68,6 +81,9 @@ for n, question_id in enumerate(question_ids):
         _, tool_name, args = gt
         ref_raw = DYNAMIC_CALLS[tool_name](db, caller, args)
         relevant = set(extractor(ref_raw))
+    elif isinstance(gt, tuple) and gt[0] == "independent":
+        _, fn_name, args = gt
+        relevant = set(INDEPENDENT_CALLS[fn_name](db, caller, args))
     else:
         relevant = set(gt)
 

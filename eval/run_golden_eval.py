@@ -22,11 +22,19 @@ examples, so this paces itself deliberately slowly.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Pinned fixture, not live directory.db -- see golden_set.py's module
+# docstring for why. Set BEFORE any app.* import (app.db reads DATABASE_URL
+# at import time and binds an engine to it immediately, same pattern
+# tests/conftest.py uses for its own throwaway db) so nothing here can
+# silently fall through to whatever a developer's .env happens to point at.
+os.environ["DATABASE_URL"] = f"sqlite:///{Path(__file__).resolve().parent / 'fixture.db'}"
 
 from openai import OpenAIError  # noqa: E402
 
