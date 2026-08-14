@@ -574,10 +574,13 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
         kwargs["cost_centre"] = target.cost_centre
     if "personal_mobile" in fields:
         kwargs["personal_mobile"] = target.personal_mobile
-    # str() rather than float() — see the schema comment. Absent, not null,
-    # for anyone who isn't HR or the person themselves.
-    if "salary" in fields and target.salary is not None:
-        kwargs["salary"] = str(target.salary)
+    # str() rather than float() — see the schema comment. Set even when empty,
+    # so a contractor with no salary on file comes back as null rather than
+    # absent: absent has to keep meaning "you may not see this", or HR can't
+    # tell "no salary held" from "hidden from me". Same rule away_until_month
+    # follows.
+    if "salary" in fields:
+        kwargs["salary"] = str(target.salary) if target.salary is not None else None
     if "salary_currency" in fields:
         kwargs["salary_currency"] = target.salary_currency
     if "date_of_birth" in fields:

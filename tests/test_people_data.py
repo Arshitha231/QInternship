@@ -124,12 +124,24 @@ async def test_manager_still_sees_personal_mobile(client):
     assert "salary" not in body
 
 
-async def test_salary_absent_when_not_held(client):
-    """Contractors have no salary on file — absent, not zero or null."""
+async def test_salary_null_when_not_held_but_visible(client):
+    """No salary on file (a contractor, say) is null — NOT absent.
+
+    Absent has to keep meaning "you may not see this". If an empty salary also
+    vanished from the response, HR couldn't tell "we hold no salary for this
+    person" from "this field is hidden from you", which is the exact ambiguity
+    the absent-vs-null convention exists to prevent.
+    """
     resp = await client.get(f"/people/{BIRTHDAY_PERSON}",
                             headers=auth_headers("hr", "stranger-1"))
     assert resp.status_code == 200
-    assert "salary" not in resp.json()
+    body = resp.json()
+    assert "salary" in body
+    assert body["salary"] is None
+    # ...and it really is hidden, not merely empty, from someone unentitled.
+    other = await client.get(f"/people/{BIRTHDAY_PERSON}",
+                             headers=auth_headers("employee", "stranger-1"))
+    assert "salary" not in other.json()
 
 
 async def test_salary_serialized_exactly(client):
