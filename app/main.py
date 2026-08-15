@@ -21,7 +21,11 @@ from app.doc_extraction import UnsupportedDocument, process_document, store_docu
 from app.models import Employee, TrainingCourse
 from app.models.enums import CourseStatus, display_status
 from app.notifications import notifications_for, notify_date_milestones
-from app.org_chart import get_org_chain as get_org_chain_service
+from app.org_chart import (
+    get_org_chain as get_org_chain_service,
+    get_team_graph as get_team_graph_service,
+    get_skills_graph as get_skills_graph_service,
+)
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
@@ -55,6 +59,8 @@ from app.schemas import (
     RecordCourseStatusRequest,
     UpdateBioRequest,
     UpdateEmployeeRequest,
+    TeamGraphResponse,    # <-- Added
+    SkillGraphResponse,   # <-- Added
 )
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
@@ -317,6 +323,28 @@ def get_org_chart_route(
 
 
 @app.get("/me/notifications", response_model=list[NotificationOut])
+@app.get("/people/{person_id}/team-graph", response_model=TeamGraphResponse)
+def get_team_chart_route(
+    person_id: str,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamGraphResponse:
+    result = get_team_graph_service(db, user, person_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.get("/skills/{skill_id}/graph", response_model=SkillGraphResponse)
+def get_skills_graph_route(
+    skill_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SkillGraphResponse:
+    result = get_skills_graph_service(db, user, skill_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return result
 def my_notifications_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
