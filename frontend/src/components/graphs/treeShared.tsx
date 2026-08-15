@@ -22,15 +22,21 @@ export const STATUS_LABEL: Record<string, string> = {
 export function NodeBox({
   node,
   focus,
+  highlighted,
   onClick,
   registerRef,
 }: {
   node: OrgChainNode;
   focus?: boolean;
+  highlighted?: boolean;
   onClick?: () => void;
   registerRef: (el: HTMLDivElement | null) => void;
 }) {
   const status = node.availability_status;
+  const baseClass = "tree-node";
+  const focusClass = focus ? "tree-node-focus" : "";
+  const highlightClass = highlighted ? "tree-node-highlight" : "";
+  const combinedClasses = `${baseClass} ${focusClass} ${highlightClass}`.trim();
   return (
     <div
       ref={registerRef}
