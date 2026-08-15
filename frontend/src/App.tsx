@@ -8,7 +8,8 @@ import { ContinuityPage } from "./components/ContinuityPage";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
 import { DEV_IDENTITIES } from "./identities";
-import type { Identity, UnifiedSearchResponse } from "./types";
+import { WORK_MODE_ROLES } from "./types";
+import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
 type Mode = "profile" | "graphs" | "continuity";
 
@@ -27,6 +28,9 @@ function profileUrl(id: string): string {
 
 export default function App() {
   const [identity, setIdentity] = useState<Identity>(DEV_IDENTITIES[0]);
+  // Defaults to work mode, matching the server's default for hr/it, so the
+  // app opens showing what these roles saw before view modes existed.
+  const [viewMode, setViewMode] = useState<ViewMode>("work");
   const [mode, setMode] = useState<Mode>("profile");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
@@ -126,7 +130,7 @@ export default function App() {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    unifiedSearch(identity, { q: debouncedQuery.trim() || undefined, ...debouncedFilters }, controller.signal)
+    unifiedSearch(identity, { q: debouncedQuery.trim() || undefined, ...debouncedFilters }, viewMode, controller.signal)
       .then((res) => {
         setResponse(res);
         setLoading(false);
@@ -138,7 +142,7 @@ export default function App() {
       });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQuery, debouncedFilters, identity, retryToken]);
+  }, [debouncedQuery, debouncedFilters, identity, viewMode, retryToken]);
 
   function jumpToCard(id: string) {
     const el = document.getElementById(`person-card-${id}`);
@@ -154,11 +158,17 @@ export default function App() {
         query={query}
         onQueryChange={setQuery}
         identity={identity}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
         onIdentityChange={(next) => {
           setIdentity(next);
           setGraphFocusId(next.id);
           setSavedSearch(null);
           resetProfile(next.id, next.name);
+          // Switching to a role that cannot choose resets the toggle, so the
+          // UI never claims to be in a mode the server isn't honouring.
+          if (!WORK_MODE_ROLES.includes(next.role)) setViewMode("employee");
+          else setViewMode("work");
           // The Continuity tab doesn't exist at all for non-hr identities
           // (see the tab bar below) -- if it was open when switching to
           // one, there'd be no tab left to click to get back out.
@@ -236,6 +246,7 @@ export default function App() {
           <ProfilePage
             personId={profileId}
             identity={identity}
+            viewMode={viewMode}
             stack={profileStack}
             onNavigate={pushProfile}
             onBack={backOneProfile}
@@ -245,6 +256,7 @@ export default function App() {
         ) : mode === "graphs" ? (
           <GraphPage
             identity={identity}
+            viewMode={viewMode}
             focusId={graphFocusId}
             onFocusChange={setGraphFocusId}
             onOpenProfile={(id, name) => {

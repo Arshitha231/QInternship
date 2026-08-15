@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
-import type { Identity, OrgChainNode, PersonDetail, SkillOut } from "../types";
+import type { Identity, OrgChainNode, PersonDetail, SkillOut, ViewMode } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
   MapPin, Phone, Slack, UserReports, Users,
@@ -14,6 +14,7 @@ export interface ProfileStackEntry {
 interface Props {
   personId: string;
   identity: Identity;
+  viewMode: ViewMode;
   stack: ProfileStackEntry[];
   onNavigate: (id: string, name: string) => void;
   onBack: () => void;
@@ -71,7 +72,9 @@ function localTimeInfo(tz: string): string | null {
   }
 }
 
-export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch }: Props) {
+export function ProfilePage({
+  personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
+}: Props) {
   const [detail, setDetail] = useState<PersonDetail | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +92,7 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
     setError(null);
     setEditingBio(false);
     setBioError(null);
-    Promise.all([getPerson(identity, personId), getOrgChart(identity, personId, "down", 1)])
+    Promise.all([getPerson(identity, personId, viewMode), getOrgChart(identity, personId, "down", 1)])
       .then(([person, chain]) => {
         if (cancelled) return;
         setDetail(person);
@@ -103,7 +106,7 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
     return () => {
       cancelled = true;
     };
-  }, [personId, identity]);
+  }, [personId, identity, viewMode]);
 
   if (detail === undefined) {
     return (
@@ -346,6 +349,16 @@ export function ProfilePage({ personId, identity, stack, onNavigate, onBack, onB
                     <p className="job-meta">
                       {p.role} &middot; {p.project_type} &middot; {p.start_month} &ndash; {p.current ? "Present" : p.end_month}
                     </p>
+                    {/* Present only for hr/it in work mode. `!== undefined`
+                        rather than a truthiness check, so a project with an
+                        empty description still renders as an internal field
+                        you're allowed to see — absent means "not permitted",
+                        which is a different thing from "nothing on file". */}
+                    {p.project_desc !== undefined && (
+                      <p className="job-desc">
+                        {p.project_desc || <span className="muted">No description on file</span>}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>

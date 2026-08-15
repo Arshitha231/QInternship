@@ -41,6 +41,10 @@ export interface ProjectHistoryItem {
   start_month: string;
   end_month: string | null;
   current: boolean;
+  // Work mode, hr/it only. Absent (not null) for anyone else -- the backend
+  // serializes with exclude_unset, so `"project_desc" in item` is the honest
+  // test for "am I allowed to see this", and undefined means no.
+  project_desc?: string | null;
 }
 
 export interface TrainingStatusItem {
@@ -140,7 +144,19 @@ export interface UnifiedSearchResponse {
   overview?: AIOverview;
 }
 
-export type Role = "employee" | "manager" | "hr";
+export type Role = "employee" | "manager" | "hr" | "it";
+
+// Which lens the directory is read through. The SERVER decides: anything
+// other than hr/it is answered in employee mode whatever this says (see
+// resolve_view_mode in app/permissions.py), so sending it is a request,
+// never a grant.
+export type ViewMode = "employee" | "work";
+
+// Roles allowed to switch modes. Mirrors WORK_MODE_ROLES in
+// app/permissions.py. Kept in sync by hand, but harmless if it drifts:
+// showing the toggle to a role the server pins just makes it a no-op,
+// never an escalation.
+export const WORK_MODE_ROLES: Role[] = ["hr", "it"];
 
 export interface Identity {
   role: Role;

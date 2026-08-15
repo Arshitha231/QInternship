@@ -118,6 +118,25 @@ button { font: inherit; }
 }
 .search .clear-btn:hover { background: var(--page); }
 
+/* View-mode toggle. Only rendered for hr/it (see TopBar.tsx) — a segmented
+   control rather than a checkbox because neither mode is the "off" state:
+   employee mode is a real view, not the absence of one. */
+.viewmode {
+  display: flex; flex-shrink: 0; gap: 2px; padding: 2px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 8px;
+}
+.viewmode-btn {
+  font: inherit; font-size: 12px; line-height: 1; color: var(--muted);
+  background: transparent; border: 0; border-radius: 6px;
+  padding: 6px 10px; cursor: pointer; white-space: nowrap;
+}
+.viewmode-btn:hover { color: var(--ink); }
+.viewmode-btn.active {
+  background: var(--white); color: var(--ink); font-weight: 500;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.viewmode-btn:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+
 .account { position: relative; flex-shrink: 0; }
 .account-btn {
   display: flex; align-items: center; gap: 9px; font: inherit; font-size: 14px;
@@ -363,6 +382,9 @@ button { font: inherit; }
 .timeline li.current::before { background: var(--green-800); }
 .job { font-size: 14px; font-weight: 500; margin: 0; }
 .job-meta { font-size: 12.5px; color: var(--muted); margin: 1px 0 0; }
+/* Internal project description — hr/it, work mode only. */
+.job-desc { font-size: 13px; color: var(--ink); margin: 6px 0 0; line-height: 1.5; }
+.job-desc .muted { color: var(--muted); font-style: italic; }
 
 .details { list-style: none; margin: 0; padding: 0; display: grid; gap: 11px; }
 .details li { display: grid; grid-template-columns: 20px 96px minmax(0, 1fr); align-items: start; gap: 10px; font-size: 13.5px; }

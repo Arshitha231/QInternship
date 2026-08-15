@@ -1,6 +1,7 @@
 import type {
   ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem,
   Identity, NotificationOut, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse,
+  ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -47,18 +48,28 @@ export interface SearchFilters {
   available?: boolean;
 }
 
-export function findPeople(identity: Identity, filters: SearchFilters, signal?: AbortSignal): Promise<PersonSummary[]> {
+// view_mode is sent on every directory/profile read. Passing it for an
+// employee/manager identity is harmless and deliberate -- the server pins
+// those roles to employee mode regardless, so the frontend never has to
+// decide who is allowed what. It only decides what to OFFER (see
+// WORK_MODE_ROLES); the answer always comes from the backend.
+export function findPeople(
+  identity: Identity, filters: SearchFilters, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<PersonSummary[]> {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "" && v !== null) params.set(k, String(v));
   }
+  params.set("view_mode", viewMode);
   const qs = params.toString();
   return request<PersonSummary[]>(`/people${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
-export async function getPerson(identity: Identity, personId: string): Promise<PersonDetail | null> {
+export async function getPerson(
+  identity: Identity, personId: string, viewMode: ViewMode,
+): Promise<PersonDetail | null> {
   try {
-    return await request<PersonDetail>(`/people/${personId}`, identity);
+    return await request<PersonDetail>(`/people/${personId}?view_mode=${viewMode}`, identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
@@ -104,12 +115,13 @@ export interface UnifiedSearchFilters {
 }
 
 export function unifiedSearch(
-  identity: Identity, filters: UnifiedSearchFilters, signal?: AbortSignal,
+  identity: Identity, filters: UnifiedSearchFilters, viewMode: ViewMode, signal?: AbortSignal,
 ): Promise<UnifiedSearchResponse> {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "" && v !== null) params.set(k, String(v));
   }
+  params.set("view_mode", viewMode);
   const qs = params.toString();
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
