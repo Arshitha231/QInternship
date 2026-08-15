@@ -22,19 +22,28 @@ export const STATUS_LABEL: Record<string, string> = {
 export function NodeBox({
   node,
   focus,
+  highlighted, // <-- Added for Search Highlighting
   onClick,
   registerRef,
 }: {
   node: OrgChainNode;
   focus?: boolean;
+  highlighted?: boolean; // <-- Added for Search Highlighting
   onClick?: () => void;
   registerRef: (el: HTMLDivElement | null) => void;
 }) {
   const status = node.availability_status;
+  
+  // Combine CSS classes for dynamic styling
+  const baseClass = "tree-node";
+  const focusClass = focus ? "tree-node-focus" : "";
+  const highlightClass = highlighted ? "tree-node-highlight" : "";
+  const combinedClasses = `${baseClass} ${focusClass} ${highlightClass}`.trim();
+
   return (
     <div
       ref={registerRef}
-      className={`tree-node ${focus ? "tree-node-focus" : ""}`}
+      className={combinedClasses}
       onClick={focus ? undefined : onClick}
       role={focus ? undefined : "button"}
       tabIndex={focus ? undefined : 0}
@@ -61,7 +70,8 @@ export interface TreeGroup {
   childIds: string[];
 }
 
-export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
+// Pass zoomScale into the hook signature (defaulting to 1.0)
+export function useTreeConnectors(groups: TreeGroup[], zoomScale: number = 1.0, deps: unknown[]) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const branchRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -83,14 +93,6 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
   }
 
   useLayoutEffect(() => {
-    // A sibling group that fits on one row gets one shared elbow bus. A
-    // group wrapped across multiple visual rows (e.g. a 14-report row)
-    // needs each row's bus computed against the row above it, not against
-    // the true parent every time -- otherwise a later row's bus lands at
-    // the naive parent/child midpoint, which sits inside an earlier row's
-    // card band and gets hidden behind those cards. The vertical trunk
-    // itself still runs at the parent's own x for every row, so it reads
-    // as one spine forking at each row.
     function computeGroup(
       wrapRect: DOMRect,
       parentId: string,
@@ -99,24 +101,31 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
     ) {
       const p = nodeRefs.current.get(parentId);
       if (!p) return;
+      
       const pr = p.getBoundingClientRect();
-      const px = pr.left + pr.width / 2 - wrapRect.left;
-      const py = pr.bottom - wrapRect.top;
+      
+      // DIVIDE BY zoomScale to convert scaled screen pixels back to SVG viewBox space
+      const px = (pr.left + pr.width / 2 - wrapRect.left) / zoomScale;
+      const py = (pr.bottom - wrapRect.top) / zoomScale;
 
       const items = childIds
         .map((id) => {
           const el = nodeRefs.current.get(id);
           if (!el) return null;
+          
           const r = el.getBoundingClientRect();
           const branchEl = branchRefs.current.get(id);
+          
+          // Apply zoomScale division to all bounds
           const branchBottom = branchEl
-            ? branchEl.getBoundingClientRect().bottom - wrapRect.top
-            : r.bottom - wrapRect.top;
+            ? (branchEl.getBoundingClientRect().bottom - wrapRect.top) / zoomScale
+            : (r.bottom - wrapRect.top) / zoomScale;
+            
           return {
             id,
-            cx: r.left + r.width / 2 - wrapRect.left,
-            cy: r.top - wrapRect.top,
-            top: Math.round(r.top - wrapRect.top),
+            cx: (r.left + r.width / 2 - wrapRect.left) / zoomScale,
+            cy: (r.top - wrapRect.top) / zoomScale,
+            top: Math.round((r.top - wrapRect.top) / zoomScale),
             branchBottom,
           };
         })
