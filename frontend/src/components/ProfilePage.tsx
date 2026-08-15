@@ -339,29 +339,41 @@ export function ProfilePage({
             </section>
           )}
 
-          {detail.project_history && detail.project_history.length > 0 && (
+          {/* Rendered whenever the field is present at all — every caller who
+              can see the record gets project_history (it's in BASE_FIELDS).
+              A genuinely empty portfolio still gets the section, with its
+              own message, rather than the card disappearing: an absent
+              section reads as "you can't see this", which isn't true here —
+              the honest state is "nothing on file yet", the same
+              absent-vs-null distinction salary and project_desc follow. */}
+          {detail.project_history && (
             <section className="card">
               <h2>Project history</h2>
-              <ul className="timeline">
-                {detail.project_history.map((p, i) => (
-                  <li key={i} className={p.current ? "current" : ""}>
-                    <p className="job">{p.project_name}</p>
-                    <p className="job-meta">
-                      {p.role} &middot; {p.project_type} &middot; {p.start_month} &ndash; {p.current ? "Present" : p.end_month}
-                    </p>
-                    {/* Present only for hr/it in work mode. `!== undefined`
-                        rather than a truthiness check, so a project with an
-                        empty description still renders as an internal field
-                        you're allowed to see — absent means "not permitted",
-                        which is a different thing from "nothing on file". */}
-                    {p.project_desc !== undefined && (
-                      <p className="job-desc">
-                        {p.project_desc || <span className="muted">No description on file</span>}
+              {detail.project_history.length > 0 ? (
+                <ul className="timeline">
+                  {detail.project_history.map((p, i) => (
+                    <li key={i} className={p.current ? "current" : ""}>
+                      <p className="job">{p.project_name}</p>
+                      <p className="job-meta">
+                        {p.role} &middot; {p.project_type} &middot; {p.start_month} &ndash; {p.current ? "Present" : p.end_month}
                       </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
+                      {/* Visible to every role/view_mode now — project_desc
+                          moved into BASE_FIELDS. `!== undefined` stays
+                          rather than becoming a truthiness check, so if a
+                          future rule ever narrows visibility again this
+                          still reads absent-means-not-permitted correctly
+                          instead of silently changing meaning. */}
+                      {p.project_desc !== undefined && (
+                        <p className="job-desc">
+                          {p.project_desc || <span className="muted">No description on file</span>}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="muted">No projects on file yet.</p>
+              )}
             </section>
           )}
         </div>

@@ -45,6 +45,17 @@ WORK_MODE_ROLES: set[str] = {"hr", "it"}
 
 # Visible to every caller who can see the record at all (record-level checks
 # happen separately, in can_see_record()).
+#
+# project_desc is NOT listed here even though it's now visible to everyone
+# (see PROJECT_DESC_FIELDS below and app/people.py's _project_history) — it's
+# nested inside project_history's list items, not an employees-table column,
+# same "known gap" category app/registry.py documents for direct_reports and
+# training_status: those two are also universally-or-conditionally visible
+# without a BASE_FIELDS/REGISTRY entry, checked inline where they're built
+# instead. test_registry.py asserts every BASE_FIELDS/INTERNAL_FIELDS member
+# has a REGISTRY entry — a real column-completeness check — so adding a
+# nested, non-column field here would be fighting that invariant for a field
+# it was never meant to cover, not satisfying it.
 BASE_FIELDS: set[str] = {
     "preferred_name", "job_title", "org_unit", "work_email", "work_phone",
     "slack_handle", "office", "effective_timezone", "employment_type", "photo_url",
@@ -65,9 +76,12 @@ INTERNAL_FIELDS: set[str] = {
 }
 
 # Project descriptions. Visible to hr and it in work mode; it is additionally
-# the only role that may EDIT them (see EDITABLE below). Absent in employee
-# mode for everyone, so the ordinary directory keeps showing project
-# names/roles from project_history without their internal descriptions.
+# Visible to every caller, unconditionally — app/people.py's
+# _project_history includes project_desc on every item it builds, with no
+# per-caller check at all (see the note in BASE_FIELDS above for why this
+# isn't expressed as a fields-set membership test the way most fields are).
+# Still referenced here because EDITABLE needs to name exactly this one
+# field: visibility is universal now, editing stayed IT-only.
 PROJECT_DESC_FIELDS: set[str] = {"project_desc"}
 
 # Own profile only. Deliberately narrower than personal_mobile's "own profile
@@ -112,12 +126,13 @@ ALLOWED: dict[tuple[str, str], set[str]] = {
     ("employee", "work"): set(BASE_FIELDS),
     ("manager", "work"): set(BASE_FIELDS),
 
-    ("hr", "work"): set(BASE_FIELDS) | set(INTERNAL_FIELDS) | set(TRAINING_FIELDS) | set(PROJECT_DESC_FIELDS),
+    ("hr", "work"): set(BASE_FIELDS) | set(INTERNAL_FIELDS) | set(TRAINING_FIELDS),
     # No INTERNAL_FIELDS: it administers the directory, it does not read
     # salaries. This is the asymmetry the whole (role, view_mode) re-key
     # exists to express — before it, "hr-only" and "privileged" were the
-    # same thing.
-    ("it", "work"): set(BASE_FIELDS) | set(PROJECT_DESC_FIELDS),
+    # same thing. project_desc is no longer listed here specifically: it's
+    # in BASE_FIELDS now, so every row already carries it.
+    ("it", "work"): set(BASE_FIELDS),
 }
 
 # Write permissions, same key shape as ALLOWED and for the same reason:

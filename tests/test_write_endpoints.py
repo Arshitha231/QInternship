@@ -106,6 +106,46 @@ async def test_hr_cannot_edit_in_employee_mode(client, db_session):
     assert str(db_session.get(Employee, "mgr-1").salary) != "888888.00"
 
 
+async def test_hr_cannot_edit_own_profile(client, db_session):
+    """HR may edit every profile except their own — the admin edit path is
+    not a self-service one, even for the role that otherwise has full
+    write access through it. mgr-1 is HR's own id here specifically (not
+    a bystander's), so this is a self-edit attempt, not a permission gap."""
+    resp = await client.patch(
+        "/employees/mgr-1", params={"view_mode": "work"},
+        json={"salary": "555555.00"}, headers=auth_headers("hr", "mgr-1"),
+    )
+    assert resp.status_code == 403, resp.text
+
+    db_session.expire_all()
+    assert str(db_session.get(Employee, "mgr-1").salary) != "555555.00"
+
+
+async def test_hr_can_still_edit_someone_elses_profile(client, db_session):
+    """The self-block is scoped to the caller's own id, not a blanket
+    regression on HR's write access to everyone else."""
+    resp = await client.patch(
+        "/employees/report-1", params={"view_mode": "work"},
+        json={"job_title": "Staff Engineer"}, headers=auth_headers("hr", "mgr-1"),
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    assert db_session.get(Employee, "report-1").job_title == "Staff Engineer"
+
+
+async def test_hr_self_edit_blocked_before_target_lookup(client):
+    """Self-block fires even when the caller's own id has no employee row
+    (a dev-mode caller id is just a header value, not guaranteed to exist)
+    — the check is about identity, not about what get() would return, and
+    must not depend on the row existing to catch the attempt."""
+    resp = await client.patch(
+        "/employees/no-such-employee-id", params={"view_mode": "work"},
+        json={"salary": "1.00"}, headers=auth_headers("hr", "no-such-employee-id"),
+    )
+    assert resp.status_code == 403, resp.text
+
+
 async def test_employee_cannot_set_own_salary(client, db_session):
     """The obvious attack: ABAC grants a caller sight of their own salary,
     which must not imply the ability to change it."""
