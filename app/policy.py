@@ -139,16 +139,6 @@ def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
     return effective_role(role, view_mode) in ("manager", "hr")
 
 
-def can_see_project_desc(role: str, view_mode: ViewMode = "work") -> bool:
-    """project_desc (nested inside a project_history item) currently reaches
-    a response via ALLOWED[("hr"/"it","work")]'s own construction in
-    app.permissions -- REGISTRY has no entry for it at all, same known-gap
-    category as direct_reports, since it's a Project-table field, not an
-    employees column. compute_visible_fields() below needs an explicit
-    check to stand in for what ALLOWED used to include implicitly."""
-    return effective_role(role, view_mode) in ("hr", "it")
-
-
 def can_see_training_status_by_role(role: str, view_mode: ViewMode = "work") -> bool:
     """training_status has two independent old-system grants, not one:
     app.permissions.training_extra_fields' self/manager-chain ABAC walk
@@ -216,6 +206,18 @@ def compute_visible_fields(
     AuditLog.fields_returned (app/people.py's fields_returned = fields is
     logged verbatim) -- a real, confirmed divergence caught by this
     migration's own comparison tests, not a cosmetic one.
+
+    project_desc is deliberately NEVER added to this set (no
+    can_see_project_desc() call here, unlike an earlier version of this
+    function). It used to ride on ALLOWED[("hr"/"it","work")], but
+    origin/main's "project_desc for everyone" change removed it from ALLOWED
+    entirely and made app.people._project_history include it on every item
+    unconditionally, alongside project_history rather than gated by the
+    top-level fields set at all -- same category as direct_reports/
+    training_status now. Caught by this migration's own comparison tests
+    after merging that change in: compute_visible_fields() was adding
+    "project_desc" to the top-level set when the current visible_fields()
+    never does, for any role.
     """
     plan_fields = [f for f in REGISTRY if f not in _ALWAYS_PRESENT_FIELDS]
     decision = enforce(PeopleQuery(select=plan_fields), caller, view_mode)
@@ -224,6 +226,4 @@ def compute_visible_fields(
         fields |= TRAINING_FIELDS
     if not TRAINING_FIELDS <= fields:
         fields |= training_extra_fields(db, caller, target)
-    if can_see_project_desc(caller.role, view_mode):
-        fields.add("project_desc")
     return department_filter(db, fields, caller, target, view_mode)
