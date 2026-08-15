@@ -8,6 +8,7 @@ export interface GraphNode {
   label: string;
   sublabel?: string;
   kind: NodeKind;
+  highlighted?: boolean; // <-- Added to support Search Highlighting
 }
 
 export interface GraphEdge {
@@ -47,9 +48,6 @@ function layout(nodes: GraphNode[], edges: GraphEdge[], width: number, height: n
     .filter((e) => byId.has(e.source) && byId.has(e.target))
     .map((e) => ({ source: e.source, target: e.target }));
 
-  // Repulsion and link distance scale with node count -- a 60-node manager
-  // subtree needs much more breathing room than a 5-node team, or labels
-  // stack on top of each other.
   const scale = Math.min(2.2, 1 + nodes.length / 40);
   const sim = forceSimulation(simNodes)
     .force("charge", forceManyBody().strength(-420 * scale))
@@ -107,25 +105,33 @@ export function GraphCanvas({
             const s = byId.get(e.source);
             const t = byId.get(e.target);
             if (!s || !t) return null;
-            return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} className="graph-edge" />;
+            return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} className="graph-edge" stroke="#cbd5e1" strokeWidth={1.5} />;
           })}
         </g>
         <g className="graph-nodes">
           {positioned.map((n) => {
             const r = KIND_RADIUS[n.kind];
             const clickable = !!onNodeClick && (n.kind === "person" || n.kind === "focus");
+            const isHighlighted = !!n.highlighted;
+
             return (
               <g
                 key={n.id}
                 transform={`translate(${n.x},${n.y})`}
-                className={`graph-node ${clickable ? "clickable" : ""}`}
+                className={`graph-node ${clickable ? "clickable" : ""} ${isHighlighted ? "highlighted" : ""}`}
                 onClick={() => clickable && onNodeClick?.(n)}
                 tabIndex={clickable ? 0 : undefined}
                 role={clickable ? "button" : undefined}
                 onKeyDown={(e) => {
                   if (clickable && (e.key === "Enter" || e.key === " ")) onNodeClick?.(n);
                 }}
+                style={{ cursor: clickable ? "pointer" : "default" }}
               >
+                {/* SVG Highlight Halo - renders slightly larger behind the main circle */}
+                {isHighlighted && (
+                  <circle r={r + 6} fill="none" stroke="#0ea5e9" strokeWidth={4} opacity={0.5} />
+                )}
+                
                 <circle r={r} fill={KIND_FILL[n.kind]} stroke={KIND_STROKE[n.kind]} strokeWidth={n.kind === "focus" ? 2.5 : 1.5} />
                 <text textAnchor="middle" dominantBaseline="central" fontSize={n.kind === "skill" ? 10 : 11} fontWeight={600} fill={KIND_TEXT[n.kind]}>
                   {initialsOrShort(n.label, n.kind)}
