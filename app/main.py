@@ -1,7 +1,8 @@
+from contextlib import asynccontextmanager
 import json
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import AsyncIterator, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
+from app.continuity import get_employee_continuity as get_employee_continuity_service
+from app.continuity import get_engagement_exposure as get_engagement_exposure_service
+from app.continuity import get_hr_review_queue as get_hr_review_queue_service
+from app.continuity import get_org_exposure as get_org_exposure_service
 from app.db import engine, get_db
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
 from app.models import Employee, TrainingCourse
@@ -21,21 +26,31 @@ from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.permissions import resolve_view_mode
+from app.project_skills import ProjectNotWritable, UnknownSkill
+from app.project_skills import get_required_skills as get_required_skills_service
+from app.project_skills import set_required_skills as set_required_skills_service
 from app.proposals import ProposalNotActionable, ProposalNotFound, ReviewDenied
 from app.proposals import accept as accept_proposal
 from app.proposals import correct as correct_proposal
 from app.proposals import list_proposals
 from app.proposals import reassign as reassign_proposal
 from app.proposals import reject as reject_proposal
+from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
+    ContinuityOverview,
+    CorrectProposalRequest,
+    EmployeeContinuityDetail,
+    EngagementExposure,
+    HrReviewQueueItem,
     NotificationOut,
     OrgChainNode,
     PersonDetail,
     PersonRef,
     PersonSummary,
-    CorrectProposalRequest,
     ProjectDescriptionRequest,
+    ProjectSkillRequirementIn,
+    ProjectSkillRequirementOut,
     ReassignProposalRequest,
     RecordCourseStatusRequest,
     UpdateBioRequest,
@@ -48,10 +63,23 @@ from app.writes import clear_project_description as clear_project_description_se
 from app.writes import set_project_description as set_project_description_service
 from app.writes import update_employee as update_employee_service
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Fails loudly at startup if a DB column has no app/registry.py entry
+    # and isn't in IGNORED_COLUMNS -- the same protection
+    # assert_registry_covers_schema's own docstring describes: a teammate
+    # adding employee.home_address must add a registry entry (or a
+    # justified ignore) before it can ever become queryable, not after.
+    assert_registry_covers_schema(engine)
+    yield
+
+
 app = FastAPI(
     title="Employee Directory API",
     description="Internal employee directory with permission-filtered natural-language search.",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 # Local frontend dev server only (Vite default port) — the API has no
@@ -402,6 +430,115 @@ def run_date_milestones_route(
         "notifications_sent": len(created),
         "by_kind": by_kind,
     }
+
+
+@app.get("/projects/{project_id}/required-skills", response_model=list[ProjectSkillRequirementOut])
+def get_required_skills_route(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[ProjectSkillRequirementOut]:
+    """What a project's delivery actually needs, per app/project_skills.py.
+    Not sensitive — visible to anyone who can see the project at all
+    (confidential projects: members and hr only, same 404-not-403 shape
+    used everywhere else for restricted records)."""
+    result = get_required_skills_service(db, user, project_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.put("/projects/{project_id}/required-skills", response_model=list[ProjectSkillRequirementOut])
+def set_required_skills_route(
+    project_id: int,
+    body: list[ProjectSkillRequirementIn],
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[ProjectSkillRequirementOut]:
+    """Replaces the full required-skills set for this project. Only the
+    project's owner or hr may call this — app/project_skills.py's own
+    check, enforced there rather than only here."""
+    try:
+        result = set_required_skills_service(db, user, project_id, body)
+    except ProjectNotWritable as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except UnknownSkill as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.get("/continuity/exposure", response_model=ContinuityOverview)
+def continuity_exposure_route(
+    window_days: int | None = Query(None, description="Lookahead window in days. Defaults to the configured value."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ContinuityOverview:
+    """Organization-wide continuity summary. HR-only — see app/continuity.py's
+    module docstring for why this route-level check duplicates the one
+    app.continuity.get_org_exposure already does itself (same double-check
+    pattern as /notifications/date-milestones and /people/{id}/training/{code}
+    above)."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    return get_org_exposure_service(db, user, window_days=window_days)
+
+
+@app.get("/continuity/engagement-exposure", response_model=list[EngagementExposure])
+def continuity_engagement_exposure_route(
+    exposure: str | None = None,
+    client: str | None = None,
+    project: str | None = None,
+    office: str | None = None,
+    org_unit: str | None = None,
+    dependency_type: str | None = None,
+    window_days: int | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[EngagementExposure]:
+    """Filterable list of client engagements with continuity exposure.
+    HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    return get_engagement_exposure_service(
+        db, user, exposure=exposure, client=client, project=project,
+        office=office, org_unit=org_unit, dependency_type=dependency_type, window_days=window_days,
+    )
+
+
+@app.get("/continuity/review-queue", response_model=list[HrReviewQueueItem])
+def continuity_review_queue_route(
+    window_days: int | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[HrReviewQueueItem]:
+    """The proactive "who is nearing a review date" list — every employee
+    with a current, HR-verified record and a scheduled review, whether or
+    not it has any client-engagement consequence. Complements
+    /continuity/engagement-exposure, which only ever surfaces the subset
+    whose review does intersect something. HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    return get_hr_review_queue_service(db, user, window_days=window_days)
+
+
+@app.get("/continuity/employees/{employee_id}", response_model=EmployeeContinuityDetail)
+def continuity_employee_route(
+    employee_id: str,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> EmployeeContinuityDetail:
+    """HR drill-down: one employee's work-authorization history and their
+    client-engagement exposure entries, including engagements where the
+    review doesn't intersect (exposure="none") — unlike the org-wide list,
+    nothing here is filtered out. HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    result = get_employee_continuity_service(db, user, employee_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -202,6 +202,56 @@ async def test_result_cap_holds_on_broad_query_via_search(client, search_index):
 
 
 # ---------------------------------------------------------------------------
+# 8. Phase 3 Round 2 (ARCHITECTURE_2.md §11/§16): a pure filter combo, no
+# name/query text, must skip Search entirely and go straight to the SQL
+# path — even with Search fully configured (search_index fixture), unlike
+# every filter test above, which always pairs a filter with `name` and so
+# never actually exercises this. Search is for ranking/semantic work only.
+# ---------------------------------------------------------------------------
+
+async def test_pure_filter_query_never_calls_search(client, search_index, monkeypatch):
+    from app import people as people_module
+
+    real_search_people = people_module.search_people
+    calls: list[dict] = []
+
+    def counting_search_people(**kwargs):
+        calls.append(kwargs)
+        return real_search_people(**kwargs)
+
+    monkeypatch.setattr(people_module, "search_people", counting_search_people)
+
+    resp = await client.get(
+        "/people", params={"org_unit": "Platform Engineering", "skill": "Terraform"},
+        headers=auth_headers("employee"),
+    )
+    assert resp.status_code == 200
+    assert calls == []  # Search must never be invoked for a pure filter combo
+    names = [p["full_name"] for p in resp.json()]
+    assert "Taylor Cloud" in names  # still finds the right person, via the SQL fallback
+
+
+async def test_query_with_free_text_still_calls_search(client, search_index, monkeypatch):
+    # Control for the test above: confirm the counting wrapper itself would
+    # actually catch a call, by proving Search IS still invoked the moment
+    # there's real text to rank.
+    from app import people as people_module
+
+    real_search_people = people_module.search_people
+    calls: list[dict] = []
+
+    def counting_search_people(**kwargs):
+        calls.append(kwargs)
+        return real_search_people(**kwargs)
+
+    monkeypatch.setattr(people_module, "search_people", counting_search_people)
+
+    resp = await client.get("/people", params={"name": "Cloud"}, headers=auth_headers("employee"))
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
 # 7. Embedding service failure degrades to keyword/fuzzy, never errors.
 # ---------------------------------------------------------------------------
 

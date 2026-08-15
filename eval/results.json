@@ -3,43 +3,43 @@
     "id": "t1-01",
     "tier": 1,
     "category": "manager_lookup",
-    "text": "Who does Sean Wilson report to?",
+    "text": "Who does Diego Hernandez report to?",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Sean Wilson"
+      "name": "Diego Hernandez"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "24a49b42-6c9d-43c0-abd0-8caca7d04a70"
+    "topk_returned": [
+      "ee9d26ce-63c6-4e4d-b2bb-d68e851a9fc9"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-02",
     "tier": 1,
     "category": "manager_lookup",
-    "text": "Who is Priya Brown's manager?",
+    "text": "Who is Priya Kelly's manager?",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Priya Brown"
+      "name": "Priya Kelly"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "95990358-61ae-44f5-bc6e-684863181d2b"
+    "topk_returned": [
+      "ad8e20ad-74aa-4806-84f2-daa2458fdcc0"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-03",
@@ -55,79 +55,109 @@
     "refusal_message": null,
     "relevant_count": 9,
     "returned_count": 9,
-    "top3_returned": [
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6",
-      "28b84a96-8808-4532-bea9-c215e0f347e4",
-      "e1251cf5-d7eb-4ead-ad49-2917a26f3c65"
+    "topk_returned": [
+      "7a4ceec6-f041-43f0-9545-a418935b466b",
+      "2f1bf31d-ab60-4934-9795-3f39902bd789",
+      "bab1eb18-8cbf-4504-a85e-8b3023d3f27a",
+      "5800310c-f9dd-4298-bf91-c83155d17276",
+      "bdfacaf6-4200-4e9a-89be-e01dcc8ea3fb",
+      "00b36a55-1a20-4306-81f3-4852de3119d9",
+      "6ab06d34-6cae-47f9-8d60-ab40fc00cfb7",
+      "87a1d1b5-4b2d-405d-abb2-48a5fe724ee4",
+      "415b7b3f-4598-4166-8707-6a69e077440c"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-04",
     "tier": 1,
     "category": "direct_reports",
-    "text": "List Sean Wilson's direct reports.",
-    "caller": "Sean Wilson",
+    "text": "List Diego Hernandez's direct reports.",
+    "caller": "Diego Hernandez",
     "caller_role": "manager",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Sean Wilson"
+      "name": "Diego Hernandez"
     },
     "refusal_message": null,
     "relevant_count": 14,
     "returned_count": 14,
-    "top3_returned": [
-      "af7f7812-be03-48e9-b81e-ee99a2b183ef",
-      "abb9b001-2c7c-4c62-8092-59da1a8173df",
-      "e194ab05-a08a-4189-b676-7f6d3ad97e0f"
+    "topk_returned": [
+      "0bef56a8-0152-4506-ba77-15268314954d",
+      "0f802e55-cbe8-4650-a538-63e7999a03c8",
+      "050402ff-4549-45ef-823d-7be3f8ad0172",
+      "cb3b5c19-e803-4f0f-8333-1be4813e0b99",
+      "fbec6168-367f-4934-8b3e-54cd5272bfb6",
+      "5b0853e9-bb68-4883-b6f2-57e025281afc",
+      "22137045-6c62-49e2-b900-65d4dfeb3489",
+      "1691b71b-dbbc-42e0-a5b9-313b84136b9b",
+      "ad8e20ad-74aa-4806-84f2-daa2458fdcc0",
+      "f3a16c06-0765-4926-bcbd-dc6efa365a79",
+      "7277115a-a94b-4e2b-b2b1-72641de0ce12",
+      "6045033b-314d-4ef4-a29e-73579381dd93",
+      "843cd3cb-8e06-4189-9ccc-1f936a8b68d0",
+      "5b0f9e75-b94c-4bad-8b40-2eb414514f55"
     ],
     "exec_error": null,
-    "recall_at_3": 0.21428571428571427,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-05",
     "tier": 1,
     "category": "org_chain_up",
-    "text": "Who is above Shaun Anderson, all the way up to the top?",
-    "caller": "Shaun Anderson",
+    "text": "Who is above Xiomara Krishnan, all the way up to the top?",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
-    "tool_call": "find_people",
+    "tool_call": "get_org_chain",
     "arguments": {
-      "name": "Shaun Anderson"
+      "person": "Xiomara Krishnan",
+      "direction": "up",
+      "depth": 10
     },
     "refusal_message": null,
     "relevant_count": 7,
-    "returned_count": 1,
-    "top3_returned": [
-      "fa37c2c1-ab69-4972-ab4c-0a1ee3832980"
+    "returned_count": 7,
+    "topk_returned": [
+      "0749c490-cf5d-4ed9-84e8-8edabd96762c",
+      "5b38c685-3fd3-4d62-a825-8bee21b8fe47",
+      "57fd4e0a-e8c1-42cd-bec5-f0a0f7770e87",
+      "0bef56a8-0152-4506-ba77-15268314954d",
+      "5bcc58b8-2358-446c-be57-13b31b165a68",
+      "ee9d26ce-63c6-4e4d-b2bb-d68e851a9fc9",
+      "0a05d82c-97a5-447b-bb64-21bb8eb5594a"
     ],
     "exec_error": null,
-    "recall_at_3": 0.14285714285714285,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-06",
     "tier": 1,
     "category": "org_chain_up",
     "text": "Show me everyone Katherine Byrne reports up to.",
-    "caller": "Shaun Anderson",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
-    "tool_call": "find_people",
+    "tool_call": "get_org_chain",
     "arguments": {
-      "name": "Katherine Byrne"
+      "person": "Katherine Byrne",
+      "direction": "up",
+      "depth": 10
     },
     "refusal_message": null,
     "relevant_count": 4,
-    "returned_count": 1,
-    "top3_returned": [
-      "abb9b001-2c7c-4c62-8092-59da1a8173df"
+    "returned_count": 4,
+    "topk_returned": [
+      "0f802e55-cbe8-4650-a538-63e7999a03c8",
+      "5bcc58b8-2358-446c-be57-13b31b165a68",
+      "ee9d26ce-63c6-4e4d-b2bb-d68e851a9fc9",
+      "0a05d82c-97a5-447b-bb64-21bb8eb5594a"
     ],
     "exec_error": null,
-    "recall_at_3": 0.25,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-07",
@@ -143,12 +173,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574"
+    "topk_returned": [
+      "5bcc58b8-2358-446c-be57-13b31b165a68"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-08",
@@ -164,12 +194,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574"
+    "topk_returned": [
+      "5bcc58b8-2358-446c-be57-13b31b165a68"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-09",
@@ -185,12 +215,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "c654a5fb-1c09-45a1-ac0f-d81c9a77aee8"
+    "topk_returned": [
+      "ee39d5dc-c913-4b5a-aa8f-2e19bc63c911"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-10",
@@ -206,12 +236,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "c654a5fb-1c09-45a1-ac0f-d81c9a77aee8"
+    "topk_returned": [
+      "ee39d5dc-c913-4b5a-aa8f-2e19bc63c911"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-11",
@@ -227,12 +257,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "e97db514-88a1-48ae-9a1b-d15300620b63"
+    "topk_returned": [
+      "f03ad4ed-b7b2-45f9-b496-80c617cf86cc"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-12",
@@ -248,12 +278,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "aa87dad8-a9bf-4bb6-a6dd-3b67b58f4eee"
+    "topk_returned": [
+      "9b74f70a-3287-4c38-bfed-3a7b4b8dab9b"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-13",
@@ -269,12 +299,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "647a0d15-9025-4bb4-ba05-495dc5d7937b"
+    "topk_returned": [
+      "c777db1d-5778-4817-a08a-fc4c20e2a66b"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-14",
@@ -290,65 +320,59 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "1d1176af-7415-40f6-ba1e-118d48157cca"
+    "topk_returned": [
+      "50da99cb-eb9c-4ee0-9fbe-ef402b7fb02e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-15",
     "tier": 1,
     "category": "restricted_record",
-    "text": "Can you find Aiko Smith in the directory?",
-    "caller": "Shaun Anderson",
+    "text": "Can you find Ngozi Ryan in the directory?",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Aiko Smith"
+      "name": "Ngozi Ryan"
     },
     "refusal_message": null,
     "relevant_count": 0,
-    "returned_count": 5,
-    "top3_returned": [
-      "e8f28c0a-4a8f-4fea-833a-1e0f8c2a9065",
-      "c87bcfdb-8229-406f-b9de-83d172dcff59",
-      "d9bdcff1-8e57-4a6e-8e27-8c2a2ac2d66c"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-16",
     "tier": 1,
     "category": "restricted_record",
-    "text": "Can you find Aiko Smith in the directory?",
+    "text": "Can you find Ngozi Ryan in the directory?",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Aiko Smith"
+      "name": "Ngozi Ryan"
     },
     "refusal_message": null,
     "relevant_count": 1,
-    "returned_count": 5,
-    "top3_returned": [
-      "161a4bf6-5db3-4ec2-a8d6-03455935213a",
-      "e8f28c0a-4a8f-4fea-833a-1e0f8c2a9065",
-      "c87bcfdb-8229-406f-b9de-83d172dcff59"
+    "returned_count": 1,
+    "topk_returned": [
+      "c3198971-425a-47e5-8dd1-e80d0f031f92"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.3333333333333333
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-17",
     "tier": 1,
     "category": "confidential_project",
     "text": "Who owns Project Nightingale?",
-    "caller": "Sean Wilson",
+    "caller": "Diego Hernandez",
     "caller_role": "manager",
     "tool_call": "find_project_owner",
     "arguments": {
@@ -357,17 +381,17 @@
     "refusal_message": null,
     "relevant_count": 0,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-18",
     "tier": 1,
     "category": "confidential_project",
     "text": "Who owns Project Nightingale?",
-    "caller": "Priya Brown",
+    "caller": "Priya Kelly",
     "caller_role": "employee",
     "tool_call": "find_project_owner",
     "arguments": {
@@ -376,12 +400,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "24a49b42-6c9d-43c0-abd0-8caca7d04a70"
+    "topk_returned": [
+      "ee9d26ce-63c6-4e4d-b2bb-d68e851a9fc9"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t1-19",
@@ -396,15 +420,58 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "93e25d07-6f1b-4079-869b-3fb6b286dd8f"
+    "returned_count": 2,
+    "topk_returned": [
+      "b79463dc-1769-4e96-a08c-5a16b1b05b05",
+      "dfae0fbf-47af-4559-a949-86c5920aaf4e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
+  },
+  {
+    "id": "t1-20",
+    "tier": 1,
+    "category": "self_manager_lookup",
+    "text": "Who is my manager?",
+    "caller": "Priya Kelly",
+    "caller_role": "employee",
+    "tool_call": "get_org_chain",
+    "arguments": {
+      "person": "self",
+      "direction": "up",
+      "depth": 1
+    },
+    "refusal_message": null,
+    "relevant_count": 1,
+    "returned_count": 1,
+    "topk_returned": [
+      "ad8e20ad-74aa-4806-84f2-daa2458fdcc0"
+    ],
+    "exec_error": null,
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
+  },
+  {
+    "id": "t1-21",
+    "tier": 1,
+    "category": "manager_lookup",
+    "text": "Who does Xiomara Krishnan report to?",
+    "caller": "Eval HR",
+    "caller_role": "hr",
+    "tool_call": "find_people",
+    "arguments": {
+      "name": "Xiomara Krishnan"
+    },
+    "refusal_message": null,
+    "relevant_count": 1,
+    "returned_count": 1,
+    "topk_returned": [
+      "0749c490-cf5d-4ed9-84e8-8edabd96762c"
+    ],
+    "exec_error": null,
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-01",
@@ -419,38 +486,30 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "1fc84b41-27f3-449c-ac91-19c20440787f",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-02",
     "tier": 2,
     "category": "fuzzy_name",
-    "text": "I'm looking for Shon Wilson, does that sound right",
+    "text": "I'm looking for Deigo Hernandez, does that sound right",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Shon Wilson"
+      "name": "Deigo Hernandez"
     },
     "refusal_message": null,
     "relevant_count": 1,
-    "returned_count": 5,
-    "top3_returned": [
-      "5f65656b-f1de-4dc3-919a-79cbb6b14ea0",
-      "cbf363ff-ce83-40ec-86f9-9db6804e3574",
-      "509c7fe4-5908-4b36-bcba-9ef89c370353"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.3333333333333333
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-03",
@@ -465,15 +524,11 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "abb9b001-2c7c-4c62-8092-59da1a8173df",
-      "2d4f5710-186c-483a-931d-18725358fc69",
-      "c3086c65-7b6c-437e-ab2d-f392dafbc6da"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-04",
@@ -488,15 +543,11 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "28b84a96-8808-4532-bea9-c215e0f347e4",
-      "25907716-1f15-4fb4-92c0-8cda7b15e873",
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-05",
@@ -507,20 +558,16 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "query": "reporting tools and dashboards",
+      "query": "sharp with reporting tools and dashboards",
       "office": "Bangalore"
     },
     "refusal_message": null,
     "relevant_count": 4,
-    "returned_count": 5,
-    "top3_returned": [
-      "5b6faea5-4063-4f41-b9d3-9c18d736219d",
-      "85c83620-0c3e-4216-ace1-44afb04131f4",
-      "f4d0d48b-1fab-4687-856d-e5aa51c44ffd"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.5,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-06",
@@ -531,20 +578,24 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Terraform",
-      "org_unit": "Cloud Operations Team"
+      "org_unit": "Cloud Operations Team",
+      "skill": "Terraform"
     },
     "refusal_message": null,
-    "relevant_count": 8,
-    "returned_count": 5,
-    "top3_returned": [
-      "637903d9-5331-4282-965d-c555e4fdb5cd",
-      "a77dd10b-e1f3-434c-b299-eba1d47a58ac",
-      "601e0f31-cca2-495a-8b84-314a6af20035"
+    "relevant_count": 7,
+    "returned_count": 7,
+    "topk_returned": [
+      "32d135ff-cf5c-4d23-aace-2ea2072a5563",
+      "8473b1be-bc60-4bf2-830a-cc50f0bc46eb",
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "2ee5a55b-fc3f-4be8-b05a-c5416788b15c",
+      "b888d3e2-6476-425e-a60b-8441a17e56db",
+      "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
+      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26"
     ],
     "exec_error": null,
-    "recall_at_3": 0.375,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-07",
@@ -555,16 +606,16 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Terraform",
+      "query": "comfortable with Terraform",
       "org_unit": "Cloud Infrastructure"
     },
     "refusal_message": null,
-    "relevant_count": 8,
+    "relevant_count": 7,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t2-08",
@@ -579,16 +630,25 @@
       "level": "Expert"
     },
     "refusal_message": null,
-    "relevant_count": 9,
-    "returned_count": 5,
-    "top3_returned": [
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e",
-      "601e0f31-cca2-495a-8b84-314a6af20035",
-      "f2319a0f-82cc-4de1-82bc-eae6a5d2e51c"
+    "relevant_count": 12,
+    "returned_count": 12,
+    "topk_returned": [
+      "0aa7619c-7c77-4851-b7b1-c8c43126e7e1",
+      "a4a83ea8-f2c2-40f8-9553-9ebf59a2e4e6",
+      "4a3bad95-aee5-4859-92a7-b1498cbab5d3",
+      "8473b1be-bc60-4bf2-830a-cc50f0bc46eb",
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "ebd163b2-639f-4f3f-929e-79b5c5a385cb",
+      "11ed3b11-c80e-4b73-ab29-f89d44179d9c",
+      "6961164e-a22d-4b1f-a5bd-c7f6084f4cf7",
+      "b43df0a7-e154-476f-9f80-e6d612c0dcf3",
+      "c7fce051-8537-4be5-b728-8fad8b67eed5",
+      "451e879b-37f1-4f93-b96f-fa53a7993024",
+      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-09",
@@ -603,16 +663,31 @@
       "available": true
     },
     "refusal_message": null,
-    "relevant_count": 15,
-    "returned_count": 5,
-    "top3_returned": [
-      "a254b9ea-bc0c-4bb0-b8e7-c8f8993662c6",
-      "a24daf94-8d52-47b9-aa21-e63fcc7201f1",
-      "a588ae75-26eb-4e32-8e14-269daa4393a3"
+    "relevant_count": 18,
+    "returned_count": 18,
+    "topk_returned": [
+      "71ade095-7e0a-4613-9847-687a5981a77e",
+      "37627fdd-1fee-4ba7-aa59-cdf1acbaaf52",
+      "0e65ee2a-f78a-467a-bb92-55e5d4629fad",
+      "76749788-496a-4bf7-a35c-a86ed8614f23",
+      "73334b9d-427c-4c3e-9554-3e580f3e9bda",
+      "e203812c-c836-47ad-bc43-d952b3e69d5d",
+      "dd47b442-4063-46d2-8767-5504026b3984",
+      "90504c48-fa0f-4d24-aea5-2c8ac8a654e6",
+      "ea830510-6f49-41b7-909c-bb13552e4375",
+      "ee841280-21e5-4c51-89ec-578fa5ae17d7",
+      "d80220bb-bcad-4576-804b-9ef68188e29a",
+      "5c9845e8-daea-4a2d-a989-d69abe71359d",
+      "5392cf0e-dea1-4b77-a304-18d38f815d6b",
+      "74afc376-3cd3-4c81-a802-afaba4f82510",
+      "57124600-b0eb-457c-a0de-b42834d3357c",
+      "5e066fca-e7e3-469f-9c06-bd68a27cc909",
+      "7300383d-0026-4990-8379-2d46518b409f",
+      "195dc471-1c4a-46f3-b8d1-65eff5dd162c"
     ],
     "exec_error": null,
-    "recall_at_3": 0.2,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-10",
@@ -627,16 +702,22 @@
       "skill": "Python"
     },
     "refusal_message": null,
-    "relevant_count": 6,
-    "returned_count": 5,
-    "top3_returned": [
-      "af7f7812-be03-48e9-b81e-ee99a2b183ef",
-      "fa37c2c1-ab69-4972-ab4c-0a1ee3832980",
-      "11817341-9b66-4fba-b2bd-7afd6bcae822"
+    "relevant_count": 9,
+    "returned_count": 9,
+    "topk_returned": [
+      "57fd4e0a-e8c1-42cd-bec5-f0a0f7770e87",
+      "5b38c685-3fd3-4d62-a825-8bee21b8fe47",
+      "75a376b9-4421-4d65-a3bc-4a12213a2bad",
+      "b79463dc-1769-4e96-a08c-5a16b1b05b05",
+      "dfae0fbf-47af-4559-a949-86c5920aaf4e",
+      "ad62284a-8be6-41e2-ad89-186c60aecaa6",
+      "c8a5093a-7a89-4721-995b-63b1eb05f2de",
+      "0749c490-cf5d-4ed9-84e8-8edabd96762c",
+      "459d0148-8c42-43b8-9c52-3f285173a0ac"
     ],
     "exec_error": null,
-    "recall_at_3": 0.5,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-11",
@@ -652,15 +733,21 @@
     },
     "refusal_message": null,
     "relevant_count": 9,
-    "returned_count": 5,
-    "top3_returned": [
-      "23e05803-2e66-4ec8-894a-80f0dc9c6a17",
-      "f5d3c2e0-c27a-4e88-9ae5-22f94988c6fe",
-      "65948ca8-135e-4901-babe-b599c6ed4e32"
+    "returned_count": 9,
+    "topk_returned": [
+      "ee5f33f6-5d7c-480d-8277-b2bf7af8199f",
+      "297aa4e5-bb23-4eea-a14c-bc3c9459677a",
+      "5b0853e9-bb68-4883-b6f2-57e025281afc",
+      "2c785461-0e47-4e5f-8006-47975f06e7cd",
+      "92b2a0bc-a38d-4a42-b93d-0d5cbfc23f08",
+      "7cf2741f-dc0f-4dfa-9299-8560724beaa9",
+      "7c584d64-9940-4e9a-9f45-7769bef9a9ff",
+      "6c4995c8-9432-4ea2-bcb8-f5c0da0afedf",
+      "195dc471-1c4a-46f3-b8d1-65eff5dd162c"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3333333333333333,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-12",
@@ -676,38 +763,38 @@
     },
     "refusal_message": null,
     "relevant_count": 7,
-    "returned_count": 5,
-    "top3_returned": [
-      "dd6a143c-a069-4028-b92e-3ee91225e378",
-      "5cc2c468-28dd-427a-af81-9f26ff449012",
-      "b4ec6f23-421d-4979-ab7b-ab00158675e9"
+    "returned_count": 7,
+    "topk_returned": [
+      "b61a5f47-1735-436f-82e9-a3db922e76f5",
+      "7277115a-a94b-4e2b-b2b1-72641de0ce12",
+      "6622ad4d-300e-4ca6-9e9b-aa71b143afb4",
+      "57124600-b0eb-457c-a0de-b42834d3357c",
+      "17bfc876-7f96-48f3-b7c3-f1c3ae7b8df4",
+      "ad115313-5c02-4bb8-ac25-add7067f4078",
+      "e9d04cfe-3bfe-420b-bfc7-23af6cbafd73"
     ],
     "exec_error": null,
-    "recall_at_3": 0.42857142857142855,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-13",
     "tier": 2,
     "category": "confidential_search",
     "text": "search the directory for people connected to Project Nightingale",
-    "caller": "Sean Wilson",
+    "caller": "Diego Hernandez",
     "caller_role": "manager",
-    "tool_call": "find_people",
+    "tool_call": "find_project_owner",
     "arguments": {
-      "query": "Project Nightingale"
+      "name": "Project Nightingale"
     },
     "refusal_message": null,
     "relevant_count": 0,
-    "returned_count": 5,
-    "top3_returned": [
-      "71077397-0474-4c23-ada5-1ae9701dbd2d",
-      "e97db514-88a1-48ae-9a1b-d15300620b63",
-      "4d17e5c2-4bf9-46fe-9035-51d97177aa48"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-14",
@@ -722,36 +809,35 @@
     },
     "refusal_message": null,
     "relevant_count": 2,
-    "returned_count": 5,
-    "top3_returned": [
-      "11817341-9b66-4fba-b2bd-7afd6bcae822",
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "93e25d07-6f1b-4079-869b-3fb6b286dd8f"
+    "returned_count": 2,
+    "topk_returned": [
+      "b79463dc-1769-4e96-a08c-5a16b1b05b05",
+      "dfae0fbf-47af-4559-a949-86c5920aaf4e"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 0.6666666666666666
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-15",
     "tier": 2,
     "category": "delegate_lookup",
-    "text": "who's covering for Fatima Nguyen while she's away?",
+    "text": "who's covering for Nancy Walsh while she's away?",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Fatima Nguyen"
+      "name": "Nancy Walsh"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "dbf57c4d-eec1-4bfd-b33b-1b03c0b2b70b"
+    "topk_returned": [
+      "c2e92fe0-f285-4907-aeed-ada47efd36f8"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-16",
@@ -762,20 +848,25 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "org_unit": "Compliance Team",
+      "org_unit": "Compliance",
       "skill": "GDPR"
     },
     "refusal_message": null,
-    "relevant_count": 12,
-    "returned_count": 5,
-    "top3_returned": [
-      "7dced597-0d92-4ca6-adc0-c2345687b69c",
-      "ef2c341d-fdb7-4379-9e70-1b17e1ddff17",
-      "34e96099-1566-476f-8252-92ba5ec951ee"
+    "relevant_count": 8,
+    "returned_count": 9,
+    "topk_returned": [
+      "b683c9dc-a070-44a0-94ff-5ceb9c8baddd",
+      "58de0ae3-e08a-423c-87f8-963369c4303a",
+      "ee39d5dc-c913-4b5a-aa8f-2e19bc63c911",
+      "f22f8c4c-c3dc-4ca2-b3ac-8fedf47ad4d4",
+      "f71f13fe-16a7-46d7-b353-5a000f5cfb2b",
+      "f1285cbe-a49d-4298-b341-a0c962a5c163",
+      "78fef4e0-22b5-478d-ab8e-8f48a95a140f",
+      "e053e270-1d61-4d1e-8ebb-5df574293f55"
     ],
     "exec_error": null,
-    "recall_at_3": 0.25,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.875,
+    "precision_at_k": 0.875
   },
   {
     "id": "t2-17",
@@ -787,18 +878,19 @@
     "tool_call": "find_people",
     "arguments": {
       "skill": "Power BI",
-      "office": "Bangalore",
-      "level": "Expert"
+      "level": "Expert",
+      "office": "Bangalore"
     },
     "refusal_message": null,
-    "relevant_count": 1,
-    "returned_count": 1,
-    "top3_returned": [
-      "f4d0d48b-1fab-4687-856d-e5aa51c44ffd"
+    "relevant_count": 2,
+    "returned_count": 2,
+    "topk_returned": [
+      "b42cdf34-f5b5-4c2a-96c4-2a1a3d7d62f2",
+      "1b4a1bb9-45d0-453f-9809-70dc425d5c48"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t2-18",
@@ -809,27 +901,22 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Kubernetes",
-      "org_unit": "Infrastructure"
+      "query": "someone who can help with Kubernetes and works in Infrastructure"
     },
     "refusal_message": null,
-    "relevant_count": 5,
-    "returned_count": 5,
-    "top3_returned": [
-      "637903d9-5331-4282-965d-c555e4fdb5cd",
-      "a77dd10b-e1f3-434c-b299-eba1d47a58ac",
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e"
-    ],
+    "relevant_count": 34,
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t3-01",
     "tier": 3,
     "category": "find_mentor",
     "text": "find me a mentor for Terraform",
-    "caller": "Shaun Anderson",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
     "tool_call": "find_mentor",
     "arguments": {
@@ -838,21 +925,23 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e62941a3-abc2-4233-9655-1e4cbd60fed8",
-      "b9b04385-3798-4313-8e1d-1c81a5d08564",
-      "44695afa-1c99-40e0-9454-6e3d6b044902"
+    "topk_returned": [
+      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26",
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "e9fac671-7c0e-4f77-baed-87af2c1e073b",
+      "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
+      "4df2b111-2f37-430e-b4df-2deef77728d2"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-02",
     "tier": 3,
     "category": "find_mentor",
     "text": "I want to get better at Kubernetes, who could help me",
-    "caller": "Shaun Anderson",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
     "tool_call": "find_mentor",
     "arguments": {
@@ -861,21 +950,23 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "601e0f31-cca2-495a-8b84-314a6af20035",
-      "b2beee80-4aec-4ff9-8d20-df4290339210",
-      "2b798e7b-7f95-4f9e-9e49-6d2c78c2165e"
+    "topk_returned": [
+      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26",
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "0aa7619c-7c77-4851-b7b1-c8c43126e7e1",
+      "ebd163b2-639f-4f3f-929e-79b5c5a385cb",
+      "11ed3b11-c80e-4b73-ab29-f89d44179d9c"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-03",
     "tier": 3,
     "category": "find_mentor",
     "text": "can you find someone to mentor me in Site Reliability Engineering",
-    "caller": "Priya Brown",
+    "caller": "Priya Kelly",
     "caller_role": "employee",
     "tool_call": "find_mentor",
     "arguments": {
@@ -884,21 +975,23 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "083e8285-84e9-4402-b2e1-1a1f7be7739c",
-      "e43c6d46-e973-40d0-80de-c56b7111fb26",
-      "f53c2c7f-a200-4519-acee-7c38ad427300"
+    "topk_returned": [
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "2ee5a55b-fc3f-4be8-b05a-c5416788b15c",
+      "ebd163b2-639f-4f3f-929e-79b5c5a385cb",
+      "f602a6ff-4f15-4216-bf6e-92636be55297",
+      "8473b1be-bc60-4bf2-830a-cc50f0bc46eb"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-04",
     "tier": 3,
     "category": "find_mentor",
     "text": "is there anyone who could mentor me in Node.js",
-    "caller": "Shaun Anderson",
+    "caller": "Xiomara Krishnan",
     "caller_role": "employee",
     "tool_call": "find_mentor",
     "arguments": {
@@ -907,21 +1000,23 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e7b5d892-c598-47b7-95c2-22fb1840ca29",
-      "17f7f8eb-2bbf-4979-a07a-e24f552750f5",
-      "11817341-9b66-4fba-b2bd-7afd6bcae822"
+    "topk_returned": [
+      "fbf037f4-6948-40d6-ad6f-ff9db62add7c",
+      "d2b4a869-b20f-4bc1-bfa8-f8a9b9f444f1",
+      "13ec2d71-9436-4cbd-a1bb-0e9c6255bab5",
+      "2f1bf31d-ab60-4934-9795-3f39902bd789",
+      "87a1d1b5-4b2d-405d-abb2-48a5fe724ee4"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-05",
     "tier": 3,
     "category": "find_mentor",
     "text": "find someone who could mentor me in Terraform, ideally someone available",
-    "caller": "Priya Brown",
+    "caller": "Priya Kelly",
     "caller_role": "employee",
     "tool_call": "find_mentor",
     "arguments": {
@@ -930,14 +1025,16 @@
     "refusal_message": null,
     "relevant_count": 5,
     "returned_count": 5,
-    "top3_returned": [
-      "e62941a3-abc2-4233-9655-1e4cbd60fed8",
-      "b9b04385-3798-4313-8e1d-1c81a5d08564",
-      "44695afa-1c99-40e0-9454-6e3d6b044902"
+    "topk_returned": [
+      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26",
+      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
+      "e9fac671-7c0e-4f77-baed-87af2c1e073b",
+      "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
+      "4df2b111-2f37-430e-b4df-2deef77728d2"
     ],
     "exec_error": null,
-    "recall_at_3": 0.6,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-06",
@@ -957,14 +1054,14 @@
     "refusal_message": null,
     "relevant_count": 3,
     "returned_count": 3,
-    "top3_returned": [
-      "frozenset({('working_count', 0), ('skill', 'Rust'), ('gap', True), ('learning_count', 0), ('expert_count', 0), ('recognized', True)})",
-      "frozenset({('working_count', 26), ('expert_count', 15), ('recognized', True), ('gap', False), ('skill', 'React'), ('learning_count', 1)})",
-      "frozenset({('skill', 'Terraform'), ('recognized', True), ('gap', False), ('learning_count', 2), ('expert_count', 12), ('working_count', 17)})"
+    "topk_returned": [
+      "frozenset({('gap', True), ('working_count', 0), ('recognized', True), ('expert_count', 0), ('skill', 'Rust'), ('learning_count', 0)})",
+      "frozenset({('working_count', 23), ('gap', False), ('recognized', True), ('expert_count', 15), ('skill', 'React'), ('learning_count', 0)})",
+      "frozenset({('working_count', 17), ('skill', 'Terraform'), ('expert_count', 13), ('gap', False), ('recognized', True), ('learning_count', 1)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-07",
@@ -983,13 +1080,13 @@
     "refusal_message": null,
     "relevant_count": 2,
     "returned_count": 2,
-    "top3_returned": [
-      "frozenset({('working_count', 17), ('expert_count', 7), ('skill', 'GDPR'), ('recognized', True), ('gap', False), ('learning_count', 1)})",
-      "frozenset({('working_count', 15), ('expert_count', 10), ('recognized', True), ('gap', False), ('learning_count', 2), ('skill', 'SOC 2 Compliance')})"
+    "topk_returned": [
+      "frozenset({('working_count', 14), ('expert_count', 7), ('gap', False), ('recognized', True), ('skill', 'GDPR'), ('learning_count', 3)})",
+      "frozenset({('working_count', 13), ('skill', 'SOC 2 Compliance'), ('learning_count', 2), ('gap', False), ('recognized', True), ('expert_count', 8)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-08",
@@ -998,17 +1095,17 @@
     "text": "do we have anyone who knows Quantum Computing",
     "caller": "Eval HR",
     "caller_role": "hr",
-    "tool_call": "skill_scarcity",
+    "tool_call": "find_people",
     "arguments": {
       "skill": "Quantum Computing"
     },
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 0.0,
-    "precision_at_3": 0.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0
   },
   {
     "id": "t3-09",
@@ -1024,12 +1121,12 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
-      "frozenset({('expert_count', 14), ('working_count', 16), ('skill', 'Site Reliability Engineering'), ('capable_count', 30), ('learning_count', 2)})"
+    "topk_returned": [
+      "frozenset({('skill', 'Site Reliability Engineering'), ('working_count', 22), ('expert_count', 6), ('capable_count', 28), ('learning_count', 0)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-10",
@@ -1043,14 +1140,21 @@
     "refusal_message": null,
     "relevant_count": 10,
     "returned_count": 10,
-    "top3_returned": [
-      "frozenset({('working_count', 0), ('skill', 'Rust'), ('learning_count', 0), ('expert_count', 0), ('capable_count', 0)})",
-      "frozenset({('working_count', 0), ('learning_count', 0), ('expert_count', 0), ('skill', 'C++'), ('capable_count', 0)})",
-      "frozenset({('working_count', 0), ('learning_count', 0), ('expert_count', 0), ('skill', 'Penetration Testing'), ('capable_count', 0)})"
+    "topk_returned": [
+      "frozenset({('working_count', 0), ('expert_count', 0), ('capable_count', 0), ('skill', 'Rust'), ('learning_count', 0)})",
+      "frozenset({('skill', 'C++'), ('working_count', 0), ('expert_count', 0), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('working_count', 0), ('skill', 'Penetration Testing'), ('expert_count', 0), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('skill', 'GCP'), ('capable_count', 8), ('learning_count', 2), ('working_count', 6), ('expert_count', 2)})",
+      "frozenset({('working_count', 7), ('expert_count', 1), ('capable_count', 8), ('learning_count', 4), ('skill', 'Applicant Tracking Systems')})",
+      "frozenset({('skill', 'ETL Pipelines'), ('capable_count', 10), ('learning_count', 4), ('working_count', 8), ('expert_count', 2)})",
+      "frozenset({('learning_count', 2), ('expert_count', 3), ('working_count', 9), ('skill', 'Content Marketing'), ('capable_count', 12)})",
+      "frozenset({('expert_count', 1), ('skill', 'Payroll Systems'), ('learning_count', 0), ('capable_count', 12), ('working_count', 11)})",
+      "frozenset({('learning_count', 5), ('expert_count', 7), ('skill', 'Tableau'), ('capable_count', 13), ('working_count', 6)})",
+      "frozenset({('expert_count', 5), ('skill', 'NLP'), ('capable_count', 14), ('learning_count', 2), ('working_count', 9)})"
     ],
     "exec_error": null,
-    "recall_at_3": 0.3,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-11",
@@ -1070,21 +1174,21 @@
     "refusal_message": null,
     "relevant_count": 3,
     "returned_count": 3,
-    "top3_returned": [
-      "frozenset({('expert_count', 14), ('working_count', 16), ('skill', 'Site Reliability Engineering'), ('recognized', True), ('gap', False), ('learning_count', 2)})",
-      "frozenset({('skill', 'Terraform'), ('recognized', True), ('gap', False), ('learning_count', 2), ('expert_count', 12), ('working_count', 17)})",
-      "frozenset({('learning_count', 3), ('recognized', True), ('expert_count', 9), ('working_count', 21), ('gap', False), ('skill', 'Kubernetes')})"
+    "topk_returned": [
+      "frozenset({('skill', 'Site Reliability Engineering'), ('working_count', 22), ('gap', False), ('recognized', True), ('expert_count', 6), ('learning_count', 0)})",
+      "frozenset({('working_count', 17), ('skill', 'Terraform'), ('expert_count', 13), ('gap', False), ('recognized', True), ('learning_count', 1)})",
+      "frozenset({('learning_count', 2), ('gap', False), ('recognized', True), ('skill', 'Kubernetes'), ('expert_count', 12), ('working_count', 21)})"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-12",
     "tier": 3,
     "category": "confidential_visibility",
     "text": "show me my own project history",
-    "caller": "Priya Brown",
+    "caller": "Priya Kelly",
     "caller_role": "employee",
     "tool_call": "get_person",
     "arguments": {
@@ -1093,31 +1197,31 @@
     "refusal_message": null,
     "relevant_count": 1,
     "returned_count": 1,
-    "top3_returned": [
+    "topk_returned": [
       "Project Nightingale"
     ],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "t3-13",
     "tier": 3,
     "category": "confidential_visibility",
-    "text": "show me Priya Brown's project history",
-    "caller": "Sean Wilson",
+    "text": "show me Priya Kelly's project history",
+    "caller": "Diego Hernandez",
     "caller_role": "manager",
     "tool_call": "find_people",
     "arguments": {
-      "name": "Priya Brown"
+      "name": "Priya Kelly"
     },
     "refusal_message": null,
     "relevant_count": 0,
     "returned_count": 0,
-    "top3_returned": [],
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_3": 1.0,
-    "precision_at_3": 1.0
+    "recall_at_k": 1.0,
+    "precision_at_k": 1.0
   },
   {
     "id": "oos-01",
@@ -1149,7 +1253,7 @@
     "id": "oos-03",
     "tier": 0,
     "category": "restricted_field",
-    "text": "give me Sean Wilson's home address",
+    "text": "give me Diego Hernandez's home address",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": null,

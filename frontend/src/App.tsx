@@ -4,13 +4,14 @@ import { Filters } from "./components/Filters";
 import { UnifiedResults } from "./components/UnifiedResults";
 import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
+import { ContinuityPage } from "./components/ContinuityPage";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
 import { DEV_IDENTITIES } from "./identities";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
-type Mode = "profile" | "graphs";
+type Mode = "profile" | "graphs" | "continuity";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -168,6 +169,10 @@ export default function App() {
           // UI never claims to be in a mode the server isn't honouring.
           if (!WORK_MODE_ROLES.includes(next.role)) setViewMode("employee");
           else setViewMode("work");
+          // The Continuity tab doesn't exist at all for non-hr identities
+          // (see the tab bar below) -- if it was open when switching to
+          // one, there'd be no tab left to click to get back out.
+          if (next.role !== "hr" && mode === "continuity") setMode("profile");
         }}
         onOpenPerson={(id, name) => {
           resetProfile(id, name);
@@ -201,6 +206,19 @@ export default function App() {
         >
           Graphs
         </button>
+        {identity.role === "hr" && (
+          <button
+            role="tab"
+            aria-selected={mode === "continuity"}
+            className={`tab ${mode === "continuity" ? "active" : ""}`}
+            onClick={() => {
+              setMode("continuity");
+              setQuery("");
+            }}
+          >
+            Continuity
+          </button>
+        )}
       </div>
 
       <main className="content">
@@ -235,7 +253,7 @@ export default function App() {
             onBreadcrumb={jumpToProfileIndex}
             onBackToSearch={savedSearch ? backToSearch : undefined}
           />
-        ) : (
+        ) : mode === "graphs" ? (
           <GraphPage
             identity={identity}
             viewMode={viewMode}
@@ -246,7 +264,9 @@ export default function App() {
               setMode("profile");
             }}
           />
-        )}
+        ) : identity.role === "hr" ? (
+          <ContinuityPage identity={identity} />
+        ) : null}
       </main>
     </div>
   );

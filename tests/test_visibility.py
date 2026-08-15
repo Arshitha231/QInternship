@@ -94,6 +94,87 @@ async def test_restricted_record_missing_from_find_people_for_non_hr(client):
     assert resp.json() == []  # empty result set, not an error
 
 
+# ---------------------------------------------------------------------------
+# ARCHITECTURE_2.md §15 item 6 / Phase 3 Round 2: a restricted employee
+# referenced as someone else's manager or delegate must be as invisible in
+# that role as they are as a direct search result -- fixed by routing
+# manager/delegate attachment through enforce()+compile_query()
+# (app.query_compiler.enforced_person_ref) instead of a raw db.get() with
+# no visibility check. Fixture: "managed-by-restricted-1" (manager is
+# restricted-1), "delegates-to-restricted-1" (delegate is restricted-1,
+# manager is mgr-1) -- see tests/conftest.py.
+# ---------------------------------------------------------------------------
+
+async def test_get_person_manager_hidden_when_manager_is_restricted_non_hr(client):
+    resp = await client.get("/people/managed-by-restricted-1", headers=auth_headers("employee"))
+    assert resp.status_code == 200
+    assert "manager" not in resp.json()
+
+
+async def test_get_person_manager_visible_to_hr_even_when_restricted(client):
+    resp = await client.get("/people/managed-by-restricted-1", headers=auth_headers("hr"))
+    assert resp.status_code == 200
+    assert resp.json()["manager"]["id"] == "restricted-1"
+
+
+async def test_find_people_manager_hidden_when_manager_is_restricted_non_hr(client):
+    resp = await client.get("/people", params={"name": "Quinn Reports"}, headers=auth_headers("employee"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert "manager" not in body[0]
+
+
+async def test_find_people_manager_visible_to_hr_even_when_restricted(client):
+    resp = await client.get("/people", params={"name": "Quinn Reports"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["manager"]["id"] == "restricted-1"
+
+
+async def test_find_people_delegate_hidden_when_delegate_is_restricted_non_hr(client):
+    resp = await client.get("/people", params={"name": "Drew Delegator"}, headers=auth_headers("employee"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert "delegate" not in body[0]
+
+
+async def test_find_people_delegate_visible_to_hr_even_when_restricted(client):
+    resp = await client.get("/people", params={"name": "Drew Delegator"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["delegate"]["id"] == "restricted-1"
+
+
+async def test_org_chain_delegate_hidden_when_delegate_is_restricted_non_hr(client):
+    # role=manager (not employee) so the "down" direction's own RBAC gate
+    # doesn't short-circuit the response before delegate visibility is
+    # even reached -- this test is specifically about the delegate
+    # reference, not about who can walk the chain at all.
+    resp = await client.get(
+        "/people/mgr-1/org-chart", params={"direction": "down", "depth": 1},
+        headers=auth_headers("manager", "mgr-1"),
+    )
+    assert resp.status_code == 200
+    nodes = resp.json()
+    drew = next(n for n in nodes if n["id"] == "delegates-to-restricted-1")
+    assert drew["delegate"] is None
+
+
+async def test_org_chain_delegate_visible_to_hr_even_when_restricted(client):
+    resp = await client.get(
+        "/people/mgr-1/org-chart", params={"direction": "down", "depth": 1},
+        headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    nodes = resp.json()
+    drew = next(n for n in nodes if n["id"] == "delegates-to-restricted-1")
+    assert drew["delegate"]["id"] == "restricted-1"
+
+
 async def test_restricted_record_present_in_find_people_for_hr(client):
     resp = await client.get("/people", params={"name": "Rory"}, headers=auth_headers("hr"))
     assert resp.status_code == 200

@@ -116,6 +116,17 @@ jobs:
   # GROUP3_4OPENAI* (chat), GROUP3_4_TEXT_EMBEDDING_3_SMALL_* (embedding),
   # AISEARCH_* (Azure AI Search). Deployment names aren't secrets (not
   # sensitive), hardcoded directly rather than added as repo secrets.
+  #
+  # No DATABASE_URL here, and no seed step: the eval runs against
+  # eval/fixture.db, a committed, pinned snapshot (golden_set.py's module
+  # docstring explains why -- seed.py's RNG_SEED being fixed does not mean
+  # reseeding regenerates the same PEOPLE, only that it's deterministic
+  # given the current code; every feature seed.py grows shifts the name
+  # pairing for everyone after it). run_golden_eval.py pins its own
+  # DATABASE_URL to eval/fixture.db internally, before importing app.db, so
+  # this job only has to get the fixture's *schema* current -- `alembic
+  # upgrade head` below, same as the deployed app does at startup, just
+  # against the checked-in file instead of the live Azure SQL database.
   # ---------------------------------------------------------------------
   golden-eval:
     runs-on: ubuntu-latest
@@ -132,7 +143,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Golden evaluation set (55 questions)
+      - name: Migrate the pinned fixture to head
+        env:
+          DATABASE_URL: sqlite:///eval/fixture.db
+        run: alembic upgrade head
+
+      - name: Golden evaluation set (57 questions)
         env:
           CHAT_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
           CHAT_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
