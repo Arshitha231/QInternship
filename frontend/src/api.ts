@@ -187,3 +187,30 @@ export function getHrReviewQueue(identity: Identity, windowDays?: number): Promi
   const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
   return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs}`, identity);
 }
+// Add to api.ts
+import type { OrgChainNode } from "./types";
+
+export interface SkillNodeOut {
+  skill_name: string;
+  category: string;
+}
+
+export interface SkillConnectionOut {
+  person: OrgChainNode;
+  proficiency: parseInt;
+  source: string;
+}
+
+export interface SkillGraphResponse {
+  skill: SkillNodeOut;
+  connections: SkillConnectionOut[];
+}
+
+export async function getSkillsGraph(identity: Identity, skillId: number): Promise<SkillGraphResponse | null> {
+  try {
+    return await request<SkillGraphResponse>(`/skills/${skillId}/graph`, identity);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
