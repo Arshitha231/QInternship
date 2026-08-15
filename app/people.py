@@ -626,11 +626,11 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
     if "project_history" in fields:
         # project_desc rides on the same project_history list rather than
         # being a top-level field: it describes a project, and the list is
-        # already the one place project data reaches the response. Whether
-        # each item carries it is the ordinary field-table decision.
-        kwargs["project_history"] = _project_history(
-            db, caller, target, include_desc="project_desc" in fields
-        )
+        # already the one place project data reaches the response.
+        # Unconditional now — project_desc is visible to every caller who
+        # can see project_history at all (see permissions.PROJECT_DESC_FIELDS),
+        # so there's no separate field-table decision left to make here.
+        kwargs["project_history"] = _project_history(db, caller, target)
 
     if "training_status" in fields:
         # Routed through the provider factory, never at a provider directly
@@ -665,7 +665,7 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
 
 
 def _project_history(
-    db: Session, caller: AuthenticatedUser, target: Employee, include_desc: bool = False
+    db: Session, caller: AuthenticatedUser, target: Employee
 ) -> list[ProjectHistoryItem]:
     rows = (
         db.query(EmployeeProject, Project)
@@ -684,11 +684,10 @@ def _project_history(
             start_month=_month(ep.start_date), end_month=_month(ep.end_date),
             current=ep.end_date is None,
         )
-        if include_desc:
-            # Set even when empty, so a project with no description on file
-            # reads as null rather than absent — absent has to keep meaning
-            # "you may not see this", the same rule salary and
-            # away_until_month follow.
-            item_kwargs["project_desc"] = proj.description
+        # Set even when empty, so a project with no description on file
+        # reads as null rather than absent — absent would mean "you may not
+        # see this", which is no longer true for anyone; the only remaining
+        # question is whether there's anything on file, and null answers it.
+        item_kwargs["project_desc"] = proj.description
         items.append(ProjectHistoryItem(**item_kwargs))
     return items

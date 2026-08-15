@@ -120,6 +120,20 @@ def update_employee(
 
     _authorize(caller.role, view_mode, changes.keys())
 
+    # No self-service through the admin edit path, for anyone who reaches
+    # it — today that's hr alone, since EDITABLE grants update_employee
+    # fields to no other (role, view_mode) pair, but the check is written
+    # against the endpoint's own rule ("edit anyone's record") rather than
+    # hardcoded to the role, so it stays correct if EDITABLE ever grows a
+    # second entry here. The obvious hole this closes: an hr caller giving
+    # themselves a raise, or clearing their own cost_centre, through the
+    # same endpoint that edits everyone else's.
+    if person_id == caller.id:
+        raise WriteDenied(
+            f"role '{caller.role}' may edit any employee's record except their own "
+            f"(person_id == caller.id)"
+        )
+
     target = db.get(Employee, person_id)
     if target is None or not target.is_active:
         raise WriteTargetMissing(person_id)

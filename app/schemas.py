@@ -31,11 +31,15 @@ class ProjectHistoryItem(BaseModel):
     end_month: str | None  # None means still current
     current: bool
 
-    # Work mode, hr/it only — see permissions.PROJECT_DESC_FIELDS. Left unset
-    # (not None) for every other caller, so the routes' exclude_unset
-    # serialization drops the key entirely rather than emitting null; Pydantic
-    # applies exclude_unset recursively, so nesting it here keeps the same
-    # absent-not-null guarantee the top-level fields have.
+    # Visible to every role/view_mode — it's in permissions.BASE_FIELDS, same
+    # as project_history itself. Still `str | None = None` (left unset, not
+    # None) rather than a plain required field: the field-presence mechanism
+    # is shared with every other conditionally-visible field on this model,
+    # and a future restriction narrowing it again should only need a
+    # permissions.py change, not a schema change too. Left unset means the
+    # routes' exclude_unset serialization drops the key entirely rather than
+    # emitting null; Pydantic applies exclude_unset recursively, so nesting it
+    # here keeps the same absent-not-null guarantee the top-level fields have.
     project_desc: str | None = None
 
 
