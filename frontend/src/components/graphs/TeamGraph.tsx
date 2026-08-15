@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError, findPeople } from "../../api";
+import { ApiError, getTeamGraph, type TeamGraphResponse } from "../../api";
 import type { Identity, OrgChainNode, PersonDetail, ViewMode } from "../../types";
 import { NodeBox, useTreeConnectors, type TreeGroup } from "./treeShared";
 
@@ -28,50 +28,36 @@ function HubBox({ label, registerRef }: { label: string; registerRef: (el: HTMLD
   );
 }
 
-export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate, onOpenProfile }: Props) {
+export function TeamGraph({ identity, 
+  viewMode, 
+  focusId, 
+  focusPerson, 
+  highlightedIds = new Set(), 
+  onNavigate, 
+  onOpenProfile }: Props) {
   const orgUnit = focusPerson?.org_unit ?? null;
-  const [teammates, setTeammates] = useState<OrgChainNode[] | undefined>(undefined);
+  const [data, setData] = useState<TeamGraphResponse | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setTeammates(undefined);
+    setData(undefined);
     setError(null);
 
-    if (!orgUnit) {
-      setTeammates([]);
-      return;
-    }
-
-    findPeople(identity, { org_unit: orgUnit }, viewMode)
-      .then((results) => {
-        if (cancelled) return;
-        setTeammates(
-          results
-            .filter((r) => r.id !== focusId)
-            .slice(0, TEAM_CAP)
-            .map((r) => ({
-              id: r.id,
-              full_name: r.full_name,
-              job_title: r.job_title,
-              org_unit: r.org_unit,
-              depth: 1,
-              availability_status: r.availability_status,
-              delegate: r.delegate,
-              has_reports: false,
-            })),
-        );
+    // Call the new project-based backend endpoint
+    getTeamGraph(identity, focusId)
+      .then((res) => {
+        if (!cancelled) setData(res);
       })
       .catch((e) => {
-        if (cancelled) return;
-        setError(e instanceof ApiError ? e.message : "Unknown error");
-        setTeammates([]);
+        if (!cancelled) setError(e instanceof ApiError ? e.message : "Unknown error");
+        setData(null);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [identity, focusId, orgUnit]);
+  }, [identity, focusId]); // orgUnit is no longer a dependency
 
   function handleNodeClick(id: string, name: string) {
     if (id === focusId) return;
@@ -82,11 +68,30 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
     onOpenProfile(id, name);
   }
 
-  const hubId = orgUnit ? `hub:${orgUnit}` : null;
-  const groups: TreeGroup[] = hubId
-    ? [{ parentId: hubId, childIds: [focusId, ...(teammates ?? []).map((t) => t.id)] }]
-    : [];
-  const { wrapRef, registerNode, linePaths, svgSize } = useTreeConnectors(groups, [hubId, teammates, focusId]);
+  // ... (keep handleNodeClick the same) ...
+
+  const groups: TreeGroup[] = [];
+  const hubIds: string[] = [];
+
+  if (data) {
+    // 1. Connect every Project Hub to the Focus User
+    data.projects.forEach((p) => {
+      const pId = `proj-${p.id}`;
+      hubIds.push(pId);
+      groups.push({ parentId: pId, childIds: [focusId] });
+    });
+
+    // 2. Connect the Focus User to all Teammates
+    if (data.teammates.length > 0) {
+      groups.push({ 
+        parentId: focusId, 
+        childIds: data.teammates.map((t) => t.person.id) 
+      });
+    }
+  }
+
+  // Pass the dynamic hubIds to the connector dependencies
+  const { wrapRef, registerNode, linePaths, svgSize } = useTreeConnectors(groups, [data, focusId]);
 
   if (error) {
     return (
@@ -96,15 +101,16 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
       </div>
     );
   }
-  if (teammates === undefined || !focusPerson) {
+  
+  if (data === undefined || !focusPerson) {
     return <div className="skel skel-card" style={{ height: 480 }} />;
   }
 
-  const focusNode: OrgChainNode = {
+ const focusNode: OrgChainNode = {
     id: focusId,
     full_name: focusPerson.full_name,
     job_title: focusPerson.job_title ?? "",
-    org_unit: orgUnit ?? "",
+    org_unit: focusPerson.org_unit ?? "",
     depth: 0,
     availability_status: focusPerson.availability_status ?? "available",
     delegate: focusPerson.delegate,
@@ -124,17 +130,45 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
         ))}
       </svg>
       <div className="org-tree">
-        {hubId && (
-          <div className="tree-tier tree-tier-manager">
-            <HubBox label={orgUnit!} registerRef={registerNode(hubId)} />
+        
+        {/* Render a HubBox for every active project */}
+        {data.projects.length > 0 && (
+          <div className="tree-tier tree-tier-manager" style={{ display: "flex", gap: "20px", justifyContent: "center" }}>
+            {data.projects.map((p) => (
+              <HubBox 
+                key={`proj-${p.id}`} 
+                label={`${p.name} (${p.classification})`} 
+                registerRef={registerNode(`proj-${p.id}`)} 
+              />
+            ))}
           </div>
         )}
-        <div className="tree-tier tree-tier-reports">
-          <NodeBox node={focusNode} focus registerRef={registerNode(focusId)} />
-          {teammates.map((t) => (
-            <NodeBox key={t.id} node={t} onClick={() => handleNodeClick(t.id, t.full_name)} registerRef={registerNode(t.id)} />
-          ))}
+        
+        {/* Center Node (with Highlighting) */}
+        <div className="tree-tier tree-tier-center">
+          <NodeBox 
+            node={focusNode} 
+            focus 
+            highlighted={highlightedIds.has(focusId)}
+            registerRef={registerNode(focusId)} 
+          />
         </div>
+        
+        {/* Teammates Nodes (with Highlighting) */}
+        {data.teammates.length > 0 && (
+          <div className="tree-tier tree-tier-reports">
+            {data.teammates.map((t) => (
+              <NodeBox 
+                key={t.person.id} 
+                node={t.person} 
+                highlighted={highlightedIds.has(t.person.id)}
+                onClick={() => handleNodeClick(t.person.id, t.person.full_name)} 
+                registerRef={registerNode(t.person.id)} 
+              />
+            ))}
+          </div>
+        )}
+
       </div>
     </div>
   );
