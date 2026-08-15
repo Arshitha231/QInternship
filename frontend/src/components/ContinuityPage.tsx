@@ -5,6 +5,7 @@ import {
 } from "../api";
 import type {
   ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, PersonSummary,
+  ViewMode,
 } from "../types";
 
 // HR-only. Only ever mounted when identity.role === "hr" — see App.tsx's
@@ -181,7 +182,7 @@ function EmployeeDrillDown({ detail }: { detail: EmployeeContinuityDetail }) {
   );
 }
 
-export function ContinuityPage({ identity }: { identity: Identity }) {
+export function ContinuityPage({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
   const [subView, setSubView] = useState<SubView>("overview");
 
   const [windowDays, setWindowDays] = useState(90);
@@ -252,13 +253,13 @@ export function ContinuityPage({ identity }: { identity: Identity }) {
       return;
     }
     const controller = new AbortController();
-    findPeople(identity, { name: lookupQuery.trim() }, controller.signal)
+    findPeople(identity, { name: lookupQuery.trim() }, viewMode, controller.signal)
       .then(setLookupResults)
       .catch(() => {
         /* aborted or transient — the input itself shows nothing found */
       });
     return () => controller.abort();
-  }, [identity, lookupQuery]);
+  }, [identity, viewMode, lookupQuery]);
 
   return (
     <div className="continuity-page">

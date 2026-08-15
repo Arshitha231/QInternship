@@ -69,27 +69,36 @@ async def test_it_cannot_see_salary_but_hr_can(client):
 
 
 # ---------------------------------------------------------------------------
-# project_desc: hr + it in work mode, editable by it only (edit side lives
-# in the write-endpoint tests).
+# project_desc: visible to every role in every view_mode — moved into
+# BASE_FIELDS so "available to all employees" holds in the mode that
+# literally represents what an employee sees. Editable by it, work mode
+# only (edit side lives in the write-endpoint tests) — visibility widened,
+# editing did not.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("role,view_mode,expected_present", [
-    ("it", "work", True),
-    ("hr", "work", True),
-    ("it", "employee", False),
-    ("hr", "employee", False),
-    ("employee", "work", False),
-    ("manager", "work", False),
-])
-async def test_project_desc_visibility(client, role, view_mode, expected_present):
+@pytest.mark.parametrize("role", ["employee", "manager", "hr", "it"])
+@pytest.mark.parametrize("view_mode", ["employee", "work"])
+async def test_project_desc_visible_to_everyone(client, role, view_mode):
     resp = await client.get(
         "/people/stranger-1", params={"view_mode": view_mode}, headers=auth_headers(role)
     )
     assert resp.status_code == 200
     atlas = next(p for p in resp.json()["project_history"] if p["project_name"] == "Project Atlas")
-    assert ("project_desc" in atlas) is expected_present, f"role={role} mode={view_mode}: {atlas}"
-    if expected_present:
-        assert atlas["project_desc"].startswith("Internal migration")
+    assert "project_desc" in atlas, f"role={role} mode={view_mode}: {atlas}"
+    assert atlas["project_desc"].startswith("Internal migration")
+
+
+async def test_project_desc_not_editable_by_a_role_that_can_now_see_it():
+    """Visibility widened; editing did not — a plain employee can now read
+    project_desc but still may not write it. Full HTTP coverage of the
+    write side lives in test_write_endpoints.py; this pins the config-table
+    invariant the widening must not have disturbed."""
+    from app.permissions import can_edit
+
+    assert can_edit("employee", "employee", "project_desc") is False
+    assert can_edit("employee", "work", "project_desc") is False
+    assert can_edit("hr", "work", "project_desc") is False
+    assert can_edit("it", "work", "project_desc") is True
 
 
 # ---------------------------------------------------------------------------

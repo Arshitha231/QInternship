@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { GraphCanvas, type GraphEdge, type GraphNode } from "../GraphCanvas";
 import { ApiError, findPeople, getPerson } from "../../api";
-import type { Identity } from "../../types";
+import type { Identity, ViewMode } from "../../types";
 
 interface Props {
   identity: Identity;
+  viewMode: ViewMode;
   focusId: string;
   focusName: string;
   focusRole: string;
@@ -16,7 +17,7 @@ interface Props {
 // you need it right now. find_people(skill=X) alone already routes through
 // Search and gets the tight relevance cap, so this stays legible without
 // its own separate limit.
-export function SkillsGraph({ identity, focusId, focusName, focusRole, onNavigate }: Props) {
+export function SkillsGraph({ identity, viewMode, focusId, focusName, focusRole, onNavigate }: Props) {
   const [nodes, setNodes] = useState<GraphNode[] | null>(null);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,7 @@ export function SkillsGraph({ identity, focusId, focusName, focusRole, onNavigat
     setError(null);
 
     async function build() {
-      const person = await getPerson(identity, focusId);
+      const person = await getPerson(identity, focusId, viewMode);
       const skills = person?.skills ?? [];
       const nodeMap = new Map<string, GraphNode>();
       nodeMap.set(focusId, { id: focusId, label: focusName, sublabel: focusRole, kind: "focus" });
@@ -46,7 +47,7 @@ export function SkillsGraph({ identity, focusId, focusName, focusRole, onNavigat
         nodeMap.set(skillNodeId, { id: skillNodeId, label: skill.name, sublabel: skill.level, kind: "skill" });
         edgeList.push({ source: focusId, target: skillNodeId });
 
-        const holders = await findPeople(identity, { skill: skill.name });
+        const holders = await findPeople(identity, { skill: skill.name }, viewMode);
         for (const h of holders) {
           if (h.id === focusId) continue;
           if (!nodeMap.has(h.id)) {

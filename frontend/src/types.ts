@@ -41,6 +41,10 @@ export interface ProjectHistoryItem {
   start_month: string;
   end_month: string | null;
   current: boolean;
+  // Work mode, hr/it only. Absent (not null) for anyone else -- the backend
+  // serializes with exclude_unset, so `"project_desc" in item` is the honest
+  // test for "am I allowed to see this", and undefined means no.
+  project_desc?: string | null;
 }
 
 export interface TrainingStatusItem {
@@ -70,6 +74,27 @@ export interface NotificationOut {
   body: string;
   levels_up: number;
   created_at: string;
+}
+
+// Wire shape for PATCH /employees/{id} — mirrors app/schemas.py's
+// UpdateEmployeeRequest. Every field optional, and the client only ever
+// sends the keys that actually changed: an omitted key means "don't touch",
+// an explicit null means "clear it" — the same PATCH-with-partial-dict
+// contract app/writes.py's update_employee implements server-side. This
+// interface exists so a typo'd field name is a compile error rather than a
+// silently-ignored key the backend's extra="forbid" would 422 on at runtime.
+export interface UpdateEmployeeChanges {
+  full_name?: string;
+  preferred_name?: string | null;
+  job_title?: string;
+  work_email?: string;
+  work_phone?: string | null;
+  salary?: string | null;
+  salary_currency?: string | null;
+  date_of_birth?: string | null;
+  hire_date?: string;
+  cost_centre?: string | null;
+  employment_type?: "fte" | "contractor" | "intern";
 }
 
 export interface PersonDetail {
@@ -140,7 +165,19 @@ export interface UnifiedSearchResponse {
   overview?: AIOverview;
 }
 
-export type Role = "employee" | "manager" | "hr";
+export type Role = "employee" | "manager" | "hr" | "it";
+
+// Which lens the directory is read through. The SERVER decides: anything
+// other than hr/it is answered in employee mode whatever this says (see
+// resolve_view_mode in app/permissions.py), so sending it is a request,
+// never a grant.
+export type ViewMode = "employee" | "work";
+
+// Roles allowed to switch modes. Mirrors WORK_MODE_ROLES in
+// app/permissions.py. Kept in sync by hand, but harmless if it drifts:
+// showing the toggle to a role the server pins just makes it a no-op,
+// never an escalation.
+export const WORK_MODE_ROLES: Role[] = ["hr", "it"];
 
 export interface Identity {
   role: Role;

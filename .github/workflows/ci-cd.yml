@@ -54,15 +54,33 @@ jobs:
 
       # Only used to decide whether the golden-eval JOB below runs --
       # doesn't gate pytest, doesn't gate anything else.
+      #
+      # Deliberately an ALLOW-EVERYTHING-THEN-SUBTRACT list, not the curated
+      # include list this used to be. That version named four modules
+      # (tool_calling, search_client, directory_tools, people) and had
+      # already drifted: get_org_chain is a scored tool and app/org_chart.py
+      # was never listed, app/permissions.py decides what every scored result
+      # contains and was never listed, and run_golden_eval.py imports
+      # app/auth.py and app/db.py directly. A curated include list fails
+      # OPEN -- a file nobody remembered to add means the eval silently
+      # doesn't run, which looks identical to "the eval passed". Subtracting
+      # instead means a new module is covered by default and the failure mode
+      # of forgetting to update this block is a job that runs when it didn't
+      # strictly need to.
+      #
+      # If the eval ever stops running when you expect it to, this exclusion
+      # list is the first thing to check.
       - uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
             ai:
-              - 'app/tool_calling.py'
-              - 'app/search_client.py'
-              - 'app/directory_tools.py'
-              - 'app/people.py'
+              - 'app/**'
+              # Notifications and certification tracking are reachable from a
+              # profile read but contribute nothing the golden set scores --
+              # no question asks about a reminder or a course status.
+              - '!app/notifications.py'
+              - '!app/certifications/**'
               - 'build_search_index.py'
               - 'eval/**'
               - 'requirements.txt'
@@ -223,6 +241,7 @@ jobs:
           # employees-index. They have to be deployed to be runnable there.
           zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
             seed_training.py seed_people_data.py seed_it_division.py build_search_index.py \
+            backfill_project_history.py \
             frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 

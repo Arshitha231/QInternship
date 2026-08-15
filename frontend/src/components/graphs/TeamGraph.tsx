@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, findPeople } from "../../api";
-import type { Identity, OrgChainNode, PersonDetail } from "../../types";
+import type { Identity, OrgChainNode, PersonDetail, ViewMode } from "../../types";
 import { NodeBox, useTreeConnectors, type TreeGroup } from "./treeShared";
 
 // Same hierarchical tree as DepartmentGraph -- a fixed node on top (here,
@@ -13,6 +13,7 @@ const TEAM_CAP = 30;
 
 interface Props {
   identity: Identity;
+  viewMode: ViewMode;
   focusId: string;
   focusPerson: PersonDetail | null;
   onNavigate: (id: string) => void;
@@ -27,7 +28,7 @@ function HubBox({ label, registerRef }: { label: string; registerRef: (el: HTMLD
   );
 }
 
-export function TeamGraph({ identity, focusId, focusPerson, onNavigate, onOpenProfile }: Props) {
+export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate, onOpenProfile }: Props) {
   const orgUnit = focusPerson?.org_unit ?? null;
   const [teammates, setTeammates] = useState<OrgChainNode[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export function TeamGraph({ identity, focusId, focusPerson, onNavigate, onOpenPr
       return;
     }
 
-    findPeople(identity, { org_unit: orgUnit })
+    findPeople(identity, { org_unit: orgUnit }, viewMode)
       .then((results) => {
         if (cancelled) return;
         setTeammates(
