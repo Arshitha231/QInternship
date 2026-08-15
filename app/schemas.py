@@ -452,3 +452,17 @@ class EmployeeContinuityDetail(BaseModel):
     current_record: AuthorizationRecordOut | None
     history: list[AuthorizationRecordOut]
     engagements: list[EngagementExposure]
+
+
+class TeamProjectOut(BaseModel):
+    id: int
+    name: str
+    classification: str
+
+class TeammateOut(BaseModel):
+    project_id: int
+    person: OrgChainNode
+
+class TeamGraphResponse(BaseModel):
+    projects: list[TeamProjectOut]
+    teammates: list[TeammateOut]
