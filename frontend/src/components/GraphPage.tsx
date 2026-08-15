@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getPerson } from "../api";
-import type { Identity, PersonDetail } from "../types";
+import type { Identity, PersonDetail, ViewMode } from "../types";
 import { DepartmentGraph } from "./graphs/DepartmentGraph";
 import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
@@ -13,11 +13,13 @@ function initials(name: string): string {
 
 export function GraphPage({
   identity,
+  viewMode,
   focusId,
   onFocusChange,
   onOpenProfile,
 }: {
   identity: Identity;
+  viewMode: ViewMode;
   focusId: string;
   onFocusChange: (id: string) => void;
   onOpenProfile: (id: string, name: string) => void;
@@ -28,13 +30,13 @@ export function GraphPage({
   useEffect(() => {
     let cancelled = false;
     setFocusPerson(undefined);
-    getPerson(identity, focusId).then((p) => {
+    getPerson(identity, focusId, viewMode).then((p) => {
       if (!cancelled) setFocusPerson(p);
     });
     return () => {
       cancelled = true;
     };
-  }, [identity, focusId]);
+  }, [identity, viewMode, focusId]);
 
   const name = focusPerson?.full_name ?? "…";
   const role = focusPerson?.job_title ?? "";
@@ -83,13 +85,14 @@ export function GraphPage({
       ) : kind === "team" ? (
         <TeamGraph
           identity={identity}
+          viewMode={viewMode}
           focusId={focusId}
           focusPerson={focusPerson ?? null}
           onNavigate={onFocusChange}
           onOpenProfile={onOpenProfile}
         />
       ) : (
-        <SkillsGraph identity={identity} focusId={focusId} focusName={name} focusRole={role} onNavigate={onFocusChange} />
+        <SkillsGraph identity={identity} viewMode={viewMode} focusId={focusId} focusName={name} focusRole={role} onNavigate={onFocusChange} />
       )}
     </div>
   );

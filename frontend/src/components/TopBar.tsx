@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, SearchIcon, X } from "../icons";
-import type { Identity } from "../types";
+import type { Identity, ViewMode } from "../types";
+import { WORK_MODE_ROLES } from "../types";
 import { DEV_IDENTITIES } from "../identities";
 import { NotificationBell } from "./NotificationBell";
 
@@ -10,9 +11,13 @@ interface Props {
   identity: Identity;
   onIdentityChange: (identity: Identity) => void;
   onOpenPerson: (id: string, name: string) => void;
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
 }
 
-export function TopBar({ query, onQueryChange, identity, onIdentityChange, onOpenPerson }: Props) {
+export function TopBar({
+  query, onQueryChange, identity, onIdentityChange, onOpenPerson, viewMode, onViewModeChange,
+}: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +65,33 @@ export function TopBar({ query, onQueryChange, identity, onIdentityChange, onOpe
           </button>
         )}
       </div>
+
+      {/* Only hr and it can act on this, so only they are shown it. That is
+          presentation, not enforcement -- an employee who sends
+          view_mode=work by hand still gets employee mode back, because the
+          server pins it. See resolve_view_mode in app/permissions.py. */}
+      {WORK_MODE_ROLES.includes(identity.role) && (
+        <div
+          className="viewmode"
+          role="group"
+          aria-label={`View mode (available to ${WORK_MODE_ROLES.join(" and ")})`}
+        >
+          {(["work", "employee"] as ViewMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`viewmode-btn ${viewMode === m ? "active" : ""}`}
+              aria-pressed={viewMode === m}
+              title={m === "work"
+                ? "Your full access for this role"
+                : "What an ordinary colleague sees — identical for every role"}
+              onClick={() => onViewModeChange(m)}
+            >
+              {m === "work" ? "Work" : "Employee"}
+            </button>
+          ))}
+        </div>
+      )}
 
       <NotificationBell identity={identity} onOpenPerson={onOpenPerson} />
 
