@@ -76,6 +76,27 @@ export interface NotificationOut {
   created_at: string;
 }
 
+// Wire shape for PATCH /employees/{id} — mirrors app/schemas.py's
+// UpdateEmployeeRequest. Every field optional, and the client only ever
+// sends the keys that actually changed: an omitted key means "don't touch",
+// an explicit null means "clear it" — the same PATCH-with-partial-dict
+// contract app/writes.py's update_employee implements server-side. This
+// interface exists so a typo'd field name is a compile error rather than a
+// silently-ignored key the backend's extra="forbid" would 422 on at runtime.
+export interface UpdateEmployeeChanges {
+  full_name?: string;
+  preferred_name?: string | null;
+  job_title?: string;
+  work_email?: string;
+  work_phone?: string | null;
+  salary?: string | null;
+  salary_currency?: string | null;
+  date_of_birth?: string | null;
+  hire_date?: string;
+  cost_centre?: string | null;
+  employment_type?: "fte" | "contractor" | "intern";
+}
+
 export interface PersonDetail {
   id: string;
   full_name: string;
