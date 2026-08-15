@@ -40,10 +40,10 @@ from app.models.enums import AvailabilityStatus, SkillLevel
 from app.permissions import (
     ViewMode,
     can_see_confidential_project,
-    effective_role,
     is_record_visible,
     visible_fields,
 )
+from app.policy import can_see_direct_reports
 from app.query_compiler import enforced_person_ref
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
 from app.search_reindex import reindex_employee
@@ -248,12 +248,6 @@ def find_people(
         name=name, query=query, skill=skill, level=level, org_unit=org_unit,
         office=office, language=language, available=available,
     ).items() if v is not None}
-
-    # The role this request is answered as. In employee mode a privileged
-    # caller is an ordinary employee for every downstream decision — here
-    # that's the restricted-record filter and the direct_reports enrichment,
-    # both of which are role-keyed.
-    acting_role = effective_role(caller.role, view_mode)
 
     # Resolve skill/language synonyms once, up front — both the Search
     # filter and the SQL fallback need the same canonical name/id, and an
@@ -471,18 +465,20 @@ def find_people(
             # only changes behavior for the one case a raw lookup missed:
             # the referenced manager/delegate is themself a restricted
             # record and the caller isn't hr.
-            manager_ref = enforced_person_ref(db, caller, e.manager_id) if e.manager_id else None
+            manager_ref = enforced_person_ref(db, caller, e.manager_id, view_mode) if e.manager_id else None
             if manager_ref:
                 kwargs["manager"] = manager_ref
                 fields_returned.add("manager")
-            delegate_ref = enforced_person_ref(db, caller, e.delegate_id) if e.delegate_id else None
+            delegate_ref = enforced_person_ref(db, caller, e.delegate_id, view_mode) if e.delegate_id else None
             if delegate_ref:
                 kwargs["delegate"] = delegate_ref
                 fields_returned.add("delegate")
-            # direct_reports: downward chain, manager/hr only — same RBAC
-            # gate as get_org_chain's "down" direction, same per-record
-            # is_record_visible filter as its downward traversal.
-            if acting_role in ("manager", "hr"):
+            # direct_reports: downward chain, manager/hr only — same shared
+            # gate as get_org_chain's "down" direction (app.policy's
+            # can_see_direct_reports, consolidated from two independently
+            # -written inline checks that had already drifted), same
+            # per-record is_record_visible filter as its downward traversal.
+            if can_see_direct_reports(caller.role, view_mode):
                 reports = db.execute(
                     select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
                 ).scalars().all()
@@ -529,7 +525,7 @@ def get_person(
         found = True
 
         # 5. cap results — not applicable to a single-record lookup.
-        return _build_detail(db, caller, target, fields)
+        return _build_detail(db, caller, target, fields, view_mode)
     finally:
         # 6. write to audit_log — logged either way; the audit trail is
         # allowed to know more than the caller's response reveals.
@@ -561,7 +557,12 @@ def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: 
     return result
 
 
-def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str]) -> PersonDetail:
+def _build_detail(
+    db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str], view_mode: ViewMode = "work",
+) -> PersonDetail:
+    # view_mode defaults to "work" -- update_own_bio (below) has no view_mode
+    # concept of its own to give this, same deferred-scope reasoning as
+    # get_org_chain never gaining one; get_person passes its real value.
     kwargs: dict = {"id": target.id, "full_name": target.full_name}
 
     if "preferred_name" in fields:
@@ -589,11 +590,11 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
         kwargs["photo_url"] = target.photo_url
 
     if "manager" in fields and target.manager_id:
-        manager_ref = enforced_person_ref(db, caller, target.manager_id)
+        manager_ref = enforced_person_ref(db, caller, target.manager_id, view_mode)
         if manager_ref:
             kwargs["manager"] = manager_ref
     if "delegate" in fields and target.delegate_id:
-        delegate_ref = enforced_person_ref(db, caller, target.delegate_id)
+        delegate_ref = enforced_person_ref(db, caller, target.delegate_id, view_mode)
         if delegate_ref:
             kwargs["delegate"] = delegate_ref
 

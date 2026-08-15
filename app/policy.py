@@ -4,16 +4,22 @@ response. It does not return a boolean -- a PolicyDecision carries
 redaction, required row-scoping filters (obligations), and the row cap,
 none of which the caller or the model gets to negotiate.
 
-Round 1: this is a pure function of (plan, caller) with no database access
-and no wiring into any live request path -- see the plan's own note on why
-that split exists. Round 2 is what actually calls enforce() from
-find_people/get_person/get_org_chain and compiles the result to SQL.
+Round 1: this is a pure function of (plan, caller, view_mode) with no
+database access. Round 2 wired it into app.query_compiler.enforced_person_ref
+-- the manager/delegate/direct_reports reference lookups inside
+find_people/get_person/get_org_chain go through enforce() -> compile_query()
+today, but their own *primary* retrieval (the Search/SQL branches, the
+recursive CTE) still runs on app.permissions' older is_record_visible/
+visible_fields, which remains the live gate for everything else. That's a
+deliberate, still-open scope boundary, not an oversight -- see this repo's
+own notes on why a full cutover is a separate, larger decision.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from app.auth import AuthenticatedUser
+from app.permissions import ViewMode, effective_role
 from app.query_plan import Filter, PeopleQuery
 from app.registry import REGISTRY, is_visible
 
@@ -54,8 +60,8 @@ def _max_rows(plan: PeopleQuery) -> int:
     return limit
 
 
-def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
-    allowed = {name for name in REGISTRY if is_visible(name, caller.role)}
+def enforce(plan: PeopleQuery, caller: AuthenticatedUser, view_mode: ViewMode = "work") -> PolicyDecision:
+    allowed = {name for name in REGISTRY if is_visible(name, caller.role, view_mode)}
 
     # 1. Redact, don't reject -- select fields the role can't see are
     # silently dropped. The caller finds out by absence, never by error.
@@ -77,19 +83,23 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
     # 3. Obligations -- row scoping the model never sees and cannot
     # negotiate. This is the query-plan-level expression of
     # app.permissions.is_record_visible's existing rule (restricted
-    # employees are absent from everyone except hr); Round 1 pins that
-    # equivalence with a direct test (tests/test_policy.py), Round 2
-    # decides where this is actually enforced live.
+    # employees are absent from everyone except hr); effective_role means
+    # an hr caller browsing in employee view mode loses the exemption here
+    # too, exactly like is_record_visible already does -- before view_mode
+    # was threaded through, this checked raw caller.role, so an hr caller
+    # in employee mode kept seeing restricted employees when nothing else
+    # in the same response would have.
     #
-    # No manager-scoped obligation here (e.g. "manager_id = caller.id" for
-    # a direct-reports request), unlike ARCHITECTURE_2.md §8's illustrative
-    # pseudocode -- direct_reports isn't a registry field at all yet
-    # (app/registry.py's own docstring flags this as a known gap owned by
-    # app/people.py's inline role check), so there's no plan shape here for
-    # that obligation to attach to. Adding one would be inventing scope
-    # this pass doesn't cover, not implementing something already decided.
+    # No manager-scoped "manager_id = caller.id" obligation here, unlike
+    # ARCHITECTURE_2.md §8's illustrative pseudocode -- direct_reports isn't
+    # a PeopleQuery-shaped request at either of its two real call sites
+    # (app/people.py's single-match enrichment, app/org_chart.py's
+    # direction="down"), so there's no plan shape here for that obligation
+    # to attach to. can_see_direct_reports() below is the actual row-scoping
+    # decision those two call sites now share; inventing an unused
+    # PeopleQuery obligation for it would be scope nothing consumes yet.
     required_filters: list[Filter] = []
-    if caller.role != "hr":
+    if effective_role(caller.role, view_mode) != "hr":
         required_filters.append(Filter(field="availability_status", op="ne", value="restricted"))
 
     return PolicyDecision(
@@ -98,3 +108,18 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
         dropped_fields=dropped_fields,
         max_rows=_max_rows(plan),
     )
+
+
+def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
+    """The one shared decision behind app.people's find_people enrichment and
+    app.org_chart's get_org_chain(direction="down") gate -- previously two
+    independently-written inline checks (`acting_role in ("manager", "hr")`
+    vs `caller.role not in ("manager", "hr")`) that had already drifted:
+    people.py's collapsed via effective_role for employee view mode,
+    org_chart.py's didn't, since get_org_chain has no view_mode parameter at
+    all. Lives here rather than app/registry.py because direct_reports isn't
+    a field with a sensitivity tier -- registry.py's own ALLOWED_SENSITIVITY
+    comment already frames this as a row-scoping obligation, not broader
+    field access, which is exactly this module's job.
+    """
+    return effective_role(role, view_mode) in ("manager", "hr")

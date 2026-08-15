@@ -8,13 +8,15 @@ import pytest
 
 from app.auth import AuthenticatedUser
 from app.permissions import is_record_visible
-from app.policy import DEFAULT_LIMIT, enforce
+from app.policy import DEFAULT_LIMIT, can_see_direct_reports, enforce
 from app.query_plan import Filter, PeopleQuery
 
 HR = AuthenticatedUser(id="hr-1", role="hr")
 MANAGER = AuthenticatedUser(id="mgr-1", role="manager")
 EMPLOYEE = AuthenticatedUser(id="emp-1", role="employee")
+IT = AuthenticatedUser(id="it-1", role="it")
 NON_HR_ROLES = (MANAGER, EMPLOYEE)
+VIEW_MODES = ("employee", "work")
 
 
 # ---------------------------------------------------------------------------
@@ -158,25 +160,76 @@ def _excluded_by_obligations(decision, employees) -> set[str]:
     return excluded
 
 
-@pytest.mark.parametrize("caller", [HR, MANAGER, EMPLOYEE])
-def test_obligations_agree_exactly_with_is_record_visible(db_session, caller):
+@pytest.mark.parametrize("caller", [HR, MANAGER, EMPLOYEE, IT])
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_obligations_agree_exactly_with_is_record_visible(db_session, caller, view_mode):
     from app.models import Employee
 
     employees = db_session.query(Employee).filter(Employee.is_active == True).all()  # noqa: E712
-    decision = enforce(PeopleQuery(select=["id"]), caller)
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
 
     excluded_by_obligation = _excluded_by_obligations(decision, employees)
-    excluded_by_permissions = {e.id for e in employees if not is_record_visible(caller, e)}
+    excluded_by_permissions = {e.id for e in employees if not is_record_visible(caller, e, view_mode)}
 
     assert excluded_by_obligation == excluded_by_permissions
 
 
-def test_hr_has_no_row_scoping_obligation():
-    decision = enforce(PeopleQuery(select=["id"]), HR)
+def test_hr_has_no_row_scoping_obligation_in_work_mode():
+    decision = enforce(PeopleQuery(select=["id"]), HR, "work")
     assert decision.required_filters == []
+
+
+def test_hr_gets_the_restricted_exclusion_obligation_in_employee_mode():
+    # The parity fix: before enforce() took a view_mode, this checked raw
+    # caller.role, so an hr caller "previewing" employee mode kept seeing
+    # restricted employees when nothing else in the same response would
+    # have -- is_record_visible's own effective_role-based collapse already
+    # denied them there. Now the two agree (also covered generically by
+    # test_obligations_agree_exactly_with_is_record_visible above; this one
+    # pins the specific case in plain terms since it's the concrete bug).
+    decision = enforce(PeopleQuery(select=["id"]), HR, "employee")
+    assert decision.required_filters == [Filter(field="availability_status", op="ne", value="restricted")]
 
 
 @pytest.mark.parametrize("caller", NON_HR_ROLES)
 def test_non_hr_gets_the_restricted_exclusion_obligation(caller):
     decision = enforce(PeopleQuery(select=["id"]), caller)
     assert decision.required_filters == [Filter(field="availability_status", op="ne", value="restricted")]
+
+
+# ---------------------------------------------------------------------------
+# can_see_direct_reports -- the one shared decision behind find_people's
+# direct_reports enrichment and get_org_chain's direction="down" gate,
+# consolidated from two independently-written inline checks that had
+# already drifted (only one of the two collapsed via effective_role).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_manager_and_hr_can_see_direct_reports_in_work_mode(view_mode):
+    assert can_see_direct_reports("manager", "work")
+    assert can_see_direct_reports("hr", "work")
+
+
+def test_employee_and_it_cannot_see_direct_reports_in_work_mode():
+    assert not can_see_direct_reports("employee", "work")
+    assert not can_see_direct_reports("it", "work")
+
+
+def test_hr_loses_direct_reports_visibility_in_employee_mode():
+    # Same collapse as the restricted-record obligation above -- hr
+    # previewing "employee" mode is an ordinary employee for this decision
+    # too, so they lose the manager/hr-only direct_reports view.
+    assert not can_see_direct_reports("hr", "employee")
+
+
+def test_manager_loses_direct_reports_visibility_in_employee_mode():
+    assert not can_see_direct_reports("manager", "employee")
+
+
+def test_can_see_direct_reports_defaults_to_work_mode():
+    # get_org_chain has no view_mode parameter at all and calls this with
+    # role only -- the default must match its pre-existing (raw-role)
+    # behavior exactly, not silently start collapsing.
+    assert can_see_direct_reports("manager") == can_see_direct_reports("manager", "work")
+    assert can_see_direct_reports("hr") == can_see_direct_reports("hr", "work")
+

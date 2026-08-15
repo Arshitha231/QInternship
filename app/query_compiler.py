@@ -28,6 +28,7 @@ from sqlalchemy.orm import aliased
 
 from app.auth import AuthenticatedUser
 from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill
+from app.permissions import ViewMode
 from app.policy import PolicyDecision, enforce
 from app.query_plan import Filter, PeopleQuery
 from app.registry import REGISTRY
@@ -147,7 +148,9 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
     return stmt.limit(decision.max_rows)
 
 
-def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> PersonRef | None:
+def enforced_person_ref(
+    db, caller: AuthenticatedUser, person_id: str, view_mode: ViewMode = "work",
+) -> PersonRef | None:
     """The canonical way to attach a *referenced* person (a manager,
     delegate, ...) to a response -- policy-gated, not a raw db.get().
     ARCHITECTURE_2.md §15 item 6 / Round 2: find_people's single-match
@@ -162,6 +165,15 @@ def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> Person
     obligation (a department scope, say) protects all three automatically
     instead of needing to be remembered at each site.
 
+    `view_mode` defaults to "work" -- callers that don't have one to give
+    (get_org_chain, which has no view_mode parameter at all) get today's
+    unchanged behavior. find_people/get_person pass their real one: without
+    it, enforce()'s restricted-record obligation always evaluated as if the
+    caller were in full work mode, so an hr caller previewing "employee"
+    mode would still see a restricted employee's name via a manager/delegate
+    reference even though every other field on the same response was
+    correctly anonymized.
+
     Builds the smallest possible PeopleQuery (select id+full_name, filter
     id eq person_id), enforces it, and returns None if policy denies it,
     the row is excluded by an obligation (restricted, non-hr caller), or
@@ -169,7 +181,7 @@ def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> Person
     else, never an error.
     """
     plan = PeopleQuery(select=["id", "full_name"], filters=[Filter(field="id", op="eq", value=person_id)])
-    decision = enforce(plan, caller)
+    decision = enforce(plan, caller, view_mode)
     if not decision.allow:
         return None
     row_id = db.execute(compile_query(db, plan, decision)).scalar()

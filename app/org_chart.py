@@ -24,6 +24,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
 from app.permissions import is_record_visible
+from app.policy import can_see_direct_reports
 from app.query_compiler import enforced_person_ref
 from app.schemas import OrgChainNode
 
@@ -186,8 +187,14 @@ def get_org_chain(
             return None
 
         # Direction check (RBAC only — no relationship requirement, same
-        # shape as hire_date/cost_centre being hr-only).
-        if direction == "down" and caller.role not in ("manager", "hr"):
+        # shape as hire_date/cost_centre being hr-only). Shared with
+        # find_people's direct_reports enrichment via can_see_direct_reports
+        # -- previously two independently-written inline checks that had
+        # already drifted (find_people's collapsed via effective_role for
+        # employee view mode, this one didn't). No view_mode argument here:
+        # get_org_chain has no view_mode parameter at all today, so this
+        # keeps evaluating as if in work mode, same as before this change.
+        if direction == "down" and not can_see_direct_reports(caller.role):
             return []
 
         raw = _traverse(db, person_id, direction, effective_depth)
