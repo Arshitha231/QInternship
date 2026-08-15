@@ -1,7 +1,7 @@
 import type {
   ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem,
   Identity, NotificationOut, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse,
-  ViewMode,
+  UpdateEmployeeChanges, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -81,6 +81,23 @@ export function updateOwnBio(identity: Identity, bio: string): Promise<PersonDet
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ bio }),
+  });
+}
+
+// HR, work mode, any employee but themselves — see app/writes.py's
+// update_employee for the actual enforcement; this call succeeding or not
+// is the server's decision, not something checked here. `changes` should
+// carry only the fields that actually changed (undefined keys are dropped
+// by JSON.stringify automatically, matching the backend's exclude_unset
+// contract) — the caller (ProfilePage) is responsible for diffing against
+// the loaded profile before calling this, not this function.
+export function updateEmployee(
+  identity: Identity, personId: string, changes: UpdateEmployeeChanges, viewMode: ViewMode,
+): Promise<PersonDetail> {
+  return request<PersonDetail>(`/employees/${personId}?view_mode=${viewMode}`, identity, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
   });
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ApiError, getOrgChart, getPerson, updateOwnBio } from "../api";
-import type { Identity, OrgChainNode, PersonDetail, SkillOut, ViewMode } from "../types";
+import type { ReactNode } from "react";
+import { ApiError, getOrgChart, getPerson, updateEmployee, updateOwnBio } from "../api";
+import type { Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
   MapPin, Phone, Slack, UserReports, Users,
@@ -72,6 +73,94 @@ function localTimeInfo(tz: string): string | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// HR edit form (PATCH /employees/{id}, work mode, any profile but your own —
+// see app/writes.py's update_employee for the actual enforcement, which this
+// form's visibility only mirrors, never replaces). Every field here is a
+// plain string in form state, including employment_type and the two date
+// fields — HTML inputs only ever produce strings, and PersonDetail's own
+// values already arrive as strings (salary in particular, deliberately, so
+// the exact decimal from the backend is never round-tripped through a JS
+// number — see PersonDetail's own comment on that field).
+// ---------------------------------------------------------------------------
+
+type EmployeeFormState = {
+  full_name: string;
+  preferred_name: string;
+  job_title: string;
+  work_email: string;
+  work_phone: string;
+  employment_type: string;
+  salary: string;
+  salary_currency: string;
+  date_of_birth: string;
+  hire_date: string;
+  cost_centre: string;
+};
+
+// Fields where a touched-but-emptied input means "clear this" (sent as an
+// explicit null) rather than "invalid" (see app/writes.py: "an explicit
+// null clears the field... must stay distinguishable from omitting it
+// entirely"). Everything NOT in this set is required — full_name, job_title,
+// work_email, hire_date — and emptying one of those is caught by
+// employeeFormValid before Save is ever clickable, so it never reaches the
+// diff.
+const NULLABLE_EMPLOYEE_FIELDS = new Set<keyof EmployeeFormState>([
+  "preferred_name", "work_phone", "salary", "salary_currency", "date_of_birth", "cost_centre",
+]);
+
+function employeeFormFromDetail(d: PersonDetail): EmployeeFormState {
+  return {
+    full_name: d.full_name ?? "",
+    preferred_name: d.preferred_name ?? "",
+    job_title: d.job_title ?? "",
+    work_email: d.work_email ?? "",
+    work_phone: d.work_phone ?? "",
+    employment_type: d.employment_type ?? "fte",
+    salary: d.salary ?? "",
+    salary_currency: d.salary_currency ?? "",
+    date_of_birth: d.date_of_birth ?? "",
+    hire_date: d.hire_date ?? "",
+    cost_centre: d.cost_centre ?? "",
+  };
+}
+
+function employeeFormValid(f: EmployeeFormState): boolean {
+  return f.full_name.trim() !== "" && f.job_title.trim() !== ""
+    && f.work_email.trim() !== "" && f.hire_date.trim() !== "";
+}
+
+// Only fields that actually changed reach the server — the backend applies
+// changes by key PRESENCE (model_dump(exclude_unset=True)), so an untouched
+// field must be absent from the payload entirely, not just sent back
+// unchanged. That's the whole reason this diffs against a separate
+// `initial` snapshot instead of just serializing `current` wholesale.
+function diffEmployeeForm(initial: EmployeeFormState, current: EmployeeFormState): UpdateEmployeeChanges {
+  const changes: Record<string, string | null> = {};
+  (Object.keys(current) as (keyof EmployeeFormState)[]).forEach((key) => {
+    if (current[key] === initial[key]) return;
+    const value = current[key].trim();
+    if (value === "") {
+      if (NULLABLE_EMPLOYEE_FIELDS.has(key)) changes[key] = null;
+      return; // emptied a required field — employeeFormValid already blocked Save
+    }
+    changes[key] = value;
+  });
+  return changes as UpdateEmployeeChanges;
+}
+
+function EditField({ label, badge, children }: { label: string; badge?: string; children: ReactNode }) {
+  return (
+    <label className="edit-field">
+      <span className="edit-label">
+        {label}
+        {badge && <span className="hr-badge">{badge}</span>}
+      </span>
+      {children}
+    </label>
+  );
+}
+
 export function ProfilePage({
   personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
 }: Props) {
@@ -83,7 +172,19 @@ export function ProfilePage({
   const [savingBio, setSavingBio] = useState(false);
   const [bioError, setBioError] = useState<string | null>(null);
 
+  const [editingEmployee, setEditingEmployee] = useState(false);
+  const [employeeForm, setEmployeeForm] = useState<EmployeeFormState | null>(null);
+  const [employeeInitial, setEmployeeInitial] = useState<EmployeeFormState | null>(null);
+  const [savingEmployee, setSavingEmployee] = useState(false);
+  const [employeeError, setEmployeeError] = useState<string | null>(null);
+
   const isOwnProfile = personId === identity.id;
+  // Presentation only — mirrors app/writes.py's real gate (EDITABLE table +
+  // the person_id == caller.id self-block), which is what actually decides
+  // whether a PATCH succeeds. Showing this button to the wrong role/mode
+  // would produce a 403 on Save, not a security hole; the server is the
+  // only enforcement that matters.
+  const canEditEmployee = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +193,13 @@ export function ProfilePage({
     setError(null);
     setEditingBio(false);
     setBioError(null);
+    // Closes any open edit form on a profile/identity/mode change, so a
+    // draft never lingers pointed at the wrong person — same reasoning as
+    // the bio-edit reset just above.
+    setEditingEmployee(false);
+    setEmployeeError(null);
+    setEmployeeForm(null);
+    setEmployeeInitial(null);
     Promise.all([getPerson(identity, personId, viewMode), getOrgChart(identity, personId, "down", 1)])
       .then(([person, chain]) => {
         if (cancelled) return;
@@ -147,6 +255,40 @@ export function ProfilePage({
       setBioError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
     } finally {
       setSavingBio(false);
+    }
+  }
+
+  function startEditingEmployee() {
+    const initial = employeeFormFromDetail(detail!);
+    setEmployeeInitial(initial);
+    setEmployeeForm(initial);
+    setEmployeeError(null);
+    setEditingEmployee(true);
+  }
+
+  async function saveEmployee() {
+    if (!employeeForm || !employeeInitial) return;
+    if (!employeeFormValid(employeeForm)) {
+      setEmployeeError("Name, job title, work email and hire date can't be empty.");
+      return;
+    }
+    const changes = diffEmployeeForm(employeeInitial, employeeForm);
+    if (Object.keys(changes).length === 0) {
+      // Nothing actually changed — closing is the honest outcome, not a
+      // no-op PATCH that would still write an audit_log row for no reason.
+      setEditingEmployee(false);
+      return;
+    }
+    setSavingEmployee(true);
+    setEmployeeError(null);
+    try {
+      const updated = await updateEmployee(identity, personId, changes, viewMode);
+      setDetail(updated);
+      setEditingEmployee(false);
+    } catch (e) {
+      setEmployeeError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+    } finally {
+      setSavingEmployee(false);
     }
   }
 
@@ -225,7 +367,113 @@ export function ProfilePage({
             )}
           </ul>
         </div>
+        {canEditEmployee && !editingEmployee && (
+          <button
+            className="btn" style={{ alignSelf: "flex-start", flexShrink: 0 }}
+            onClick={startEditingEmployee}
+          >
+            Edit profile
+          </button>
+        )}
       </div>
+
+      {editingEmployee && employeeForm && (
+        <section className="card edit-employee-card">
+          <div className="card-head">
+            <h2>Edit profile</h2>
+            <span className="hr-badge">HR &middot; work mode</span>
+          </div>
+          <div className="edit-grid">
+            <EditField label="Full name">
+              <input
+                className="edit-input" value={employeeForm.full_name}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, full_name: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Preferred name">
+              <input
+                className="edit-input" value={employeeForm.preferred_name}
+                placeholder="(none)"
+                onChange={(e) => setEmployeeForm({ ...employeeForm, preferred_name: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Job title">
+              <input
+                className="edit-input" value={employeeForm.job_title}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, job_title: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Employment type">
+              <select
+                className="edit-input" value={employeeForm.employment_type}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, employment_type: e.target.value })}
+              >
+                <option value="fte">FTE</option>
+                <option value="contractor">Contractor</option>
+                <option value="intern">Intern</option>
+              </select>
+            </EditField>
+            <EditField label="Work email">
+              <input
+                className="edit-input" type="email" value={employeeForm.work_email}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, work_email: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Work phone">
+              <input
+                className="edit-input" value={employeeForm.work_phone}
+                placeholder="(none)"
+                onChange={(e) => setEmployeeForm({ ...employeeForm, work_phone: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Hire date">
+              <input
+                className="edit-input" type="date" value={employeeForm.hire_date}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, hire_date: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Date of birth" badge="HR only">
+              <input
+                className="edit-input" type="date" value={employeeForm.date_of_birth}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, date_of_birth: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Cost centre" badge="HR only">
+              <input
+                className="edit-input" value={employeeForm.cost_centre}
+                placeholder="(none)"
+                onChange={(e) => setEmployeeForm({ ...employeeForm, cost_centre: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Salary" badge="HR only">
+              <input
+                className="edit-input" inputMode="decimal" placeholder="e.g. 95000.00"
+                value={employeeForm.salary}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, salary: e.target.value })}
+              />
+            </EditField>
+            <EditField label="Salary currency" badge="HR only">
+              <input
+                className="edit-input" placeholder="USD" maxLength={3}
+                value={employeeForm.salary_currency}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, salary_currency: e.target.value.toUpperCase() })}
+              />
+            </EditField>
+          </div>
+          {employeeError && <p className="bio-error">{employeeError}</p>}
+          <div className="bio-actions">
+            <button className="btn" onClick={() => setEditingEmployee(false)} disabled={savingEmployee}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary" onClick={saveEmployee}
+              disabled={savingEmployee || !employeeFormValid(employeeForm)}
+            >
+              {savingEmployee ? "Saving…" : "Save changes"}
+            </button>
+          </div>
+        </section>
+      )}
 
       <div className="profile-page-body">
         <div className="profile-page-col">
