@@ -23,9 +23,9 @@ from sqlalchemy.orm import Session, aliased
 from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
-from app.permissions import is_record_visible
-from app.policy import can_see_direct_reports
+from app.policy import can_see_direct_reports, enforce, excluded_by_obligations
 from app.query_compiler import enforced_person_ref
+from app.query_plan import PeopleQuery
 from app.schemas import OrgChainNode
 
 # The recursive CTE always stops here, no matter what depth is requested or
@@ -180,10 +180,16 @@ def get_org_chain(
     effective_depth = max(1, min(depth, MAX_DEPTH))
     result: list[OrgChainNode] = []
     try:
+        # Row-level policy decision, computed once. No view_mode argument --
+        # get_org_chain has no view_mode parameter at all, so this evaluates
+        # as if in work mode, identical to is_record_visible's own default
+        # before this migration.
+        decision = enforce(PeopleQuery(select=["id"]), caller)
+
         # 1. retrieve + 2. filter records — the root person itself. Same
         # "identical whether nonexistent or restricted" shape as get_person.
         root = db.get(Employee, person_id)
-        if root is None or not root.is_active or not is_record_visible(caller, root):
+        if root is None or not root.is_active or excluded_by_obligations(decision, root):
             return None
 
         # Direction check (RBAC only — no relationship requirement, same
@@ -220,8 +226,17 @@ def get_org_chain(
                 continue  # a cycle can revisit the same person at a deeper level
             seen.add(emp_id)
             emp = db.get(Employee, emp_id)
-            if emp is None or not emp.is_active or not is_record_visible(caller, emp):
-                continue  # 3. filter records again, for every node in the chain
+            # 3. filter records again, for every node in the chain -- this
+            # MUST stay a post-traversal per-node filter, never pushed into
+            # _traverse()'s own CTE. The chain walks THROUGH a restricted
+            # intermediate manager today (excluded from the output, but the
+            # walk continues past them to whoever's above/below); excluding
+            # them at the CTE's WHERE level instead would stop the walk
+            # itself from ever reaching past them, silently losing everyone
+            # beyond a restricted person in someone's chain -- a real
+            # behavior change, not a refactor.
+            if emp is None or not emp.is_active or excluded_by_obligations(decision, emp):
+                continue
             # manager/delegate: policy-gated via enforce()+compile_query(),
             # not a raw db.get() -- ARCHITECTURE_2.md §15 item 6 / Phase 3
             # Round 2 (app/query_compiler.py's enforced_person_ref), same

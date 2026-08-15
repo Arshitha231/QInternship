@@ -83,7 +83,16 @@ class UnsupportedFilterError(ValueError):
     app.vocabulary.validate() against today's REGISTRY.filterable set."""
 
 
-def _apply_filter(db, stmt: Select, f: Filter) -> Select:
+def apply_filter(db, stmt: Select, f: Filter) -> Select:
+    """Applies one Filter to any Employee-mapped Select -- not just the
+    statements compile_query() itself builds. Reused directly by
+    app/people.py's find_people (its own hand-built SQL branch and
+    direct_reports subquery) to push a PolicyDecision's obligations straight
+    into a query, without adopting compile_query()'s full plan-driven
+    pipeline for find_people's other, bespoke filter args. Public (no leading
+    underscore) specifically because it's now used across module boundaries,
+    not just internally by compile_query() below.
+    """
     spec = REGISTRY[f.field]
     if not spec.filterable:
         raise UnsupportedFilterError(f"'{f.field}' is not filterable")
@@ -138,7 +147,7 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
     stmt = select(Employee.id).where(Employee.is_active == True)  # noqa: E712
 
     for f in [*plan.filters, *decision.required_filters]:
-        stmt = _apply_filter(db, stmt, f)
+        stmt = apply_filter(db, stmt, f)
 
     if plan.order_by is not None:
         if plan.order_by not in _ORDERABLE_FIELDS:

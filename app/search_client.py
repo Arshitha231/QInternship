@@ -25,6 +25,8 @@ import httpx
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
 
+from app.query_plan import Filter
+
 load_dotenv()
 
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT", "").rstrip("/")
@@ -72,11 +74,34 @@ def _name_query(name: str) -> str:
     return f"({prefix_clause}) OR ({fuzzy_clause})"
 
 
+def _apply_required_filter(clauses: list[str], f: Filter) -> None:
+    """Translates one app.policy.PolicyDecision obligation into an OData
+    clause, appended to `clauses` in place -- the Search-side counterpart to
+    app.query_compiler.apply_filter, so the restricted-employee rule is
+    excluded at the index-query level instead of being fetched and then
+    filtered out in Python after the fact.
+
+    Raises on any obligation shape it doesn't recognize, deliberately, rather
+    than silently doing nothing -- today enforce() only ever produces one
+    obligation (availability_status ne restricted); a second obligation type
+    added later must be taught here explicitly, or it would silently never
+    reach the Search path while still being enforced correctly on the SQL
+    path -- exactly the kind of divergence the RC3 truncation bug came from.
+    """
+    if f.field == "availability_status" and f.op == "ne" and isinstance(f.value, str):
+        clauses.append(f"availability_status ne '{_escape_odata(f.value)}'")
+        return
+    raise ValueError(f"_build_filter does not know how to translate obligation {f!r} into an OData clause")
+
+
 def _build_filter(
     *, org_unit: str | list[str] | None, skill: str | None, level: str | None,
     office: str | None, language: str | None, available: bool | None,
+    required_filters: list[Filter] | None = None,
 ) -> str:
     clauses = ["is_active eq true"]  # data hygiene, not a permission decision
+    for f in required_filters or []:
+        _apply_required_filter(clauses, f)
     if org_unit:
         # A hierarchy-expanded filter (a department name resolves to every
         # descendant team) arrives as a list of leaf names — the index only
@@ -141,6 +166,7 @@ def search_people(
     office: str | None = None,
     language: str | None = None,
     available: bool | None = None,
+    required_filters: list[Filter] | None = None,
     top: int,
 ) -> list[str] | None:
     """Ranked employee IDs for a free-text query and/or structured filters,
@@ -148,6 +174,14 @@ def search_people(
     caller falls back to SQL. `name=None` is a filter-only call (no text to
     rank on): submits `search: "*"` with just the OData filter applied, and
     skips the vector query entirely (nothing to embed).
+
+    `required_filters` carries app.policy.PolicyDecision obligations (the
+    restricted-employee rule, today) straight into the OData filter, so
+    excluded rows never come back from the index at all -- this module still
+    never sees the caller's role or makes its own visibility decision; it
+    only compiles whatever obligation the caller already decided into Search's
+    own filter syntax, same division of responsibility as before, just one
+    more filter source alongside the structured search args.
     """
     if not is_configured():
         return None
@@ -156,7 +190,8 @@ def search_people(
         "search": _name_query(name) if name else "*",
         "queryType": "full",
         "filter": _build_filter(org_unit=org_unit, skill=skill, level=level,
-                                office=office, language=language, available=available),
+                                office=office, language=language, available=available,
+                                required_filters=required_filters),
         "select": "id",
         "top": top,
     }

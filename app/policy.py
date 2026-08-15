@@ -8,18 +8,32 @@ Round 1: this is a pure function of (plan, caller, view_mode) with no
 database access. Round 2 wired it into app.query_compiler.enforced_person_ref
 -- the manager/delegate/direct_reports reference lookups inside
 find_people/get_person/get_org_chain go through enforce() -> compile_query()
-today, but their own *primary* retrieval (the Search/SQL branches, the
-recursive CTE) still runs on app.permissions' older is_record_visible/
-visible_fields, which remains the live gate for everything else. That's a
-deliberate, still-open scope boundary, not an oversight -- see this repo's
-own notes on why a full cutover is a separate, larger decision.
+today. Round 3 makes it authoritative for those same three functions'
+*primary* retrieval too: excluded_by_obligations() and compute_visible_fields()
+below are what find_people/get_person/get_org_chain now consult instead of
+app.permissions' is_record_visible/visible_fields directly. app.permissions
+itself is untouched -- is_record_visible/visible_fields still exist and are
+still the live gate for app.directory_tools (find_mentor/skill_gap/
+skill_scarcity/find_project_owner) and app.notifications, a deliberately
+deferred, separate scope. The ABAC layer (abac_extra_fields,
+training_extra_fields, department_filter, can_see_confidential_project) was
+never duplicated here and stays exactly where it is, called from
+compute_visible_fields() the same way visible_fields() already calls it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from app.auth import AuthenticatedUser
-from app.permissions import ViewMode, effective_role
+from app.models import Employee
+from app.permissions import (
+    TRAINING_FIELDS,
+    ViewMode,
+    abac_extra_fields,
+    department_filter,
+    effective_role,
+    training_extra_fields,
+)
 from app.query_plan import Filter, PeopleQuery
 from app.registry import REGISTRY, is_visible
 
@@ -123,3 +137,93 @@ def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
     field access, which is exactly this module's job.
     """
     return effective_role(role, view_mode) in ("manager", "hr")
+
+
+def can_see_project_desc(role: str, view_mode: ViewMode = "work") -> bool:
+    """project_desc (nested inside a project_history item) currently reaches
+    a response via ALLOWED[("hr"/"it","work")]'s own construction in
+    app.permissions -- REGISTRY has no entry for it at all, same known-gap
+    category as direct_reports, since it's a Project-table field, not an
+    employees column. compute_visible_fields() below needs an explicit
+    check to stand in for what ALLOWED used to include implicitly."""
+    return effective_role(role, view_mode) in ("hr", "it")
+
+
+def can_see_training_status_by_role(role: str, view_mode: ViewMode = "work") -> bool:
+    """training_status has two independent old-system grants, not one:
+    app.permissions.training_extra_fields' self/manager-chain ABAC walk
+    (still called by compute_visible_fields below, unchanged), AND hr's role
+    getting it directly as part of ALLOWED[("hr","work")]'s own construction
+    -- confirmed by this migration's own comparison tests catching its
+    absence for an hr caller with no chain relationship to the target
+    (test_new_stack_agrees_with_old_stack_for_every_employee). it does NOT
+    get this grant in either system (ALLOWED[("it","work")] excludes
+    TRAINING_FIELDS) -- it only ever sees training_status via the chain walk,
+    same as employee/manager.
+    """
+    return effective_role(role, view_mode) == "hr"
+
+
+def excluded_by_obligations(decision: PolicyDecision, employee: Employee) -> bool:
+    """Evaluates a single already-fetched Employee against
+    decision.required_filters directly -- no second query. This is the
+    in-memory counterpart to compile_query()/query_compiler.apply_filter's
+    query-level obligation application: used wherever an object is already
+    in hand (get_person's target, get_org_chain's CTE-walked nodes) rather
+    than wherever a query is still being built.
+
+    Promoted from tests/test_policy.py's own _excluded_by_obligations() test
+    helper, already indirectly proven correct against
+    app.permissions.is_record_visible by
+    test_obligations_agree_exactly_with_is_record_visible across all 8
+    role/view_mode combinations -- not new, unverified logic.
+
+    Raises on an obligation shape it doesn't recognize, deliberately, rather
+    than silently letting it pass unenforced -- today there's exactly one
+    shape (availability_status ne restricted); a second obligation type
+    added to enforce() later must be taught here explicitly, not bypass this
+    check by accident.
+    """
+    for f in decision.required_filters:
+        if f.field != "availability_status" or f.op != "ne":
+            raise ValueError(f"excluded_by_obligations does not know how to evaluate obligation {f!r}")
+        if employee.availability_status.value == f.value:
+            return True
+    return False
+
+
+_ALWAYS_PRESENT_FIELDS = frozenset({"id", "full_name"})
+
+
+def compute_visible_fields(
+    db, caller: AuthenticatedUser, target: Employee, view_mode: ViewMode = "work",
+) -> set[str]:
+    """Replaces app.permissions.visible_fields() for get_person/update_own_bio
+    -- same pipeline shape (RBAC floor, then ABAC union, then training union,
+    then department subtraction), just sourced from enforce() instead of
+    ALLOWED for the RBAC floor. The ABAC layer itself (abac_extra_fields,
+    training_extra_fields, department_filter) is untouched, imported from
+    app.permissions exactly as visible_fields() already calls it -- that
+    layer was never duplicated by REGISTRY and isn't being rebuilt here.
+
+    id/full_name are deliberately excluded from the base plan even though
+    REGISTRY labels them ordinary INTERNAL entries (registry.py's own
+    docstring: "no field skips is_visible(), not even id/full_name") --
+    visible_fields()'s actual contract never included them; _build_detail()
+    sets both unconditionally, outside the `if "field" in fields` pattern
+    every other field goes through. Including them here wouldn't change
+    get_person's response body, but it WOULD change what get_person logs to
+    AuditLog.fields_returned (app/people.py's fields_returned = fields is
+    logged verbatim) -- a real, confirmed divergence caught by this
+    migration's own comparison tests, not a cosmetic one.
+    """
+    plan_fields = [f for f in REGISTRY if f not in _ALWAYS_PRESENT_FIELDS]
+    decision = enforce(PeopleQuery(select=plan_fields), caller, view_mode)
+    fields = (set(plan_fields) - set(decision.dropped_fields)) | abac_extra_fields(caller, target)
+    if can_see_training_status_by_role(caller.role, view_mode):
+        fields |= TRAINING_FIELDS
+    if not TRAINING_FIELDS <= fields:
+        fields |= training_extra_fields(db, caller, target)
+    if can_see_project_desc(caller.role, view_mode):
+        fields.add("project_desc")
+    return department_filter(db, fields, caller, target, view_mode)

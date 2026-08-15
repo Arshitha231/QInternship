@@ -11,10 +11,23 @@ the model's reach.
 Step 8: find_people's retrieve step now tries Azure AI Search (hybrid
 keyword+fuzzy+vector via native RRF) first when there's a name/description
 query to rank on, falling back to the plain SQL query when Search isn't
-configured, has no query text to work with, or errors. Everything after
-retrieval — is_record_visible, capping, audit — is identical code running
-on identical Employee rows no matter which retrieval path produced them;
-Search never sees the caller and never makes a visibility decision.
+configured, has no query text to work with, or errors.
+
+"Filter records" is no longer a post-retrieval Python step. app.policy.enforce()
+is called once per request, and BOTH retrieval paths apply its
+required_filters natively before any row comes back — the SQL branch via
+app.query_compiler.apply_filter on its own Select, the Search branch by
+translating the same obligations into an OData filter (app/search_client.py's
+_build_filter). Search still never sees the caller's identity or role and
+never makes its own visibility decision — it only compiles whatever decision
+enforce() already made into its own filter syntax, same division of
+responsibility as before, just enforced earlier. is_record_visible/
+visible_fields (app/permissions.py) are no longer called anywhere in this
+file; app.policy.excluded_by_obligations/compute_visible_fields replace them,
+driven by the same enforce() decision. See this repo's migration notes for
+why app/permissions.py itself is untouched — those two functions remain the
+live gate for app/directory_tools.py and app/notifications.py, a separate,
+deferred scope.
 """
 from __future__ import annotations
 
@@ -37,14 +50,10 @@ from app.models import (
     Skill,
 )
 from app.models.enums import AvailabilityStatus, SkillLevel
-from app.permissions import (
-    ViewMode,
-    can_see_confidential_project,
-    is_record_visible,
-    visible_fields,
-)
-from app.policy import can_see_direct_reports
-from app.query_compiler import enforced_person_ref
+from app.permissions import ViewMode, can_see_confidential_project
+from app.policy import can_see_direct_reports, compute_visible_fields, enforce, excluded_by_obligations
+from app.query_compiler import apply_filter, enforced_person_ref
+from app.query_plan import PeopleQuery
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
@@ -347,25 +356,6 @@ def find_people(
     # cap on regardless of retrieval path — see the cap comment below.
     is_ranked_query = bool(effective_query and effective_query.strip())
 
-    candidates: list[Employee] | None = None
-    if exact_match_ids is None and is_ranked_query:
-        ranked_ids = search_people(
-            name=effective_query, skill=resolved_skill.name if resolved_skill else None,
-            level=parsed_level.value if parsed_level else None,
-            org_unit=org_unit_names, office=resolved_office,
-            language=resolved_lang.name if resolved_lang else None, available=available,
-            # A small buffer over the tight cap below, to absorb
-            # record-level filtering losses -- this branch is only ever
-            # reached when is_ranked_query is True (a pure filter combo
-            # never calls Search at all now), so there's no "wide headroom"
-            # case left to size for here.
-            top=MAX_SEARCH_RESULTS * 4,
-        )
-        if ranked_ids is not None:
-            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
-            by_id = {e.id: e for e in rows}
-            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
-
     # A result is only relevance-ranked — and therefore only trustworthy
     # under a tight cutoff — when there was actual free text for Search to
     # rank against (`effective_query`), or an exact-identifier short-circuit
@@ -374,7 +364,39 @@ def find_people(
     # above), so it always lands on the wide SQL-fallback cap below via
     # this same used_search=False path — RC3 (ARCHITECTURE_2.md §2) is now
     # structurally impossible for this case, not just capped correctly.
+    # Computed before retrieval now (not after) so both branches can apply
+    # it directly at the query level instead of over-fetching and slicing.
     used_search = is_ranked_query or exact_match_ids is not None
+    effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
+
+    # Row-level policy decision, computed once. Only `required_filters` is
+    # used here -- enforce()'s own cap logic (app/policy.py's _max_rows) has
+    # no concept of "this is a relevance-ranked query" and would always
+    # resolve to the wide DEFAULT_LIMIT, silently discarding the tight
+    # MAX_SEARCH_RESULTS cutoff above for ranked results. `select=["id"]` is
+    # arbitrary -- PersonSummary's SUMMARY_FIELDS need no per-record
+    # redaction (see the comment below), so dropped_fields is never
+    # consulted here, only required_filters.
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+
+    candidates: list[Employee] | None = None
+    if exact_match_ids is None and is_ranked_query:
+        ranked_ids = search_people(
+            name=effective_query, skill=resolved_skill.name if resolved_skill else None,
+            level=parsed_level.value if parsed_level else None,
+            org_unit=org_unit_names, office=resolved_office,
+            language=resolved_lang.name if resolved_lang else None, available=available,
+            required_filters=decision.required_filters,
+            # No overfetch margin needed anymore -- the restricted-employee
+            # obligation is now excluded at the index-filter level (above),
+            # not post-filtered in Python, so there's nothing left for a
+            # tighter-than-requested result to need headroom against.
+            top=MAX_SEARCH_RESULTS,
+        )
+        if ranked_ids is not None:
+            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
+            by_id = {e.id: e for e in rows}
+            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active == True)
@@ -406,23 +428,30 @@ def find_people(
         if resolved_lang:
             lang_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_lang.id)
             stmt = stmt.where(Employee.id.in_(lang_subq))
+        for f in decision.required_filters:
+            stmt = apply_filter(db, stmt, f)
 
-        stmt = stmt.order_by(Employee.full_name)
+        stmt = stmt.order_by(Employee.full_name).limit(effective_cap)
         candidates = db.execute(stmt).scalars().all()
 
-    # 2. filter records
-    visible_records = [e for e in candidates if is_record_visible(caller, e, view_mode)]
-
+    # 2. filter records — no longer a Python post-filter: both branches
+    # above already exclude restricted employees at the query level (the
+    # OData filter for Search, the WHERE clause for SQL), so `candidates`
+    # is already policy-filtered. is_record_visible is not called anywhere
+    # in this function anymore.
+    #
     # 3. filter fields / 4. department check — PersonSummary only ever
     # carries SUMMARY_FIELDS, which is a subset of BASE_FIELDS visible to
     # every role with no ABAC/department gating. Per-record field filtering
     # is therefore provably a no-op for this shape; full RBAC/ABAC/
     # department filtering happens in get_person's detail view instead.
-
-    # 5. cap results — tight relevance cutoff for ranked Search results,
-    # the wider bulk-extraction ceiling for plain filter/browse queries.
-    effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
-    capped = visible_records[:effective_cap]
+    #
+    # 5. cap results — tight relevance cutoff for ranked Search results, the
+    # wider bulk-extraction ceiling for plain filter/browse queries. Also
+    # already applied at the query level above (top=/`.limit()`); this slice
+    # is now just a defensive backstop, never expected to actually trim
+    # anything.
+    capped = candidates[:effective_cap]
 
     # A `name` search that resolves unambiguously to exactly one EXACT
     # full/preferred-name match can answer a relationship question ("who
@@ -476,14 +505,16 @@ def find_people(
             # direct_reports: downward chain, manager/hr only — same shared
             # gate as get_org_chain's "down" direction (app.policy's
             # can_see_direct_reports, consolidated from two independently
-            # -written inline checks that had already drifted), same
-            # per-record is_record_visible filter as its downward traversal.
+            # -written inline checks that had already drifted). The
+            # restricted-employee obligation is pushed into this one-hop
+            # query directly via apply_filter, same as the main retrieval
+            # above, instead of a post-hoc is_record_visible Python filter.
             if can_see_direct_reports(caller.role, view_mode):
-                reports = db.execute(
-                    select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
-                ).scalars().all()
-                visible_reports = [r for r in reports if is_record_visible(caller, r, view_mode)]
-                kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in visible_reports]
+                reports_stmt = select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
+                for f in decision.required_filters:
+                    reports_stmt = apply_filter(db, reports_stmt, f)
+                reports = db.execute(reports_stmt).scalars().all()
+                kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in reports]
                 fields_returned.add("direct_reports")
         results.append(PersonSummary(**kwargs))
 
@@ -516,11 +547,16 @@ def get_person(
 
         # 2. filter records — identical response (None -> 404) whether the
         # id doesn't exist or the record is record-level restricted.
-        if not is_record_visible(caller, target, view_mode):
+        # required_filters doesn't depend on `select`, so this lightweight
+        # decision and compute_visible_fields' own (differently-shaped)
+        # internal one always agree on required_filters -- two enforce()
+        # calls, but a pure, cheap function, not a second DB round trip.
+        decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+        if excluded_by_obligations(decision, target):
             return None
 
         # 3. filter fields (RBAC + ABAC) / 4. department check
-        fields = visible_fields(db, caller, target, view_mode)
+        fields = compute_visible_fields(db, caller, target, view_mode)
         fields_returned = fields
         found = True
 
@@ -551,7 +587,7 @@ def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: 
     # It didn't until the hook existed — an edited About was invisible to
     # search until the next manual full rebuild.
     reindex_employee(db, target)
-    fields = visible_fields(db, caller, target)
+    fields = compute_visible_fields(db, caller, target)
     result = _build_detail(db, caller, target, fields)
     _write_audit(db, caller, "update_own_bio", f"person_id={person_id}", 1, fields)
     return result
