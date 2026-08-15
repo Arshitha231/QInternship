@@ -21,11 +21,20 @@ from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
-from app.models import AuditLog, Employee, OrgUnit
+from app.models import AuditLog, Employee, OrgUnit, EmployeeProject, Project, EmployeeSkill, Skill
 from app.people import MAX_RESULTS
-from app.permissions import is_record_visible
+from app.permissions import is_record_visible, can_see_confidential_project
 from app.query_compiler import enforced_person_ref
-from app.schemas import OrgChainNode
+from app.schemas import (
+    OrgChainNode, 
+    PersonRef, 
+    TeamGraphResponse, 
+    TeamProjectOut, 
+    TeammateOut, 
+    SkillGraphResponse, 
+    SkillNodeOut, 
+    SkillConnectionOut
+)
 
 # The recursive CTE always stops here, no matter what depth is requested or
 # how malformed the manager_id data is — this IS the cycle guard. A tight
@@ -237,3 +246,133 @@ def get_org_chain(
         # fully populated; the audit trail always knows the truth.
         _write_audit(db, caller, f"person_id={person_id};direction={direction};depth={depth}", len(result))
     # 6. respond (via the returns above)
+def get_team_graph(
+    db: Session,
+    caller: AuthenticatedUser,
+    person_id: str
+) -> TeamGraphResponse | None:
+    projects_out = []
+    teammates_out = []
+    
+    try:
+        # 1. Retrieve & verify root person visibility
+        root = db.get(Employee, person_id)
+        if root is None or not root.is_active or not is_record_visible(caller, root):
+            return None
+
+        # 2. Find their active projects (SQLAlchemy 2.0 syntax)
+        my_eps = db.execute(
+            select(EmployeeProject)
+            .where(
+                EmployeeProject.employee_id == person_id,
+                EmployeeProject.end_date.is_(None)
+            )
+        ).scalars().all()
+        
+        seen_teammates_for_project = set()
+
+        for ep in my_eps:
+            proj = db.get(Project, ep.project_id)
+            if not proj:
+                continue
+                
+            # SECURITY CHECK: Hide confidential project edges from non-members
+            if proj.classification == "confidential" and not can_see_confidential_project(db, caller, proj.id):
+                continue
+                
+            projects_out.append(
+                TeamProjectOut(id=proj.id, name=proj.name, classification=proj.classification)
+            )
+
+            # 3. Find other active members on this specific project
+            peers = db.execute(
+                select(EmployeeProject)
+                .where(
+                    EmployeeProject.project_id == proj.id,
+                    EmployeeProject.employee_id != person_id,
+                    EmployeeProject.end_date.is_(None)
+                )
+            ).scalars().all()
+
+            for peer_ep in peers:
+                peer = db.get(Employee, peer_ep.employee_id)
+                # Apply standard visibility rules to the peer
+                if peer and peer.is_active and is_record_visible(caller, peer):
+                    cache_key = f"{proj.id}-{peer.id}"
+                    if cache_key not in seen_teammates_for_project:
+                        seen_teammates_for_project.add(cache_key)
+                        
+                        delegate = enforced_person_ref(db, caller, peer.delegate_id) if peer.delegate_id else None
+                        
+                        peer_node = OrgChainNode(
+                            id=peer.id, 
+                            full_name=peer.full_name, 
+                            job_title=peer.job_title,
+                            org_unit=_org_unit_name(db, peer.org_unit_id), 
+                            depth=1,  # 1 hop away via the project
+                            availability_status=peer.availability_status.value, 
+                            delegate=delegate,
+                            has_reports=False
+                        )
+                        
+                        teammates_out.append(TeammateOut(project_id=proj.id, person=peer_node))
+
+        # 4. Cap results to prevent bulk extraction
+        teammates_out = teammates_out[:MAX_RESULTS]
+        return TeamGraphResponse(projects=projects_out, teammates=teammates_out)
+        
+    finally:
+        # 5. Write to audit_log — happens whether visible, role-denied, or populated
+        _write_audit(db, caller, f"action=get_team_graph;person_id={person_id}", len(teammates_out))
+
+
+def get_skills_graph(
+    db: Session,
+    caller: AuthenticatedUser,
+    skill_id: int
+) -> SkillGraphResponse | None:
+    connections_out = []
+    
+    try:
+        # 1. Retrieve the skill
+        skill = db.get(Skill, skill_id)
+        if not skill:
+            return None
+
+        skill_out = SkillNodeOut(skill_name=skill.name, category=skill.category)
+
+        # 2. Find all active employees with this skill
+        holders = db.execute(
+            select(EmployeeSkill).where(EmployeeSkill.skill_id == skill_id)
+        ).scalars().all()
+
+        for es in holders:
+            emp = db.get(Employee, es.employee_id)
+            
+            # Standard visibility filter applied before returning the node
+            if emp and emp.is_active and is_record_visible(caller, emp):
+                
+                # Apply Phase 3 Round 2 security check for delegates
+                delegate = enforced_person_ref(db, caller, emp.delegate_id) if emp.delegate_id else None
+                        
+                node = OrgChainNode(
+                    id=emp.id,
+                    full_name=emp.full_name,
+                    job_title=emp.job_title,
+                    org_unit=_org_unit_name(db, emp.org_unit_id),
+                    depth=1, # 1 hop away from the central skill node
+                    availability_status=emp.availability_status.value,
+                    delegate=delegate,
+                    has_reports=False
+                )
+                connections_out.append(
+                    SkillConnectionOut(person=node, proficiency=es.proficiency, source=es.source)
+                )
+
+        # 3. Cap results
+        connections_out = connections_out[:MAX_RESULTS]
+        return SkillGraphResponse(skill=skill_out, connections=connections_out)
+        
+    finally:
+        # 4. Write audit log
+        _write_audit(db, caller, f"action=get_skills_graph;skill_id={skill_id}", len(connections_out))
