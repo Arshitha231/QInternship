@@ -285,6 +285,44 @@ class CorrectProposalRequest(BaseModel):
     instruction: str = Field(max_length=2000)
 
 
+class EditProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The reviewer's own value, committed as-is — not sent through the
+    # model at all (that's what /correct is for). Shape depends on the
+    # proposal's change_type (e.g. {"skill": "..."} vs
+    # {"project": "...", "contribution": "..."}), which is why this is a
+    # bare object rather than a typed model: the wire contract is "same
+    # keys as GET /proposed_changes' proposed_value for this row."
+    edited_value: dict = Field(min_length=1)
+
+
+class ResolveSubjectRequest(BaseModel):
+    """Body of POST /doc_subject_matches/{id}/resolve — exactly one of
+    employee_id or new_hire, enforced in app.proposals.resolve_subject
+    rather than here, so the same validation applies to every caller of
+    that function, not just this route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str | None = None
+    new_hire: bool = False
+
+
+class BulkProposalRequest(BaseModel):
+    """Body shared by /proposed_changes/bulk_accept and .../bulk_reject.
+    Exactly one selector — an explicit id list, or a doc_id/employee_id
+    filter — is required; app.proposals._bulk_targets is where that's
+    actually enforced, so a future third caller (a scheduled sweep, say)
+    gets the same rule for free."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] | None = None
+    doc_id: int | None = None
+    employee_id: str | None = None
+
+
 class SkillScarcityItem(BaseModel):
     """One entry in a skill_scarcity result — same shape whether it's a
     lookup for one named skill or the org-wide scarcest-skills scan."""

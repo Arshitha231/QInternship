@@ -118,18 +118,59 @@ def display_status(status: CourseStatus) -> CourseDisplayStatus:
     )
 
 
-class ProposedFieldType(str, enum.Enum):
-    """What a proposed change is proposing to add.
+class DocumentType(str, enum.Enum):
+    """What kind of document was uploaded, decided by the pipeline's first
+    step before any extraction runs. Everything downstream — which typed
+    function the model is offered, which change_types get produced — is
+    conditioned on this one classification."""
 
-    Deliberately narrow. The extraction step may only propose the two kinds
-    of thing a status document actually evidences — that someone worked on
-    something, and that they picked something up doing it. It cannot propose
-    a salary, a title, or a manager, because a document saying so is not
-    evidence that it's true.
+    project_doc = "project_doc"
+    resume = "resume"
+
+
+class ChangeType(str, enum.Enum):
+    """What a proposed_changes row is proposing to add, at the granularity
+    of one editable field on one target — never a bundle.
+
+    Deliberately narrow, same reasoning this enum's predecessor
+    (ProposedFieldType) carried: the extraction step may only propose kinds
+    of thing a document actually evidences. It cannot propose a salary, a
+    title, or a manager, because a document saying so is not evidence that
+    it's true.
+
+      skill           an EmployeeSkill row (new or, on accept, a no-op if
+                       the person already holds it — never downgraded)
+      contribution    EmployeeProject.contribution — the prose describing
+                       what this person did on a project, distinct from...
+      project_entry   ...the EmployeeProject membership itself (which
+                       project, what role, when) — split apart from
+                       contribution so a reviewer can accept "they were on
+                       this project" while rejecting a contribution
+                       sentence that overreached, or vice versa
     """
 
-    project = "project"
     skill = "skill"
+    contribution = "contribution"
+    project_entry = "project_entry"
+
+
+class ResolutionStatus(str, enum.Enum):
+    """doc_subject_matches.resolution_status — the disambiguation step's
+    own state, independent of whether any proposed_changes row attached to
+    it has been reviewed yet.
+
+    new_hire_candidate is not a form of "resolved": it means a human looked
+    at the candidate list and confirmed nobody plausible exists, which is
+    the case that should get flagged to HR to create the employee record
+    first. It is its own terminal state, not resolved with a null
+    resolved_employee_id — a null employee_id could otherwise be
+    misread as "hasn't been looked at yet" instead of "looked at, and the
+    answer is nobody."
+    """
+
+    unresolved = "unresolved"
+    resolved = "resolved"
+    new_hire_candidate = "new_hire_candidate"
 
 
 class ProposedChangeStatus(str, enum.Enum):

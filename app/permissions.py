@@ -153,8 +153,19 @@ EDITABLE: dict[tuple[str, str], set[str]] = {
         "salary", "salary_currency", "date_of_birth", "hire_date", "cost_centre",
         "employment_type",
     },
-    # IT does project descriptions, and only project descriptions.
-    ("it", "work"): set(PROJECT_DESC_FIELDS),
+    # IT's write surface: project descriptions (PUT/DELETE
+    # /projects/{id}/description) plus, as of the doc-review pipeline, the
+    # three field kinds that pipeline can propose — "skills" gates writing
+    # an EmployeeSkill row, "contribution" gates EmployeeProject.contribution
+    # (the prose), "project_entry" gates the EmployeeProject membership
+    # itself (which project, what role, when). Three separate names, not one
+    # umbrella "review_pipeline" field, so a future narrowing (e.g. IT loses
+    # skill-writing but keeps project descriptions) is a one-line change here
+    # instead of a new carve-out. app.proposals.accept()/bulk_accept() check
+    # this per change_type, the same can_edit() every other write path uses
+    # — there is no separate, hardcoded "role == it" gate anywhere in the
+    # review pipeline; this table is the only place that decision is made.
+    ("it", "work"): set(PROJECT_DESC_FIELDS) | {"skills", "contribution", "project_entry"},
 }
 
 # Department-sensitive fields ("Engineering does not see Finance-sensitive

@@ -4,20 +4,25 @@ from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.enums import ProposedChangeStatus, ProposedFieldType
+from app.models.enums import ChangeType, ProposedChangeStatus
 
 
 class ProposedChange(Base):
-    """A staging row: something the extraction step believes a document says,
-    waiting for a human to agree.
+    """A staging row: one single field-level change the extraction step
+    believes a document supports, waiting for a human to agree.
 
-    This table is the whole point of the extraction feature. The model never
-    writes to EmployeeProject or EmployeeSkill — it emits a typed call, that
-    call lands here as `pending`, and only an IT reviewer's explicit accept
-    moves content into the real tables (see app/proposals.py). Nothing here
-    is searchable or indexed until that happens, which is what makes a wrong
-    guess about who "Priya" is a review problem rather than a data-integrity
-    one.
+    One row per SKILL, per CONTRIBUTION line, per PROJECT ENTRY — never one
+    row per employee or per document. That granularity is what makes
+    per-field accept/edit/reject possible: a reviewer can accept that
+    someone joined a project while rejecting an overreaching contribution
+    sentence about it, without an all-or-nothing bundle forcing the choice.
+
+    The model never writes to EmployeeProject or EmployeeSkill — it emits a
+    typed call, that call lands here as `pending`, and only an IT
+    reviewer's explicit accept moves content into the real tables (see
+    app/proposals.py). Nothing here is searchable or indexed until that
+    happens, which is what makes a wrong guess about who "Priya" is a
+    review problem rather than a data-integrity one.
     """
 
     __tablename__ = "proposed_changes"
@@ -33,31 +38,42 @@ class ProposedChange(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
-    # Nullable until resolved: name resolution genuinely fails sometimes,
-    # and the directory deliberately contains two people called "Priya
-    # Sharma" so that it does. An unresolved row is a real, reviewable
-    # outcome — it surfaces in the review UI as "who is this?" — and is
-    # strictly better than guessing between two candidates and being right
-    # half the time.
+    # Nullable until the row's doc_subject_matches entry is resolved by a
+    # human — see subject_match_id below. This is the field the rest of the
+    # app (search, profile reads, reindexing) keys on to decide whether a
+    # row belongs to anyone at all; it is never set by the extraction step
+    # itself, only by app.proposals.resolve_subject / reassign.
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+
+    # Every field-level proposal traces back to the person it's ABOUT, not
+    # just the document it came from — extraction attaches rows here at
+    # creation time, before anyone knows which employee_id (if any) that
+    # resolves to. Nullable only for schema symmetry; in practice every row
+    # the pipeline creates has one, immediately. The doc_subject_matches row
+    # is what employee_id gets copied from the moment a human resolves it —
+    # see app.proposals.resolve_subject.
+    subject_match_id: Mapped[int | None] = mapped_column(
+        ForeignKey("doc_subject_matches.id"), nullable=True
+    )
 
     source_doc_id: Mapped[int] = mapped_column(ForeignKey("uploaded_docs.id"), nullable=False)
 
-    field_type: Mapped[ProposedFieldType] = mapped_column(
-        Enum(ProposedFieldType, native_enum=False, validate_strings=True), nullable=False
+    change_type: Mapped[ChangeType] = mapped_column(
+        Enum(ChangeType, native_enum=False, validate_strings=True), nullable=False
     )
 
     # Both JSON-encoded into Text, matching AuditLog.fields_returned's
     # precedent — neither SQLite nor Azure SQL has a portable native JSON
     # column type, and this project targets both.
     #
-    # raw_extraction is what the model emitted, verbatim and never rewritten;
-    # proposed_content is what would actually be committed, and IS rewritten
-    # by /correct and /reassign. Keeping both means a reviewer can always see
-    # what the document was read as, separately from what the humans turned
-    # it into.
-    raw_extraction: Mapped[str] = mapped_column(Text, nullable=False)
-    proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
+    # proposed_value is what would actually be committed on accept, and IS
+    # rewritten by /edit and /reassign. original_value is a snapshot of the
+    # CURRENT real value at extraction time (null for a field that doesn't
+    # exist yet, e.g. a skill the person doesn't hold) — it exists purely so
+    # the review screen can render a diff without a second query racing the
+    # real row, which could have changed since extraction ran.
+    proposed_value: Mapped[str] = mapped_column(Text, nullable=False)
+    original_value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # The extraction step's own confidence, 0.0-1.0. Advisory only: it sorts
     # the review queue, and nothing anywhere auto-accepts above a threshold.
@@ -77,3 +93,4 @@ class ProposedChange(Base):
 
     employee = relationship("Employee")
     source_doc = relationship("UploadedDoc")
+    subject_match = relationship("DocSubjectMatch", back_populates="proposed_changes")
