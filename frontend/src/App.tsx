@@ -265,7 +265,7 @@ export default function App() {
             }}
           />
         ) : identity.role === "hr" ? (
-          <ContinuityPage identity={identity} />
+          <ContinuityPage identity={identity} viewMode={viewMode} />
         ) : null}
       </main>
     </div>
