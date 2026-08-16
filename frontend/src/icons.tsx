@@ -38,6 +38,9 @@ export const Mail = ({ size = 16, className }: IconProps) => (
 export const Slack = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><rect x="10" y="3" width="4" height="10" rx="2" /><rect x="3" y="10" width="10" height="4" rx="2" /><rect x="10" y="11" width="4" height="10" rx="2" /><rect x="11" y="10" width="10" height="4" rx="2" /></svg>
 );
+export const LinkIcon = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+);
 export const Phone = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92Z" /></svg>
 );
@@ -85,4 +88,10 @@ export const AlertCircle = ({ size = 14, className }: IconProps) => (
 );
 export const Network = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><circle cx="12" cy="5" r="2.5" /><circle cx="5" cy="19" r="2.5" /><circle cx="19" cy="19" r="2.5" /><path d="M12 7.5v4M12 11.5 6.5 17M12 11.5 17.5 17" /></svg>
+);
+export const Sun = ({ size = 17, className }: IconProps) => (
+  <svg {...base(size)} className={className}><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+);
+export const Moon = ({ size = 17, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" /></svg>
 );
