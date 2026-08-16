@@ -199,6 +199,14 @@ class ProblemExpert(BaseModel):
     ("semantic+keyword" / "keyword"), so a keyword-only answer — which is
     what happens before the corpus has been embedded — is never presented
     as a semantic match.
+
+    `excerpt` is a sentence lifted verbatim from the matched project's own
+    `description` — selected (by keyword overlap or embedding similarity),
+    never generated — explaining why THAT project matched the described
+    problem, as distinct from `reason`'s explanation of this PERSON's link
+    to it. None when the project has no description, or nothing in it
+    stood out from the query. See app/project_search.py's
+    `_project_excerpts` for the selection logic.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -214,6 +222,7 @@ class ProblemExpert(BaseModel):
     current: bool
     reason: str
     retrieval: str
+    excerpt: str | None = None
 
 
 class SkillGapItem(BaseModel):

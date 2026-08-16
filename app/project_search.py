@@ -293,6 +293,25 @@ def _words(text: str) -> list[str]:
     return [w for w in re.split(r"[^a-z0-9+#.]+", text.lower()) if w]
 
 
+def _keyword_terms(db: Session, query_text: str) -> list[str]:
+    """The distinctive query words the keyword arm actually ranks on --
+    factored out of _keyword_ranking() so the relevance-excerpt picker
+    (below) uses this exact filtering, not a second copy that could drift
+    from what the ranking itself did.
+    """
+    candidates = [w for w in dict.fromkeys(_words(query_text)) if w not in _STOPWORDS and len(w) > 1]
+    if not candidates:
+        return []
+
+    projects = embeddable_projects(db)
+    if not projects:
+        return []
+
+    haystacks = {p.id: f"{p.name} {p.description or ''}".lower() for p in projects}
+    ceiling = max(1, int(len(projects) * MAX_DOCUMENT_FREQUENCY))
+    return [w for w in candidates if sum(1 for hay in haystacks.values() if w in hay) <= ceiling]
+
+
 def _keyword_ranking(db: Session, query_text: str) -> list[int]:
     """Project ids whose name or description contains distinctive words from
     the query, ranked by how many distinct words hit.
@@ -306,8 +325,8 @@ def _keyword_ranking(db: Session, query_text: str) -> list[int]:
     that appear everywhere is worse than no ranking at all, because RRF then
     fuses real signal with noise.
     """
-    candidates = [w for w in dict.fromkeys(_words(query_text)) if w not in _STOPWORDS and len(w) > 1]
-    if not candidates:
+    words = _keyword_terms(db, query_text)
+    if not words:
         return []
 
     projects = embeddable_projects(db)
@@ -315,14 +334,6 @@ def _keyword_ranking(db: Session, query_text: str) -> list[int]:
         return []
 
     haystacks = {p.id: f"{p.name} {p.description or ''}".lower() for p in projects}
-    ceiling = max(1, int(len(projects) * MAX_DOCUMENT_FREQUENCY))
-    words = [
-        w for w in candidates
-        if sum(1 for hay in haystacks.values() if w in hay) <= ceiling
-    ]
-    if not words:
-        return []
-
     scored: list[tuple[int, int]] = []
     for project in projects:
         hits = sum(1 for w in words if w in haystacks[project.id])
@@ -366,23 +377,34 @@ def rank_projects(db: Session, query_text: str) -> tuple[list[int], str]:
 
 # --- The project -> employee hop ------------------------------------------
 
-def _assignment_rank(assignment: EmployeeProject, today: date) -> tuple[int, int, int]:
+def _assignment_rank(assignment: EmployeeProject, today: date, is_owner: bool) -> tuple[int, int, int, int]:
     """Sort key for one person's link to one matched project, best first.
 
-    Ordering, in priority order: currently assigned beats finished; a
-    leading role beats a contributing one; more recent involvement beats
-    older. A person who finished a two-week stint three years ago is real
-    evidence but weak evidence, and shouldn't outrank the current tech
-    lead just because their project scored marginally higher.
+    Ordering, in priority order: currently assigned beats finished; the
+    project's real owner (Project.owner_id) beats everyone else; a role
+    matching _LEAD_ROLES beats an ordinary contributor; more recent
+    involvement beats older. A person who finished a two-week stint three
+    years ago is real evidence but weak evidence, and shouldn't outrank
+    the current tech lead just because their project scored marginally
+    higher.
+
+    owner_id is a real FK, checked ahead of _LEAD_ROLES rather than folded
+    into it: a genuine owner whose free-text role happens to read "Backend
+    Engineer" (never in _LEAD_ROLES) must still outrank a non-owner whose
+    role string happens to say "Tech Lead" — the structural field is the
+    primary signal, the free-text match is a fallback for everyone else,
+    same "structural field over free-text" reasoning already applied to
+    confidential-project membership.
     """
     current = 0 if assignment.end_date is None else 1
+    owner_tier = 0 if is_owner else 1
     role = (assignment.role or "").strip().lower()
     lead = 0 if role in _LEAD_ROLES else 1
     if assignment.end_date is None:
         recency = 0
     else:
         recency = max(0, (today - assignment.end_date).days)
-    return (current, lead, recency)
+    return (current, owner_tier, lead, recency)
 
 
 def _reason(project: Project, assignment: EmployeeProject) -> str:
@@ -392,6 +414,88 @@ def _reason(project: Project, assignment: EmployeeProject) -> str:
     tense = "works on" if assignment.end_date is None else "worked on"
     role = (assignment.role or "").strip() or "a team member"
     return f"{tense} {project.name} as {role}"
+
+
+# --- Relevance excerpt: which part of the description actually matched ----
+#
+# _reason() above says what a PERSON's record shows. This says why the
+# PROJECT matched the described problem -- and it's a selection, not a
+# generation: the sentence returned always comes verbatim from that
+# project's own `description` column. Nothing here can put words in
+# anyone's mouth, because nothing here writes words; it only picks which
+# existing ones to surface. The embedding call this uses (when available)
+# is the same category of call _semantic_ranking() already makes -- a
+# similarity score choosing among real options, not a completion producing
+# new text -- so this doesn't cross the line the rest of this module was
+# built to not cross (see the module docstring).
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """A plain regex splitter, not a sentence-boundary library -- these are
+    2-4 sentence project descriptions, not arbitrary prose, so the
+    occasional false split on an abbreviation costs nothing worth adding a
+    dependency to avoid."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    return [s.strip() for s in _SENTENCE_SPLIT.split(text) if s.strip()]
+
+
+def _best_keyword_sentence(sentences: list[str], words: list[str]) -> str | None:
+    """The sentence containing the most surviving keyword-arm terms --
+    reuses _keyword_terms()'s own filtering, never a separate word list."""
+    scored = [(sum(1 for w in words if w in s.lower()), s) for s in sentences]
+    scored = [(hits, s) for hits, s in scored if hits > 0]
+    if not scored:
+        return None
+    scored.sort(key=lambda hs: -hs[0])
+    return scored[0][1]
+
+
+def _project_excerpts(db: Session, problem: str, projects: list[Project]) -> dict[int, str | None]:
+    """One relevant sentence per project, chosen (not written) by whichever
+    signal is available.
+
+    Prefers the embedding-similarity pick when embeddings are configured:
+    it survives paraphrase ("Fabric migration" matching a sentence that
+    never uses those words), which the keyword pick structurally cannot.
+    One batched call covers every candidate project's sentences plus the
+    query itself -- not one call per project -- so a 5-project result
+    costs the same single round trip a 1-project result does.
+
+    Falls back to the keyword arm's own matched terms when embeddings are
+    unconfigured or the call fails -- same degrade-not-fail contract as
+    every other embedding use in this module -- so a keyword-only search
+    still gets an excerpt instead of a silently blank field.
+    """
+    sentences_by_project = {p.id: _split_sentences(p.description or "") for p in projects}
+    excerpts: dict[int, str | None] = {p.id: None for p in projects}
+
+    flat_sentences: list[str] = []
+    owners: list[int] = []
+    for pid, sentences in sentences_by_project.items():
+        for s in sentences:
+            flat_sentences.append(s)
+            owners.append(pid)
+
+    vectors = embed_texts([problem] + flat_sentences) if flat_sentences else None
+    if vectors is not None:
+        query_vector = _normalise(vectors[0])
+        scored_by_project: dict[int, list[tuple[float, str]]] = {}
+        for pid, sentence, vector in zip(owners, flat_sentences, vectors[1:]):
+            scored_by_project.setdefault(pid, []).append((_dot(query_vector, _normalise(vector)), sentence))
+        for pid, scored in scored_by_project.items():
+            scored.sort(key=lambda vs: -vs[0])
+            excerpts[pid] = scored[0][1]
+        return excerpts
+
+    words = _keyword_terms(db, problem)
+    if words:
+        for pid, sentences in sentences_by_project.items():
+            excerpts[pid] = _best_keyword_sentence(sentences, words)
+    return excerpts
 
 
 def find_experts(
@@ -413,6 +517,22 @@ def find_experts(
             return results
 
         today = date.today()
+
+        # One relevant sentence per matched, visible project -- computed
+        # once here (one batched embedding call for everything, when
+        # available) rather than once per person, since the excerpt
+        # explains the PROJECT's match, not any individual's involvement.
+        visible_projects: list[Project] = []
+        for project_id in project_ids:
+            project = db.get(Project, project_id)
+            if project is None:
+                continue
+            if (project.classification == ProjectClassification.confidential
+                    and not can_see_confidential_project(db, caller, project.id)):
+                continue
+            visible_projects.append(project)
+        excerpts = _project_excerpts(db, text, visible_projects)
+
         # Best (project, assignment) per person, keyed by employee id, held
         # as (project_position, assignment_rank, project, assignment).
         #
@@ -448,7 +568,7 @@ def find_experts(
                     continue
                 if not is_record_visible(caller, employee, view_mode):
                     continue
-                key = _assignment_rank(assignment, today)
+                key = _assignment_rank(assignment, today, assignment.employee_id == project.owner_id)
                 candidate = (position, key, project, assignment)
                 current = best.get(employee.id)
                 # Someone on several matched projects is shown against the
@@ -472,6 +592,7 @@ def find_experts(
                 current=assignment.end_date is None,
                 reason=_reason(project, assignment),
                 retrieval=retrieval_mode,
+                excerpt=excerpts.get(project.id),
             ))
         return results
     finally:
