@@ -160,7 +160,15 @@ export default function App() {
         onQueryChange={setQuery}
         identity={identity}
         viewMode={viewMode}
-        onViewModeChange={setViewMode}
+        onViewModeChange={(next) => {
+          setViewMode(next);
+          // Review is IT's WORK-mode surface specifically (it edits real
+          // records) -- it doesn't exist in employee mode, same as
+          // Continuity doesn't exist for a non-hr identity. If it was open
+          // when the toggle switched away from work mode, there'd be no tab
+          // left to click back out of it.
+          if (next !== "work" && mode === "review") setMode("profile");
+        }}
         onIdentityChange={(next) => {
           setIdentity(next);
           setGraphFocusId(next.id);
@@ -222,7 +230,7 @@ export default function App() {
             Continuity
           </button>
         )}
-        {identity.role === "it" && (
+        {identity.role === "it" && viewMode === "work" && (
           <button
             role="tab"
             aria-selected={mode === "review"}
@@ -282,7 +290,7 @@ export default function App() {
           />
         ) : mode === "continuity" && identity.role === "hr" ? (
           <ContinuityPage identity={identity} viewMode={viewMode} />
-        ) : mode === "review" && identity.role === "it" ? (
+        ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
           <ReviewPage identity={identity} viewMode={viewMode} />
         ) : null}
       </main>
