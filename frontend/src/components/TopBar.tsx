@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, SearchIcon, X } from "../icons";
+import { ChevronDown, Moon, SearchIcon, Sun, X } from "../icons";
 import type { Identity, ViewMode } from "../types";
 import { WORK_MODE_ROLES } from "../types";
 import { DEV_IDENTITIES } from "../identities";
 import { NotificationBell } from "./NotificationBell";
+import { useTheme } from "../hooks";
 
 interface Props {
   query: string;
@@ -20,6 +21,7 @@ export function TopBar({
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [theme, toggleTheme] = useTheme();
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -92,6 +94,16 @@ export function TopBar({
           ))}
         </div>
       )}
+
+      <button
+        type="button"
+        className="theme-toggle"
+        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        onClick={toggleTheme}
+      >
+        {theme === "dark" ? <Sun /> : <Moon />}
+      </button>
 
       <NotificationBell identity={identity} onOpenPerson={onOpenPerson} />
 

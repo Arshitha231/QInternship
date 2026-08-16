@@ -19,6 +19,25 @@
   color-scheme: light;
 }
 
+:root[data-theme="dark"] {
+  --purple: #8B7CF0;
+  --purple-hover: #A093F5;
+  --purple-100: #2A2555;
+  --purple-800: #C7BFF9;
+  --white: #202024;
+  --page: #151517;
+  --border: #33333A;
+  --ink: #ECECEE;
+  --muted: #9C9CA5;
+  --green-100: #123329;
+  --green-800: #5FD3A8;
+  --amber: #E5AE5C;
+  --amber-100: #362A12;
+  --red: #E68577;
+  --red-100: #3A1E1A;
+  color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body {
@@ -359,6 +378,14 @@ button { font: inherit; }
 }
 
 /* ---------- notification bell ---------- */
+/* ---------- theme toggle ---------- */
+.theme-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; border: 0; background: none;
+  color: var(--muted); cursor: pointer; flex-shrink: 0;
+}
+.theme-toggle:hover { background: var(--page); color: var(--ink); }
+
 .notif { position: relative; flex-shrink: 0; }
 .notif-btn {
   position: relative; display: flex; align-items: center; justify-content: center;
