@@ -52,7 +52,7 @@ from app.models import (
 from app.models.enums import AvailabilityStatus, SkillLevel
 from app.permissions import ViewMode, can_see_confidential_project
 from app.policy import can_see_direct_reports, compute_visible_fields, enforce, excluded_by_obligations
-from app.query_compiler import apply_filter, enforced_person_ref
+from app.query_compiler import apply_filter, compile_query, enforced_person_ref
 from app.query_plan import PeopleQuery
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
 from app.search_reindex import reindex_employee
@@ -528,6 +528,95 @@ def find_people(
 def _org_unit_name(db: Session, org_unit_id: int) -> str:
     unit = db.get(OrgUnit, org_unit_id)
     return unit.name if unit else ""
+
+
+def search_people_by_plan(
+    db: Session, caller: AuthenticatedUser, plan: PeopleQuery, view_mode: ViewMode = "work",
+) -> list[PersonSummary]:
+    """The model-emitted-PeopleQuery retrieval path (Piece 2) -- find_people's
+    named-parameter tool stays exactly as it is for the deterministic router
+    and the common cases; this is what the LLM fallback reaches for on a
+    request find_people's fixed parameters can't express ("Bangalore or
+    Singapore", "title contains Architect", any filter combination nobody
+    anticipated in advance). validate() -> snap() -> enforce() -> compile ->
+    respond, same pipeline shape as every other retrieval in this file, just
+    driven by a caller-constructed plan instead of named kwargs.
+
+    SQL only, deliberately -- app.query_plan.PeopleQuery's own docstring
+    already says it: "Deliberately cannot express free-text ranking...
+    reverted by mode 1". There's no query-text field anywhere on this
+    shape, so there is never anything for Azure Search to rank against
+    here, and find_people's own established rule is that a pure-filter
+    request with nothing to rank skips Search entirely regardless. A
+    Search-side compiler for this would have been dead code -- exactly the
+    non-goal ARCHITECTURE_2.md §16 already names.
+
+    validate()/enforce() failures raise ValueError, deliberately, so
+    execute_with_retry's existing bounded retry loop (app/tool_calling.py)
+    catches them for free -- no new retry mechanism needed. The two are
+    NOT given the same message treatment. validate()'s structural errors
+    (unknown field, illegal op, wrong value type) are safe to surface
+    verbatim -- they don't reveal anything about data sensitivity, only
+    about the plan's own legal shape. enforce()'s denial is different:
+    ARCHITECTURE_2.md §8's own rule is that "a denial must not reveal that
+    a restricted capability exists" (decision.reason is for the audit log,
+    never the caller), and _retry_after_execution_failure() feeds this
+    exception's message straight back to the model as part of the retry
+    prompt -- so a denial raises a generic message instead of
+    decision.reason, never naming the field it actually tripped on.
+
+    snap()'s unresolvable values (SnapNote.resolved is None) are NOT
+    treated as an error to retry -- retrying won't fix a value that
+    genuinely isn't in the database, same reasoning find_people's own
+    unresolvable skill/org_unit filters already follow (an empty result,
+    not an exception -- see tests/test_query_compiler.py's
+    test_unresolvable_*_returns_nothing_not_an_error). The unresolved value
+    is passed through as-is (snap() already does this substitution
+    internally), so compile_query() naturally returns zero rows for it.
+    The notes are folded into the audit query_text so they stay traceable;
+    a richer "did you mean X?" surfaced back to the caller is a real future
+    enhancement, not built in this pass.
+    """
+    # Local import: app.vocabulary imports app.org_chart (for
+    # FUZZY_MATCH_THRESHOLD), and app.org_chart imports app.people (for
+    # MAX_RESULTS) -- a module-level import here would be a real circular
+    # import. Same fix app.permissions.training_extra_fields already uses
+    # for the identical shape of cycle.
+    from app.vocabulary import snap, validate
+
+    validation = validate(plan)
+    if not validation.valid:
+        raise ValueError("; ".join(validation.errors))
+
+    snapped_plan, notes = snap(db, plan)
+
+    decision = enforce(snapped_plan, caller, view_mode)
+    if not decision.allow:
+        raise ValueError("that request can't be answered as asked")
+
+    stmt = compile_query(db, snapped_plan, decision)
+    ids = db.execute(stmt).scalars().all()
+    rows = db.execute(select(Employee).where(Employee.id.in_(ids))).scalars().all()
+    by_id = {e.id: e for e in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
+
+    results: list[PersonSummary] = [
+        PersonSummary(
+            id=e.id, full_name=e.full_name, preferred_name=e.preferred_name,
+            job_title=e.job_title, org_unit=_org_unit_name(db, e.org_unit_id),
+            office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
+            availability_status=e.availability_status.value,
+        )
+        for e in ordered
+    ]
+
+    query_text = plan.model_dump_json()
+    unresolved = "; ".join(f"{n.field}={n.original!r} unresolved" for n in notes if n.resolved is None)
+    if unresolved:
+        query_text = f"{query_text} [{unresolved}]"
+    _write_audit(db, caller, "search_people_by_plan", query_text, len(results), SUMMARY_FIELDS)
+
+    return results
 
 
 # ---------------------------------------------------------------------------

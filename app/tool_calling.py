@@ -28,6 +28,7 @@ import json
 import os
 import re
 from datetime import datetime
+from typing import get_args
 
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
@@ -38,8 +39,11 @@ from app.auth import AuthenticatedUser
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
 from app.org_chart import get_org_chain, resolve_person_name
-from app.people import find_people, find_related_language_speakers, get_person
+from app.people import find_people, find_related_language_speakers, get_person, search_people_by_plan
 from app.permissions import ViewMode
+from app.query_compiler import ORDERABLE_FIELDS
+from app.query_plan import Filter, Op, PeopleQuery
+from app.registry import REGISTRY
 
 load_dotenv()
 
@@ -59,6 +63,16 @@ CHAT_KEY = os.environ.get("CHAT_KEY", "")
 OPENAI_CHAT_DEPLOYMENT = os.environ.get("OPENAI_CHAT_DEPLOYMENT", "")
 
 OUT_OF_SCOPE_MESSAGE = "I can help with people, teams, skills and projects. For that one, try the HR portal."
+
+# search_people's `filters[].field` enum -- deliberately narrower than
+# REGISTRY.keys() (every field, including the ~16 that can never legally
+# appear in a Filter at all, per app.vocabulary.validate()). Restricting
+# the tool schema itself to just the fields a Filter could ever legally
+# name keeps the model's actual guessing space small, directly serving
+# "don't want a grammar so large the model can't reliably produce valid
+# plans" -- validate() still checks everything properly regardless; this
+# is about what the model is even offered, not a second enforcement layer.
+FILTERABLE_FIELDS = sorted(name for name, spec in REGISTRY.items() if spec.filterable)
 
 # ---------------------------------------------------------------------------
 # Tool schemas — the model's entire universe of possible actions.
@@ -179,13 +193,60 @@ TOOLS = [
             "additionalProperties": False,
         },
     }},
+    {"type": "function", "function": {
+        "name": "search_people",
+        "description": (
+            "Structured people search using an explicit filter list, for requests find_people's "
+            "fixed parameters can't express: multiple values for the SAME field ('Bangalore or "
+            "Singapore' -> office with op=in and both values), or a field find_people has no "
+            "parameter for (job_title contains 'Architect'). Prefer find_people whenever its own "
+            "parameters already cover the request — this is for what find_people can't say, not a "
+            "general replacement for it. Every filter in the list is AND'd together; there is no "
+            "way to OR different fields against each other."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "description": "AND'd together. Use op=\"in\" with multiple values for an OR across values of the SAME field.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string", "enum": FILTERABLE_FIELDS},
+                            "op": {"type": "string", "enum": list(get_args(Op))},
+                            "value": {
+                                "description": "A string for eq/ne/contains; a list of strings for in.",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "boolean"},
+                                ],
+                            },
+                        },
+                        "required": ["field", "op", "value"],
+                        "additionalProperties": False,
+                    },
+                },
+                "order_by": {"type": "string", "enum": sorted(ORDERABLE_FIELDS)},
+                "limit": {"type": "integer", "description": "Hint only, never widens the server-side cap."},
+            },
+            "required": ["filters"],
+            "additionalProperties": False,
+        },
+    }},
 ]
 
 SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadrant Technologies.
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
-get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity. Together they \
-cover people, teams, skills, and projects — nothing else.
+get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people. \
+Together they cover people, teams, skills, and projects — nothing else.
+
+Use search_people ONLY when find_people's own parameters genuinely cannot express the \
+request — multiple values for the same field ("Bangalore or Singapore"), or a field \
+find_people has no parameter for (job title). If find_people's parameters already cover the \
+request, use find_people; search_people is not a general replacement for it.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -276,6 +337,13 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
     ("find people on the cloud operations team who know AWS",
      "find_people", {"org_unit": "Cloud Operations Team", "skill": "AWS"}),
     ("anyone free right now who speaks french", "find_people", {"language": "French", "available": True}),
+    # search_people: only for what find_people's own fixed parameters can't
+    # say — a handful of examples to anchor the pattern, not exhaustive
+    # coverage (that's the point of a plan grammar over a fixed menu).
+    ("who's based in Bangalore or Singapore", "search_people",
+     {"filters": [{"field": "office", "op": "in", "value": ["Bangalore", "Singapore"]}]}),
+    ("find anyone with architect in their job title", "search_people",
+     {"filters": [{"field": "job_title", "op": "contains", "value": "Architect"}]}),
     # Out-of-scope / off-topic — no tool call, exact fallback wording.
     ("what's the weather like in Seattle today", None, None),
     ("can you tell me who's the worst performer on the team", None, None),
@@ -617,12 +685,25 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
-            # Measured, not stylistic: picking one of seven function names
+            # Measured, not stylistic: picking one of the function names
             # from a fixed schema is a classification problem, not one that
             # benefits from deliberation. Default reasoning effort spent
             # ~1150 tokens deliberating over that choice -- 20.7s vs 2.1s
             # for an identical routing decision, with zero difference in
             # which function got picked. See ARCHITECTURE_2.md §6/RC1.
+            #
+            # search_people (Piece 2) makes this one call responsible for
+            # something harder than picking a name, too -- constructing the
+            # actual filters/order_by/limit content. Left at "minimal" for
+            # now rather than bumped for everyone (that would repay RC1's
+            # measured win for the other tools' overwhelmingly more common
+            # case to help one tool nobody's measured yet) or split into two
+            # calls (pick the tool cheaply, then a second, dearer call only
+            # when it's search_people) -- a real, larger restructuring not
+            # worth doing without data. AuditLog.routed_via distinguishes
+            # "llm_plan_tool" from "llm_fixed_tool" specifically so this can
+            # be revisited from actual retry/failure rates once there's
+            # traffic to look at, not from a guess made now either way.
             reasoning_effort="minimal",
         )
     except OpenAIError as exc:
@@ -758,6 +839,27 @@ def execute_tool_call(
         return skill_gap(db, caller, **args)
     if name == "skill_scarcity":
         return skill_scarcity(db, caller, **args)
+    if name == "search_people":
+        # Filter(**f)/PeopleQuery(...) validate structurally at construction
+        # time -- Field/Op are Literal types, so a field/op the model
+        # invented despite the schema's enum (non-strict mode doesn't
+        # enforce staying inside it) raises pydantic.ValidationError here,
+        # which IS a ValueError subclass, so it joins the same retry loop
+        # as every other malformed call without special-casing.
+        # select=[] deliberately -- this tool never lets the model choose
+        # which fields come back (same as find_people: PersonSummary's
+        # shape is fixed, not model-controlled), it only controls WHO
+        # matches. search_people_by_plan() doesn't use plan.select for
+        # output shaping today, only enforce()'s (currently-unused-here)
+        # dropped_fields and validate()'s existence/labelled check, both of
+        # which are no-ops on an empty list.
+        plan = PeopleQuery(
+            select=[],
+            filters=[Filter(**f) for f in args.get("filters", [])],
+            order_by=args.get("order_by"),
+            limit=args.get("limit"),
+        )
+        return search_people_by_plan(db, caller, plan, view_mode)
     raise ValueError(f"model requested an unknown tool: {name!r}")
 
 

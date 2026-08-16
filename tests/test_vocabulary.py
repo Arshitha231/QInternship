@@ -37,7 +37,9 @@ def test_unlabelled_select_field_is_rejected():
 
 
 def test_illegal_operator_for_field_is_rejected():
-    # job_title has ops=set() (filterable=False) -- any operator is illegal.
+    # job_title is filterable (Piece 2) but its only legal op is "contains"
+    # -- "eq" is still illegal for it, same rejection shape as a field with
+    # no legal ops at all.
     result = validate(PeopleQuery(select=["id"], filters=[Filter(field="job_title", op="eq", value="x")]))
     assert result.valid is False
     assert any("job_title" in e for e in result.errors)

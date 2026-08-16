@@ -114,9 +114,15 @@ REGISTRY: dict[str, FieldSpec] = {
 
     # app.permissions.BASE_FIELDS (19 fields), relabeled INTERNAL verbatim.
     # filterable=False on fields find_people has no filter parameter for
-    # today — Round 2 can widen this deliberately, not by silent default.
+    # today — widened deliberately, not by silent default, as each gets a
+    # real caller. job_title's the first: Piece 2 (the model-emitted
+    # PeopleQuery path) needs "title contains Architect", which nothing
+    # could express before it had a REGISTRY entry at all. contains only --
+    # an exact job_title match isn't a realistic ask, and the Search index
+    # already had job_title as filterable, unused, waiting for this side to
+    # catch up (search_index_schema.json).
     "preferred_name": _f("preferred_name", "str", {"eq", "contains"}, Sensitivity.INTERNAL),
-    "job_title": _f("job_title", "str", set(), Sensitivity.INTERNAL, filterable=False),
+    "job_title": _f("job_title", "str", {"contains"}, Sensitivity.INTERNAL),
     "org_unit": _f("org_unit", "str", {"eq", "in"}, Sensitivity.INTERNAL, derived_from=("org_unit_id",)),
     "work_email": _f("work_email", "str", {"eq"}, Sensitivity.INTERNAL),
     "work_phone": _f("work_phone", "str", set(), Sensitivity.INTERNAL, filterable=False),

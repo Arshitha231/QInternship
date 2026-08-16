@@ -312,6 +312,21 @@ TIER2 = [
          # which is exactly what t2-18 is grading — see golden_set.py's
          # module docstring on independent vs. dynamic ground truth).
          ground_truth=("independent", "filter_people", {"skill": "Kubernetes", "org_unit": "Infrastructure"})),
+    # Piece 2 (search_people / model-emitted PeopleQuery): both of these are
+    # structurally unanswerable through find_people's fixed parameters --
+    # `office` there only ever takes one string, and there is no job_title
+    # parameter at all -- so a correct answer can only come from routing to
+    # search_people, not from a smarter find_people(office=...) call. Real
+    # offices/titles in the pinned eval/fixture.db, verified by direct query
+    # (see eval/independent_truth.py's filter_people extension).
+    dict(id="t2-19", tier=2, category="compound_office_or", caller=HR,
+         text="who's based in Bangalore or Singapore?",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "filter_people", {"office": ["Bangalore", "Singapore"]})),
+    dict(id="t2-20", tier=2, category="compound_job_title", caller=HR,
+         text="find anyone whose job title contains Director",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "filter_people", {"job_title": "Director"})),
 ]
 
 # ---------------------------------------------------------------------------

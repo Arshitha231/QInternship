@@ -42,8 +42,11 @@ ORG_UNIT_MAX_DEPTH = 10  # mirrors app.people.ORG_UNIT_MAX_DEPTH
 # an orderable scalar at all) don't have a plain column to sort on the way
 # a WHERE clause can express them via a subquery. Widening this is a real
 # feature addition (a join or a correlated subquery in the ORDER BY), not
-# a bug fix, so it's deferred rather than silently wrong.
-_ORDERABLE_FIELDS = frozenset({"id", "full_name", "preferred_name", "work_email", "availability_status"})
+# a bug fix, so it's deferred rather than silently wrong. Public (no
+# leading underscore) since app.tool_calling's search_people tool schema
+# also reads this, to build its order_by enum from the same source of
+# truth compile_query() itself enforces, instead of a second hand-typed list.
+ORDERABLE_FIELDS = frozenset({"id", "full_name", "preferred_name", "work_email", "availability_status"})
 
 
 def _resolve_skill_id(db, name: str) -> int | None:
@@ -120,8 +123,28 @@ def apply_filter(db, stmt: Select, f: Filter) -> Select:
 
     if f.field == "office":
         values = f.value if isinstance(f.value, list) else [f.value]
-        clauses = [or_(Office.name.ilike(v), Office.city.ilike(v)) for v in values]
+        # `.ilike(v)` with no wildcards is a plain case-insensitive equality
+        # match in SQL, not a substring one -- correct as-is for eq/in, but
+        # this branch used to apply it unconditionally, so a model-supplied
+        # `contains` silently behaved exactly like `eq` instead of actually
+        # substring-matching. Latent since nothing called this live before
+        # Piece 2 (the model-emitted PeopleQuery path); fixed as part of
+        # giving it its first real caller, not discovered later as a
+        # confusing bug report.
+        if f.op == "contains":
+            clauses = [or_(Office.name.ilike(f"%{v}%"), Office.city.ilike(f"%{v}%")) for v in values]
+        elif f.op in ("eq", "in"):
+            clauses = [or_(Office.name.ilike(v), Office.city.ilike(v)) for v in values]
+        else:
+            raise UnsupportedFilterError(f"op '{f.op}' not compilable for '{f.field}'")
         return stmt.join(Office, Employee.office_id == Office.id).where(or_(*clauses))
+
+    if f.field == "job_title":
+        # contains only (REGISTRY.ops for job_title) -- "title contains
+        # Architect", not an exact match, which isn't a realistic ask.
+        if f.op != "contains":
+            raise UnsupportedFilterError(f"op '{f.op}' not compilable for '{f.field}'")
+        return stmt.where(Employee.job_title.ilike(f"%{f.value}%"))
 
     if f.field in ("skills", "languages"):
         names = f.value if isinstance(f.value, list) else [f.value]
@@ -150,7 +173,7 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
         stmt = apply_filter(db, stmt, f)
 
     if plan.order_by is not None:
-        if plan.order_by not in _ORDERABLE_FIELDS:
+        if plan.order_by not in ORDERABLE_FIELDS:
             raise UnsupportedFilterError(f"order_by on '{plan.order_by}' is not compilable yet")
         stmt = stmt.order_by(getattr(Employee, plan.order_by))
 

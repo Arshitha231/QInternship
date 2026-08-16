@@ -12,6 +12,7 @@ from app.tool_calling import (
     _deterministic_resolve,
     _llm_routed_via,
     _retry_after_execution_failure,
+    execute_tool_call,
     execute_with_retry,
     resolve_intent,
 )
@@ -293,3 +294,107 @@ def test_execute_with_retry_stops_immediately_if_the_model_offers_no_correction(
     result = execute_with_retry(db_session, CALLER, bad_call, "who is Wrong Name")
     assert calls["n"] == 1  # gave up after the first non-answer, didn't keep spinning
     assert result["result"] is None
+
+
+# ---------------------------------------------------------------------------
+# search_people (Piece 2) dispatch and retry -- end to end against the real
+# db_session fixture and the real search_people_by_plan(), not a mocked
+# execute_tool_call, since the point is proving the actual wiring works,
+# not just that execute_with_retry's loop mechanics are sound in isolation
+# (those are already covered above using find_people).
+# ---------------------------------------------------------------------------
+
+def test_execute_tool_call_dispatches_search_people(db_session):
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [{"field": "job_title", "op": "contains", "value": "Manager"}]},
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+    assert all("manager" in p.job_title.lower() for p in result)
+
+
+def test_execute_tool_call_search_people_defaults_to_no_filters(db_session):
+    # "filters" is the only required property on the tool schema, but an
+    # empty list is still legal -- everyone active, capped normally.
+    tool_call = ResolvedToolCall(name="search_people", arguments={"filters": []})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+
+
+def test_execute_tool_call_search_people_threads_view_mode(db_session):
+    # employee view_mode must still redact the same way find_people's own
+    # dispatch already does -- confirms this branch actually passes
+    # view_mode through rather than silently defaulting to "work" for every
+    # caller regardless of what was resolved server-side.
+    restricted_filter = {"filters": [{"field": "id", "op": "eq", "value": "restricted-1"}]}
+    tool_call = ResolvedToolCall(name="search_people", arguments=restricted_filter)
+    hr_caller = AuthenticatedUser(id="hr-plan-vm", role="hr")
+    work_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="work")
+    employee_mode_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="employee")
+    assert [p.id for p in work_result] == ["restricted-1"]
+    assert employee_mode_result == []
+
+
+def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session, monkeypatch):
+    # A field/op the model invented despite the schema's enum raises at
+    # Filter(**f) construction (pydantic.ValidationError, a ValueError
+    # subclass) -- joins the same bounded retry loop as any other malformed
+    # call, no special-casing needed in execute_tool_call itself.
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_real_resolve(message, extra_messages=None):
+        assert extra_messages is not None  # this IS the retry call
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="search_people",
+            arguments={"filters": [{"field": "job_title", "op": "contains", "value": "Manager"}]},
+        ))
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    bad_call = ResolvedToolCall(name="search_people", arguments={
+        "filters": [{"field": "not_a_real_field", "op": "eq", "value": "x"}],
+    })
+    result = execute_with_retry(db_session, CALLER, bad_call, "find people whose not_a_real_field is x")
+    assert result["result"] is not None
+    assert all("manager" in p.job_title.lower() for p in result["result"])
+
+
+def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_session, monkeypatch):
+    # Same generic-message guarantee tests/test_search_people_by_plan.py
+    # already proves at the function level -- this confirms it end to end
+    # through the retry loop specifically, since that's the exact path
+    # that would otherwise hand the denial reason straight back to the model.
+    #
+    # cost_centre is filterable=False, so validate() would reject it
+    # structurally (with the field name, safely -- that's a legal-shape
+    # error, not a sensitivity one) before enforce()'s own role check is
+    # ever reached, for every caller including hr -- exactly the
+    # same reason tests/test_search_people_by_plan.py's own Invariant-6
+    # test bypasses validate() to isolate enforce()'s behavior specifically.
+    import app.vocabulary
+    from app.vocabulary import ValidationResult
+    monkeypatch.setattr(app.vocabulary, "validate", lambda plan: ValidationResult(valid=True))
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    prompts_seen = []
+
+    def fake_real_resolve(message, extra_messages=None):
+        if extra_messages:
+            prompts_seen.append(extra_messages[0]["content"])
+        return None  # give up after the first retry prompt -- we only need to inspect it
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    employee_caller = AuthenticatedUser(id="emp-invariant6", role="employee")
+    denied_call = ResolvedToolCall(
+        name="search_people", arguments={"filters": [{"field": "cost_centre", "op": "eq", "value": "CC-1"}]})
+    result = execute_with_retry(db_session, employee_caller, denied_call, "find people in cost centre CC-1")
+    assert result["result"] is None
+    assert len(prompts_seen) == 1
+    # The field name itself is unavoidably present -- it's an echo of the
+    # model's OWN attempted call, not a server secret. What must never
+    # appear is decision.reason, which would additionally confirm that
+    # "cost_centre" is a real, recognized, restricted field rather than
+    # just something the model happened to try.
+    assert "that request can't be answered as asked" in prompts_seen[0]
+    assert "filter on restricted field" not in prompts_seen[0]

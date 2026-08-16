@@ -174,10 +174,28 @@ def test_non_filterable_field_raises_unsupported_not_silently_wrong(db_session):
     # Bypasses validate() on purpose -- a plan that reached compile_query()
     # without going through the validator first should fail loudly, not
     # silently compile something that ignores the (illegal) filter.
+    # work_phone (not job_title -- see the next test) stays a clean example
+    # of a field with no filterable ops at all.
+    plan = PeopleQuery(select=["id"], filters=[Filter(field="work_phone", op="eq", value="x")])
+    decision = PolicyDecision(allow=True, reason="test-only, bypassing validate()")
+    with pytest.raises(UnsupportedFilterError):
+        compile_query(db_session, plan, decision)
+
+
+def test_job_title_filterable_but_only_for_contains(db_session):
+    # job_title is filterable (Piece 2), but its only legal op is "contains"
+    # -- "eq" bypassing validate() should still raise, same
+    # loud-not-silent shape as a field with no ops at all, for a different
+    # reason (illegal op for this field, not "not filterable").
     plan = PeopleQuery(select=["id"], filters=[Filter(field="job_title", op="eq", value="x")])
     decision = PolicyDecision(allow=True, reason="test-only, bypassing validate()")
     with pytest.raises(UnsupportedFilterError):
         compile_query(db_session, plan, decision)
+
+    contains_plan = PeopleQuery(select=["id"], filters=[Filter(field="job_title", op="contains", value="Architect")])
+    contains_decision = PolicyDecision(allow=True, reason="test-only")
+    result = db_session.execute(compile_query(db_session, contains_plan, contains_decision)).scalars().all()
+    assert isinstance(result, list)  # compiles and executes without raising
 
 
 def test_order_by_on_a_derived_field_raises_unsupported(db_session):
