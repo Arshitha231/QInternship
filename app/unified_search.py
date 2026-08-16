@@ -335,7 +335,14 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         # is never phrased as if it were a semantic match.
         qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
         others = f", and {len(experts) - 1} other{'s' if len(experts) > 2 else ''}" if len(experts) > 1 else ""
-        return f"{top.full_name} {top.reason}{others}{qualifier}."
+        sentence = f"{top.full_name} {top.reason}{others}{qualifier}."
+        # top.excerpt, when present, is lifted verbatim from the project's
+        # own description (app/project_search.py's _project_excerpts) --
+        # appended, never blended into the sentence above, so it stays
+        # visibly a quotation rather than something this function composed.
+        if top.excerpt:
+            sentence += f' Relevant: "{top.excerpt}"'
+        return sentence
 
     if tool_name == "skill_gap":
         items = result or []
