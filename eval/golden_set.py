@@ -327,6 +327,31 @@ TIER2 = [
          text="find anyone whose job title contains Director",
          kind="ids", extractor="find_people",
          ground_truth=("independent", "filter_people", {"job_title": "Director"})),
+    # filter_groups (bounded DNF): a genuine cross-field OR -- different
+    # fields on each side -- that neither find_people's fixed parameters
+    # nor search_people's plain `filters` (AND-only, op="in" only ORs
+    # values of the SAME field) can express at all. Ground truth is the
+    # union of two independent filter_people() calls, one per OR-branch
+    # (see independent_truth.filter_people_or) -- never app.query_compiler's
+    # own OR-of-AND compilation, which is exactly what these questions grade.
+    dict(id="t2-21", tier=2, category="compound_cross_field_or", caller=HR,
+         text="find anyone who knows Kubernetes or works in the Cloud Operations Team",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "filter_people_or", {"groups": [
+             {"skill": "Kubernetes"}, {"org_unit": "Cloud Operations Team"},
+         ]})),
+    dict(id="t2-22", tier=2, category="compound_cross_field_or", caller=HR,
+         text="who speaks French or is based in the Bangalore office",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "filter_people_or", {"groups": [
+             {"language": "French"}, {"office": "Bangalore"},
+         ]})),
+    dict(id="t2-23", tier=2, category="compound_cross_field_or", caller=HR,
+         text="who knows Terraform, or has Director in their job title",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "filter_people_or", {"groups": [
+             {"skill": "Terraform"}, {"job_title": "Director"},
+         ]})),
 ]
 
 # ---------------------------------------------------------------------------
