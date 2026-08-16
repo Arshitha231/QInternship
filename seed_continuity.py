@@ -147,8 +147,36 @@ def _pick_widely_held_skill(session, min_holders: int = 6) -> Skill | None:
     reasoning as app/continuity.py's own dependency computation: a
     delivery dependency is a specialized capability, and general language
     fluency isn't that."""
-    rows = session.execute(
-        select(Skill, func.count(EmployeeSkill.id).label("n"))
+    rows = session.execute(widely_held_skill_stmt()).all()
+    for skill_id, n in rows:
+        if n >= min_holders:
+            return session.get(Skill, skill_id)
+    return session.get(Skill, rows[0][0]) if rows else None
+
+
+def widely_held_skill_stmt():
+    """The ranking query behind _pick_widely_held_skill, factored out so
+    tests/test_sql_portability.py can inspect it without a database.
+
+    Selects Skill.ID ONLY, not the Skill entity. Selecting the entity while
+    grouping by Skill.id runs fine on SQLite -- which permits bare
+    non-aggregated columns in the select list as an extension -- and fails
+    outright on Azure SQL, which requires every non-aggregated selected
+    column to appear in GROUP BY:
+
+        Column 'skills.name' is invalid in the select list because it is
+        not contained in either an aggregate function or the GROUP BY
+        clause. (error 8120)
+
+    Grouping by all four Skill columns would also work, but it's brittle:
+    adding a column to the model silently breaks the script again, on the
+    deployed database only. Selecting just the key and re-fetching the one
+    row that wins keeps the invariant true by construction -- the same
+    dialect-divergence discipline as the `== True` vs `.is_(True)` comments
+    elsewhere in this repo.
+    """
+    return (
+        select(Skill.id, func.count(EmployeeSkill.id).label("n"))
         .join(EmployeeSkill, EmployeeSkill.skill_id == Skill.id)
         .where(
             Skill.canonical_id.is_(None), Skill.category != SkillCategory.language,
@@ -156,11 +184,7 @@ def _pick_widely_held_skill(session, min_holders: int = 6) -> Skill | None:
         )
         .group_by(Skill.id)
         .order_by(func.count(EmployeeSkill.id).desc())
-    ).all()
-    for skill, n in rows:
-        if n >= min_holders:
-            return skill
-    return rows[0][0] if rows else None
+    )
 
 
 def _make_project(session, name: str, owner: Employee, unit: OrgUnit) -> Project:
