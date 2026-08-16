@@ -97,6 +97,9 @@ class Employee(Base):
 
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    
+    # --- PHASE 4: LINKEDIN LEAD INTEGRATION ---
+    linkedin_profile: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Soft delete only. Records are never hard-deleted.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
