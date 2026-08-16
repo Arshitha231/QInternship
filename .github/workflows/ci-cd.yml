@@ -251,6 +251,7 @@ jobs:
           zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
             seed_training.py seed_people_data.py seed_it_division.py build_search_index.py \
             backfill_project_history.py seed_continuity.py build_project_embeddings.py \
+            seed_demo_depth.py \
             config \
             frontend/dist \
             -x "*__pycache__*" -x "*.pyc"

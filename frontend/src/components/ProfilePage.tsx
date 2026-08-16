@@ -4,7 +4,7 @@ import { ApiError, getOrgChart, getPerson, updateEmployee, updateOwnBio } from "
 import type { Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
-  MapPin, Phone, Slack, UserReports, Users,
+  LinkIcon, MapPin, Phone, Slack, UserReports, Users,
 } from "../icons";
 
 export interface ProfileStackEntry {
@@ -96,6 +96,7 @@ type EmployeeFormState = {
   date_of_birth: string;
   hire_date: string;
   cost_centre: string;
+  linkedin_profile: string;
 };
 
 // Fields where a touched-but-emptied input means "clear this" (sent as an
@@ -107,6 +108,7 @@ type EmployeeFormState = {
 // diff.
 const NULLABLE_EMPLOYEE_FIELDS = new Set<keyof EmployeeFormState>([
   "preferred_name", "work_phone", "salary", "salary_currency", "date_of_birth", "cost_centre",
+  "linkedin_profile",
 ]);
 
 function employeeFormFromDetail(d: PersonDetail): EmployeeFormState {
@@ -122,6 +124,7 @@ function employeeFormFromDetail(d: PersonDetail): EmployeeFormState {
     date_of_birth: d.date_of_birth ?? "",
     hire_date: d.hire_date ?? "",
     cost_centre: d.cost_centre ?? "",
+    linkedin_profile: d.linkedin_profile ?? "",
   };
 }
 
@@ -459,6 +462,17 @@ export function ProfilePage({
                 onChange={(e) => setEmployeeForm({ ...employeeForm, salary_currency: e.target.value.toUpperCase() })}
               />
             </EditField>
+            {/* No "HR only" badge: linkedin_profile is in permissions.BASE_FIELDS,
+                readable by everyone — a LinkedIn page is already public. Only the
+                EDIT surface is HR's, which the enclosing form already scopes. */}
+            <EditField label="LinkedIn">
+              <input
+                className="edit-input" type="url" maxLength={500}
+                placeholder="https://www.linkedin.com/in/..."
+                value={employeeForm.linkedin_profile}
+                onChange={(e) => setEmployeeForm({ ...employeeForm, linkedin_profile: e.target.value })}
+              />
+            </EditField>
           </div>
           {employeeError && <p className="bio-error">{employeeError}</p>}
           <div className="bio-actions">
@@ -664,6 +678,20 @@ export function ProfilePage({
               )}
               {detail.slack_handle && (
                 <li><Slack size={16} /><span className="k">Slack</span><span className="v">{detail.slack_handle}</span></li>
+              )}
+              {detail.linkedin_profile && (
+                <li>
+                  <LinkIcon size={16} />
+                  <span className="k">LinkedIn</span>
+                  <span className="v">
+                    {/* noreferrer alongside noopener: this is an outbound link to a
+                        third-party site, and the referrer would otherwise leak the
+                        internal directory URL (including the employee id in the path). */}
+                    <a href={detail.linkedin_profile} target="_blank" rel="noopener noreferrer">
+                      {detail.linkedin_profile.replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//, "")}
+                    </a>
+                  </span>
+                </li>
               )}
               {detail.employment_type && (
                 <li><Briefcase size={16} /><span className="k">Employment</span><span className="v" style={{ textTransform: "capitalize" }}>{detail.employment_type}</span></li>
