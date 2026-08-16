@@ -492,6 +492,24 @@ _PROBLEM_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
+def describes_a_problem(message: str) -> bool:
+    """True when the text describes a problem the caller is facing.
+
+    Public because app/unified_search.py needs the same answer for a
+    different decision: is_question() decides direct vs assisted by SHAPE
+    (trailing "?" or an interrogative opener), and a described problem is a
+    STATEMENT -- "our kubernetes cluster keeps dropping pods" opens with
+    "our" and ends with a full stop. Mode 3 was therefore unreachable from
+    the search box for exactly the phrasing it exists to serve: the same
+    text with a "?" appended routed to find_experts and worked, without one
+    it fell to direct free-text employee search.
+
+    One predicate, used by both the router and the direct/assisted gate, so
+    the two can't drift into disagreeing about what a problem looks like.
+    """
+    return bool(_PROBLEM_PATTERN.search(message))
+
 # First-person phrasing ("my manager", "who am I", "email me") — same
 # self-reference concept the real model is taught via SYSTEM_PROMPT, but
 # the mock resolver had no equivalent rule at all: "who is my manager?"
@@ -651,7 +669,7 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     if "mentor" in text:
         skill = text.split(" in ", 1)[-1].strip(" ?.!") if " in " in text else message.strip(" ?.!")
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_mentor", arguments={"skill": skill}))
-    if _PROBLEM_PATTERN.search(text):
+    if describes_a_problem(text):
         # The WHOLE message goes through as `problem`, not an extracted
         # keyword: project_search matches the description against what
         # projects actually did, so narrowing it to one noun throws away
