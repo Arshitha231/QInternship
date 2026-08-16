@@ -482,9 +482,33 @@ _SKILL_GAP_PATTERN = re.compile(r"\bgaps?\b", re.IGNORECASE)
 # deferring -- an ambiguous phrasing is what returning None is for. Checked
 # after the "mentor" branch regardless, so an explicit mentor request wins
 # even if it also happens to describe a problem.
+# The first version of this enumerated a handful of exact failure verbs
+# ("keeps failing|crashing|breaking|dying|timing out|falling over"). Measured
+# against the actual demo queries, it matched 2 of 6: "keeps DROPPING pods"
+# and "transactions GET stuck" and "so FLAKY" and "so NOISY" all fell
+# through to direct free-text search. Enumerating symptoms exhaustively was
+# never going to work -- there is no finite list of ways to say something is
+# broken.
+#
+# So this matches the SHAPE of a complaint instead: "keeps <verb>ing"
+# generically, bare "stuck", symptom adjectives, and "is/are <bad state>".
+# Still exact patterns, never fuzzy scoring -- an unmatched phrasing still
+# returns None and defers rather than guessing.
+#
+# The stealing risk is guarded by a test, not by hope:
+# test_no_existing_few_shot_is_stolen_by_the_problem_pattern asserts every
+# non-find_experts few-shot in this module still fails to match. "who can
+# help" and "help me with" remain deliberately absent -- they're ambiguous
+# with find_mentor's learning intent.
 _PROBLEM_PATTERN = re.compile(
-    r"\bstuck (on|with)\b"
-    r"|\bkeeps? (failing|crashing|breaking|dying|timing out|falling over)\b"
+    r"\bstuck\b"
+    r"|\bkeeps?\s+\w+ing\b"
+    r"|\bkeeps?\s+(fail|crash|break|die|hang|drop|restart)\b"
+    r"|\bfalling over\b|\btiming out\b|\btimeouts?\b"
+    r"|\bflaky\b|\bbroken\b|\bunstable\b|\bnoisy\b|\bstale\b"
+    r"|\bcrash(es|ing|ed)?\b|\bmemory leak\b"
+    r"|\bnot working\b|\bwon'?t (start|build|deploy|load|run)\b"
+    r"|\b(is|are)\s+(slow|down|failing|broken|stale|flaky)\b"
     r"|\bhaving (trouble|issues|problems)\b"
     r"|\bdebugging\b|\btroubleshoot(ing)?\b"
     r"|\b(run|ran) into this\b|\bseen this before\b"
