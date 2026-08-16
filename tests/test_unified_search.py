@@ -290,3 +290,56 @@ async def test_org_chain_cards_omit_unset_fields_not_null(client, monkeypatch):
     for card in body["results"]:
         assert "direct_reports" not in card, f"direct_reports leaked as an explicit key: {card}"
         assert "manager" not in card, f"manager leaked as an explicit key: {card}"
+
+
+# ---------------------------------------------------------------------------
+# Mode 3 reachability THROUGH the endpoint.
+#
+# These exist because unit tests didn't catch a real production bug: mode 3
+# was verified by calling project_search.find_experts() and
+# tool_calling._deterministic_resolve() directly, both of which worked, so
+# every test passed. But GET /search gates direct-vs-assisted on
+# is_question(), and a described problem is a STATEMENT -- no question mark,
+# opens with "our"/"I'm". The feature was unreachable from the search box
+# for exactly the phrasing it exists to serve, and only a test that goes in
+# through the endpoint can see that.
+# ---------------------------------------------------------------------------
+
+async def test_problem_statement_reaches_find_experts_without_a_question_mark(client):
+    """The regression. Measured on the deployed app: this text returned five
+    loosely-related engineers from direct free-text search, while the same
+    text with "?" appended correctly routed to find_experts."""
+    resp = await client.get(
+        "/search",
+        params={"q": "our deploy pipeline keeps failing and I'm stuck on the rollback"},
+        headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted", "a described problem must not fall through to direct search"
+    assert body["overview"]["trace"][0]["tool"] == "find_experts"
+
+
+async def test_question_mark_variant_routes_identically(client):
+    """The two phrasings must agree. They disagreeing IS the bug."""
+    base = "our deploy pipeline keeps failing and I'm stuck on the rollback"
+    without = await client.get("/search", params={"q": base}, headers=auth_headers("hr"))
+    with_mark = await client.get("/search", params={"q": base + "?"}, headers=auth_headers("hr"))
+    assert without.json()["mode"] == with_mark.json()["mode"]
+    assert (without.json()["overview"]["trace"][0]["tool"]
+            == with_mark.json()["overview"]["trace"][0]["tool"])
+
+
+async def test_ordinary_free_text_still_stays_direct(client, monkeypatch):
+    """The gate widened for problems only. A plain descriptive search must
+    still cost zero tokens -- otherwise this fix would have quietly routed
+    every free-text query through the assisted path."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get(
+        "/search", params={"q": "someone good with dashboards and reporting"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "direct"

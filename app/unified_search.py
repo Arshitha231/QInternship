@@ -4,11 +4,16 @@ Search+Ask UI merge. The frontend is a pure renderer — this module is what
 actually decides "direct" vs "assisted", deterministically, with no model
 call for the direct case.
 
-That decision is intentionally narrow (surface shape only: a trailing
-question mark, or an interrogative sentence opener), not a model call and
-not fuzzy NLU — a missed classification just falls through to find_people's
-own free-text hybrid search rather than erroring, so a false negative
-degrades gracefully instead of failing outright.
+That decision is intentionally narrow — question SHAPE (a trailing question
+mark or an interrogative opener) or a described PROBLEM (see
+needs_assistant) — not a model call and not fuzzy NLU. A missed
+classification just falls through to find_people's own free-text hybrid
+search rather than erroring, so a false negative degrades gracefully
+instead of failing outright.
+
+The problem half was added after mode 3 shipped: question shape alone
+excluded exactly the phrasing find_experts exists to serve, because a
+described problem is a statement, not a question.
 
 Wraps find_people (app.people) and resolve_intent/execute_with_fallback
 (app.tool_calling) rather than duplicating either's retrieval or
@@ -35,6 +40,7 @@ from app.schemas import (
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
     TOOLS,
+    describes_a_problem,
     ResolvedToolCall,
     execute_with_fallback,
     execute_with_retry,
@@ -48,14 +54,34 @@ _QUESTION_MARKERS = re.compile(
 
 
 def is_question(text: str) -> bool:
-    """The entire classifier. A trailing question mark, or an interrogative
-    sentence opener. Everything else (a bare name, a skill, "engineering
-    managers in Bangalore") stays structured and goes straight to
-    find_people, which already handles free-text description queries via
-    hybrid search with zero chat-model involvement — this rule only decides
-    which of the two existing retrieval paths runs, it doesn't add a third.
+    """A trailing question mark, or an interrogative sentence opener.
+    Everything else (a bare name, a skill, "engineering managers in
+    Bangalore") stays structured and goes straight to find_people, which
+    already handles free-text description queries via hybrid search with
+    zero chat-model involvement.
     """
     return bool(_QUESTION_MARKERS.search(text.strip()))
+
+
+def needs_assistant(text: str) -> bool:
+    """The direct/assisted gate. Question SHAPE, or a described PROBLEM.
+
+    The problem half is not redundant. A described problem is a statement,
+    not a question -- "our kubernetes cluster keeps dropping pods and
+    networking is flaky" opens with "our" and has no question mark, so
+    is_question() is False for precisely the phrasing mode 3 exists to
+    serve. Measured on the deployed app before this: that text fell to
+    direct free-text employee search and returned five loosely-related
+    engineers, while the identical text with a "?" appended routed to
+    find_experts and returned the Networking Team Manager who actually led
+    the cluster migration.
+
+    describes_a_problem() is imported from app.tool_calling rather than
+    re-implemented, so this gate and the deterministic router can never
+    disagree about what counts as a problem -- a query this lets through
+    is exactly a query the router has a find_experts branch for.
+    """
+    return is_question(text) or describes_a_problem(text)
 
 
 # Short, static, per-tool descriptions of *why* a tool was selected. Not the
@@ -72,7 +98,7 @@ def unified_search(
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
-    if text and is_question(text):
+    if text and needs_assistant(text):
         return _assisted(db, caller, text, clean_filters, view_mode)
 
     results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
