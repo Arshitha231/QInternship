@@ -28,6 +28,7 @@ from sqlalchemy.orm import aliased
 
 from app.auth import AuthenticatedUser
 from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill
+from app.permissions import ViewMode
 from app.policy import PolicyDecision, enforce
 from app.query_plan import Filter, PeopleQuery
 from app.registry import REGISTRY
@@ -41,8 +42,11 @@ ORG_UNIT_MAX_DEPTH = 10  # mirrors app.people.ORG_UNIT_MAX_DEPTH
 # an orderable scalar at all) don't have a plain column to sort on the way
 # a WHERE clause can express them via a subquery. Widening this is a real
 # feature addition (a join or a correlated subquery in the ORDER BY), not
-# a bug fix, so it's deferred rather than silently wrong.
-_ORDERABLE_FIELDS = frozenset({"id", "full_name", "preferred_name", "work_email", "availability_status"})
+# a bug fix, so it's deferred rather than silently wrong. Public (no
+# leading underscore) since app.tool_calling's search_people tool schema
+# also reads this, to build its order_by enum from the same source of
+# truth compile_query() itself enforces, instead of a second hand-typed list.
+ORDERABLE_FIELDS = frozenset({"id", "full_name", "preferred_name", "work_email", "availability_status"})
 
 
 def _resolve_skill_id(db, name: str) -> int | None:
@@ -82,7 +86,16 @@ class UnsupportedFilterError(ValueError):
     app.vocabulary.validate() against today's REGISTRY.filterable set."""
 
 
-def _apply_filter(db, stmt: Select, f: Filter) -> Select:
+def apply_filter(db, stmt: Select, f: Filter) -> Select:
+    """Applies one Filter to any Employee-mapped Select -- not just the
+    statements compile_query() itself builds. Reused directly by
+    app/people.py's find_people (its own hand-built SQL branch and
+    direct_reports subquery) to push a PolicyDecision's obligations straight
+    into a query, without adopting compile_query()'s full plan-driven
+    pipeline for find_people's other, bespoke filter args. Public (no leading
+    underscore) specifically because it's now used across module boundaries,
+    not just internally by compile_query() below.
+    """
     spec = REGISTRY[f.field]
     if not spec.filterable:
         raise UnsupportedFilterError(f"'{f.field}' is not filterable")
@@ -110,8 +123,28 @@ def _apply_filter(db, stmt: Select, f: Filter) -> Select:
 
     if f.field == "office":
         values = f.value if isinstance(f.value, list) else [f.value]
-        clauses = [or_(Office.name.ilike(v), Office.city.ilike(v)) for v in values]
+        # `.ilike(v)` with no wildcards is a plain case-insensitive equality
+        # match in SQL, not a substring one -- correct as-is for eq/in, but
+        # this branch used to apply it unconditionally, so a model-supplied
+        # `contains` silently behaved exactly like `eq` instead of actually
+        # substring-matching. Latent since nothing called this live before
+        # Piece 2 (the model-emitted PeopleQuery path); fixed as part of
+        # giving it its first real caller, not discovered later as a
+        # confusing bug report.
+        if f.op == "contains":
+            clauses = [or_(Office.name.ilike(f"%{v}%"), Office.city.ilike(f"%{v}%")) for v in values]
+        elif f.op in ("eq", "in"):
+            clauses = [or_(Office.name.ilike(v), Office.city.ilike(v)) for v in values]
+        else:
+            raise UnsupportedFilterError(f"op '{f.op}' not compilable for '{f.field}'")
         return stmt.join(Office, Employee.office_id == Office.id).where(or_(*clauses))
+
+    if f.field == "job_title":
+        # contains only (REGISTRY.ops for job_title) -- "title contains
+        # Architect", not an exact match, which isn't a realistic ask.
+        if f.op != "contains":
+            raise UnsupportedFilterError(f"op '{f.op}' not compilable for '{f.field}'")
+        return stmt.where(Employee.job_title.ilike(f"%{f.value}%"))
 
     if f.field in ("skills", "languages"):
         names = f.value if isinstance(f.value, list) else [f.value]
@@ -137,17 +170,19 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
     stmt = select(Employee.id).where(Employee.is_active == True)  # noqa: E712
 
     for f in [*plan.filters, *decision.required_filters]:
-        stmt = _apply_filter(db, stmt, f)
+        stmt = apply_filter(db, stmt, f)
 
     if plan.order_by is not None:
-        if plan.order_by not in _ORDERABLE_FIELDS:
+        if plan.order_by not in ORDERABLE_FIELDS:
             raise UnsupportedFilterError(f"order_by on '{plan.order_by}' is not compilable yet")
         stmt = stmt.order_by(getattr(Employee, plan.order_by))
 
     return stmt.limit(decision.max_rows)
 
 
-def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> PersonRef | None:
+def enforced_person_ref(
+    db, caller: AuthenticatedUser, person_id: str, view_mode: ViewMode = "work",
+) -> PersonRef | None:
     """The canonical way to attach a *referenced* person (a manager,
     delegate, ...) to a response -- policy-gated, not a raw db.get().
     ARCHITECTURE_2.md §15 item 6 / Round 2: find_people's single-match
@@ -162,6 +197,15 @@ def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> Person
     obligation (a department scope, say) protects all three automatically
     instead of needing to be remembered at each site.
 
+    `view_mode` defaults to "work" -- callers that don't have one to give
+    (get_org_chain, which has no view_mode parameter at all) get today's
+    unchanged behavior. find_people/get_person pass their real one: without
+    it, enforce()'s restricted-record obligation always evaluated as if the
+    caller were in full work mode, so an hr caller previewing "employee"
+    mode would still see a restricted employee's name via a manager/delegate
+    reference even though every other field on the same response was
+    correctly anonymized.
+
     Builds the smallest possible PeopleQuery (select id+full_name, filter
     id eq person_id), enforces it, and returns None if policy denies it,
     the row is excluded by an obligation (restricted, non-hr caller), or
@@ -169,7 +213,7 @@ def enforced_person_ref(db, caller: AuthenticatedUser, person_id: str) -> Person
     else, never an error.
     """
     plan = PeopleQuery(select=["id", "full_name"], filters=[Filter(field="id", op="eq", value=person_id)])
-    decision = enforce(plan, caller)
+    decision = enforce(plan, caller, view_mode)
     if not decision.allow:
         return None
     row_id = db.execute(compile_query(db, plan, decision)).scalar()

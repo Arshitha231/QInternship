@@ -4,16 +4,36 @@ response. It does not return a boolean -- a PolicyDecision carries
 redaction, required row-scoping filters (obligations), and the row cap,
 none of which the caller or the model gets to negotiate.
 
-Round 1: this is a pure function of (plan, caller) with no database access
-and no wiring into any live request path -- see the plan's own note on why
-that split exists. Round 2 is what actually calls enforce() from
-find_people/get_person/get_org_chain and compiles the result to SQL.
+Round 1: this is a pure function of (plan, caller, view_mode) with no
+database access. Round 2 wired it into app.query_compiler.enforced_person_ref
+-- the manager/delegate/direct_reports reference lookups inside
+find_people/get_person/get_org_chain go through enforce() -> compile_query()
+today. Round 3 makes it authoritative for those same three functions'
+*primary* retrieval too: excluded_by_obligations() and compute_visible_fields()
+below are what find_people/get_person/get_org_chain now consult instead of
+app.permissions' is_record_visible/visible_fields directly. app.permissions
+itself is untouched -- is_record_visible/visible_fields still exist and are
+still the live gate for app.directory_tools (find_mentor/skill_gap/
+skill_scarcity/find_project_owner) and app.notifications, a deliberately
+deferred, separate scope. The ABAC layer (abac_extra_fields,
+training_extra_fields, department_filter, can_see_confidential_project) was
+never duplicated here and stays exactly where it is, called from
+compute_visible_fields() the same way visible_fields() already calls it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from app.auth import AuthenticatedUser
+from app.models import Employee
+from app.permissions import (
+    TRAINING_FIELDS,
+    ViewMode,
+    abac_extra_fields,
+    department_filter,
+    effective_role,
+    training_extra_fields,
+)
 from app.query_plan import Filter, PeopleQuery
 from app.registry import REGISTRY, is_visible
 
@@ -54,8 +74,8 @@ def _max_rows(plan: PeopleQuery) -> int:
     return limit
 
 
-def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
-    allowed = {name for name in REGISTRY if is_visible(name, caller.role)}
+def enforce(plan: PeopleQuery, caller: AuthenticatedUser, view_mode: ViewMode = "work") -> PolicyDecision:
+    allowed = {name for name in REGISTRY if is_visible(name, caller.role, view_mode)}
 
     # 1. Redact, don't reject -- select fields the role can't see are
     # silently dropped. The caller finds out by absence, never by error.
@@ -77,19 +97,23 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
     # 3. Obligations -- row scoping the model never sees and cannot
     # negotiate. This is the query-plan-level expression of
     # app.permissions.is_record_visible's existing rule (restricted
-    # employees are absent from everyone except hr); Round 1 pins that
-    # equivalence with a direct test (tests/test_policy.py), Round 2
-    # decides where this is actually enforced live.
+    # employees are absent from everyone except hr); effective_role means
+    # an hr caller browsing in employee view mode loses the exemption here
+    # too, exactly like is_record_visible already does -- before view_mode
+    # was threaded through, this checked raw caller.role, so an hr caller
+    # in employee mode kept seeing restricted employees when nothing else
+    # in the same response would have.
     #
-    # No manager-scoped obligation here (e.g. "manager_id = caller.id" for
-    # a direct-reports request), unlike ARCHITECTURE_2.md §8's illustrative
-    # pseudocode -- direct_reports isn't a registry field at all yet
-    # (app/registry.py's own docstring flags this as a known gap owned by
-    # app/people.py's inline role check), so there's no plan shape here for
-    # that obligation to attach to. Adding one would be inventing scope
-    # this pass doesn't cover, not implementing something already decided.
+    # No manager-scoped "manager_id = caller.id" obligation here, unlike
+    # ARCHITECTURE_2.md §8's illustrative pseudocode -- direct_reports isn't
+    # a PeopleQuery-shaped request at either of its two real call sites
+    # (app/people.py's single-match enrichment, app/org_chart.py's
+    # direction="down"), so there's no plan shape here for that obligation
+    # to attach to. can_see_direct_reports() below is the actual row-scoping
+    # decision those two call sites now share; inventing an unused
+    # PeopleQuery obligation for it would be scope nothing consumes yet.
     required_filters: list[Filter] = []
-    if caller.role != "hr":
+    if effective_role(caller.role, view_mode) != "hr":
         required_filters.append(Filter(field="availability_status", op="ne", value="restricted"))
 
     return PolicyDecision(
@@ -98,3 +122,108 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser) -> PolicyDecision:
         dropped_fields=dropped_fields,
         max_rows=_max_rows(plan),
     )
+
+
+def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
+    """The one shared decision behind app.people's find_people enrichment and
+    app.org_chart's get_org_chain(direction="down") gate -- previously two
+    independently-written inline checks (`acting_role in ("manager", "hr")`
+    vs `caller.role not in ("manager", "hr")`) that had already drifted:
+    people.py's collapsed via effective_role for employee view mode,
+    org_chart.py's didn't, since get_org_chain has no view_mode parameter at
+    all. Lives here rather than app/registry.py because direct_reports isn't
+    a field with a sensitivity tier -- registry.py's own ALLOWED_SENSITIVITY
+    comment already frames this as a row-scoping obligation, not broader
+    field access, which is exactly this module's job.
+    """
+    return effective_role(role, view_mode) in ("manager", "hr")
+
+
+def can_see_training_status_by_role(role: str, view_mode: ViewMode = "work") -> bool:
+    """training_status has two independent old-system grants, not one:
+    app.permissions.training_extra_fields' self/manager-chain ABAC walk
+    (still called by compute_visible_fields below, unchanged), AND hr's role
+    getting it directly as part of ALLOWED[("hr","work")]'s own construction
+    -- confirmed by this migration's own comparison tests catching its
+    absence for an hr caller with no chain relationship to the target
+    (test_new_stack_agrees_with_old_stack_for_every_employee). it does NOT
+    get this grant in either system (ALLOWED[("it","work")] excludes
+    TRAINING_FIELDS) -- it only ever sees training_status via the chain walk,
+    same as employee/manager.
+    """
+    return effective_role(role, view_mode) == "hr"
+
+
+def excluded_by_obligations(decision: PolicyDecision, employee: Employee) -> bool:
+    """Evaluates a single already-fetched Employee against
+    decision.required_filters directly -- no second query. This is the
+    in-memory counterpart to compile_query()/query_compiler.apply_filter's
+    query-level obligation application: used wherever an object is already
+    in hand (get_person's target, get_org_chain's CTE-walked nodes) rather
+    than wherever a query is still being built.
+
+    Promoted from tests/test_policy.py's own _excluded_by_obligations() test
+    helper, already indirectly proven correct against
+    app.permissions.is_record_visible by
+    test_obligations_agree_exactly_with_is_record_visible across all 8
+    role/view_mode combinations -- not new, unverified logic.
+
+    Raises on an obligation shape it doesn't recognize, deliberately, rather
+    than silently letting it pass unenforced -- today there's exactly one
+    shape (availability_status ne restricted); a second obligation type
+    added to enforce() later must be taught here explicitly, not bypass this
+    check by accident.
+    """
+    for f in decision.required_filters:
+        if f.field != "availability_status" or f.op != "ne":
+            raise ValueError(f"excluded_by_obligations does not know how to evaluate obligation {f!r}")
+        if employee.availability_status.value == f.value:
+            return True
+    return False
+
+
+_ALWAYS_PRESENT_FIELDS = frozenset({"id", "full_name"})
+
+
+def compute_visible_fields(
+    db, caller: AuthenticatedUser, target: Employee, view_mode: ViewMode = "work",
+) -> set[str]:
+    """Replaces app.permissions.visible_fields() for get_person/update_own_bio
+    -- same pipeline shape (RBAC floor, then ABAC union, then training union,
+    then department subtraction), just sourced from enforce() instead of
+    ALLOWED for the RBAC floor. The ABAC layer itself (abac_extra_fields,
+    training_extra_fields, department_filter) is untouched, imported from
+    app.permissions exactly as visible_fields() already calls it -- that
+    layer was never duplicated by REGISTRY and isn't being rebuilt here.
+
+    id/full_name are deliberately excluded from the base plan even though
+    REGISTRY labels them ordinary INTERNAL entries (registry.py's own
+    docstring: "no field skips is_visible(), not even id/full_name") --
+    visible_fields()'s actual contract never included them; _build_detail()
+    sets both unconditionally, outside the `if "field" in fields` pattern
+    every other field goes through. Including them here wouldn't change
+    get_person's response body, but it WOULD change what get_person logs to
+    AuditLog.fields_returned (app/people.py's fields_returned = fields is
+    logged verbatim) -- a real, confirmed divergence caught by this
+    migration's own comparison tests, not a cosmetic one.
+
+    project_desc is deliberately NEVER added to this set (no
+    can_see_project_desc() call here, unlike an earlier version of this
+    function). It used to ride on ALLOWED[("hr"/"it","work")], but
+    origin/main's "project_desc for everyone" change removed it from ALLOWED
+    entirely and made app.people._project_history include it on every item
+    unconditionally, alongside project_history rather than gated by the
+    top-level fields set at all -- same category as direct_reports/
+    training_status now. Caught by this migration's own comparison tests
+    after merging that change in: compute_visible_fields() was adding
+    "project_desc" to the top-level set when the current visible_fields()
+    never does, for any role.
+    """
+    plan_fields = [f for f in REGISTRY if f not in _ALWAYS_PRESENT_FIELDS]
+    decision = enforce(PeopleQuery(select=plan_fields), caller, view_mode)
+    fields = (set(plan_fields) - set(decision.dropped_fields)) | abac_extra_fields(caller, target)
+    if can_see_training_status_by_role(caller.role, view_mode):
+        fields |= TRAINING_FIELDS
+    if not TRAINING_FIELDS <= fields:
+        fields |= training_extra_fields(db, caller, target)
+    return department_filter(db, fields, caller, target, view_mode)

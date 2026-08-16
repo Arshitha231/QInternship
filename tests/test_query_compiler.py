@@ -11,7 +11,7 @@ import pytest
 from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.policy import PolicyDecision, enforce
-from app.query_compiler import UnsupportedFilterError, compile_query
+from app.query_compiler import UnsupportedFilterError, compile_query, enforced_person_ref
 from app.query_plan import Filter, PeopleQuery
 
 HR = AuthenticatedUser(id="qc-hr", role="hr")
@@ -174,10 +174,28 @@ def test_non_filterable_field_raises_unsupported_not_silently_wrong(db_session):
     # Bypasses validate() on purpose -- a plan that reached compile_query()
     # without going through the validator first should fail loudly, not
     # silently compile something that ignores the (illegal) filter.
+    # work_phone (not job_title -- see the next test) stays a clean example
+    # of a field with no filterable ops at all.
+    plan = PeopleQuery(select=["id"], filters=[Filter(field="work_phone", op="eq", value="x")])
+    decision = PolicyDecision(allow=True, reason="test-only, bypassing validate()")
+    with pytest.raises(UnsupportedFilterError):
+        compile_query(db_session, plan, decision)
+
+
+def test_job_title_filterable_but_only_for_contains(db_session):
+    # job_title is filterable (Piece 2), but its only legal op is "contains"
+    # -- "eq" bypassing validate() should still raise, same
+    # loud-not-silent shape as a field with no ops at all, for a different
+    # reason (illegal op for this field, not "not filterable").
     plan = PeopleQuery(select=["id"], filters=[Filter(field="job_title", op="eq", value="x")])
     decision = PolicyDecision(allow=True, reason="test-only, bypassing validate()")
     with pytest.raises(UnsupportedFilterError):
         compile_query(db_session, plan, decision)
+
+    contains_plan = PeopleQuery(select=["id"], filters=[Filter(field="job_title", op="contains", value="Architect")])
+    contains_decision = PolicyDecision(allow=True, reason="test-only")
+    result = db_session.execute(compile_query(db_session, contains_plan, contains_decision)).scalars().all()
+    assert isinstance(result, list)  # compiles and executes without raising
 
 
 def test_order_by_on_a_derived_field_raises_unsupported(db_session):
@@ -198,3 +216,41 @@ def test_only_active_employees_are_ever_returned(db_session):
     stmt = compile_query(db_session, plan, decision)
     compiled_sql = str(stmt.compile(compile_kwargs={"literal_binds": False}))
     assert "is_active" in compiled_sql
+
+
+# ---------------------------------------------------------------------------
+# enforced_person_ref() -- view_mode threading. Regression test for the
+# concrete bug this closes: before view_mode was threaded through, this
+# always evaluated as if the caller were in full "work" mode, so an hr
+# caller previewing "employee" mode would still see a restricted manager's
+# name via a manager/delegate reference (find_people/get_person attach
+# whichever person a manager_id/delegate_id points at through this exact
+# function) even though every other field on the same response was
+# correctly anonymized to the employee view. Exercised directly against
+# "restricted-1" (Rory Restricted, availability_status=restricted, conftest.py)
+# as the looked-up person -- enforced_person_ref doesn't care who's asking
+# about whom, only which person_id it's resolving, so this is equivalent to
+# and simpler than going through a manager_id indirection.
+# ---------------------------------------------------------------------------
+
+def test_enforced_person_ref_hides_a_restricted_manager_in_employee_mode(db_session):
+    ref = enforced_person_ref(db_session, HR, "restricted-1", "employee")
+    assert ref is None
+
+
+def test_enforced_person_ref_shows_a_restricted_manager_in_work_mode(db_session):
+    # Unchanged behavior -- hr in full work mode still sees restricted
+    # records, same as is_record_visible everywhere else.
+    ref = enforced_person_ref(db_session, HR, "restricted-1", "work")
+    assert ref is not None
+    assert ref.id == "restricted-1"
+
+
+def test_enforced_person_ref_default_argument_matches_explicit_work_mode(db_session):
+    # get_org_chain calls this with no view_mode argument at all -- the
+    # implicit default must be identical to explicitly passing "work",
+    # not a silent behavior change for the one call site with nothing else
+    # to give it.
+    default_ref = enforced_person_ref(db_session, HR, "restricted-1")
+    explicit_ref = enforced_person_ref(db_session, HR, "restricted-1", "work")
+    assert default_ref == explicit_ref

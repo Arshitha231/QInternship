@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
@@ -150,13 +150,22 @@ def org_chain(db: Session, caller: AuthenticatedUser, *, person_name: str, direc
 def filter_people(
     db: Session, caller: AuthenticatedUser, *,
     name: str | None = None, skill: str | None = None, level: str | None = None,
-    org_unit: str | None = None, office: str | None = None, language: str | None = None,
-    available: bool | None = None,
+    org_unit: str | None = None, office: str | list[str] | None = None, language: str | None = None,
+    available: bool | None = None, job_title: str | None = None,
 ) -> set[str]:
     """Which visible, active employees match these criteria -- a direct
     join query, no ranking/caps/Search: just the set of people who are
     correct, independent of how find_people would go about retrieving
-    them."""
+    them.
+
+    `office` as a list and `job_title` exist for Piece 2's search_people
+    ground truth (golden_set.py's compound-query cases, "Bangalore or
+    Singapore" / "title contains Director") -- find_people itself has no
+    parameter for either shape, so those two golden questions can only ever
+    be answered through search_people's PeopleQuery path, not find_people's
+    fixed parameters. Written fresh here rather than reusing
+    app.query_compiler.apply_filter, same independence rule as every other
+    criterion in this function (see module docstring)."""
     stmt = select(Employee).where(Employee.is_active == True)
 
     if name:
@@ -188,9 +197,12 @@ def filter_people(
         stmt = stmt.where(Employee.org_unit_id.in_(unit_ids))
 
     if office:
-        stmt = stmt.join(Office, Employee.office_id == Office.id).where(
-            (Office.name.ilike(f"%{office}%")) | (Office.city.ilike(f"%{office}%"))
-        )
+        offices = office if isinstance(office, list) else [office]
+        clauses = [or_(Office.name.ilike(f"%{o}%"), Office.city.ilike(f"%{o}%")) for o in offices]
+        stmt = stmt.join(Office, Employee.office_id == Office.id).where(or_(*clauses))
+
+    if job_title:
+        stmt = stmt.where(Employee.job_title.ilike(f"%{job_title}%"))
 
     if available:
         stmt = stmt.where(Employee.availability_status == AvailabilityStatus.available)

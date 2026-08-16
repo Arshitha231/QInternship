@@ -83,7 +83,11 @@ def unified_search(
     # finding (see execute_with_fallback), never a second, separate
     # AI system.
     if not results and clean_filters.get("skill"):
-        tool_call = ResolvedToolCall(name="find_people", arguments=clean_filters)
+        # "direct", not "deterministic" -- this bypasses resolve_intent()'s
+        # router entirely (it's GET /search's own filter-miss escalation,
+        # never touches the model), so it shouldn't read as the same thing
+        # app.tool_calling._deterministic_resolve() means by that label.
+        tool_call = ResolvedToolCall(name="find_people", arguments=clean_filters, routed_via="direct")
         started = time.monotonic()
         raw = execute_with_fallback(db, caller, tool_call, f"(direct query, skill miss) {clean_filters['skill']}",
                                     view_mode)
