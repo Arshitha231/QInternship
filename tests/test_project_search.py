@@ -382,3 +382,60 @@ def test_learning_and_filter_questions_are_not_stolen_by_find_experts(message, e
     assert name != "find_experts", f"find_experts stole {message!r}"
     if expected is not None:
         assert name == expected
+
+
+# ---------------------------------------------------------------------------
+# The problem pattern: coverage vs. stealing.
+#
+# The first version enumerated exact failure verbs and matched only 2 of the
+# 6 real demo queries -- "keeps DROPPING pods", "get stuck", "so flaky", "so
+# noisy" all fell through to direct search. There is no finite list of ways
+# to say something is broken, so it now matches the SHAPE of a complaint.
+#
+# Widening a router pattern is exactly how you accidentally steal another
+# tool's questions, so the widening is paired with a test that proves it
+# stole nothing.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "our kubernetes cluster keeps dropping pods and networking is flaky",
+    "payments are slow, p99 latency is terrible and transactions get stuck",
+    "our test suite is so flaky people just re-run the build",
+    "alerts are so noisy nobody reads the on-call channel any more",
+    "our nightly ETL pipeline keeps falling over and the dashboards are stale",
+    "nobody can log in, SSO and MFA keep failing",
+    "deploys keep timing out and half-applying",
+])
+def test_real_problem_phrasings_are_recognised(text):
+    from app.tool_calling import describes_a_problem
+
+    assert describes_a_problem(text), f"would fall through to direct search: {text!r}"
+
+
+def test_no_existing_few_shot_is_stolen_by_the_problem_pattern():
+    """Every few-shot that teaches a DIFFERENT tool must still fail to match.
+    find_mentor is the one most at risk — "who can help" phrasing overlaps
+    with asking for help on a problem — which is why the pattern
+    deliberately omits "who can help" and "help me with"."""
+    from app.tool_calling import FEW_SHOT_EXAMPLES, describes_a_problem
+
+    stolen = [
+        (text, tool) for text, tool, _args in FEW_SHOT_EXAMPLES
+        if tool != "find_experts" and describes_a_problem(text)
+    ]
+    assert not stolen, f"the problem pattern now captures other tools' examples: {stolen}"
+
+
+def test_golden_set_questions_are_not_stolen():
+    """The scored evaluation set is the broadest corpus of realistic phrasings
+    in the repo — none of it is problem-shaped, so none of it should match."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
+    from golden_set import ALL_QUESTIONS  # noqa: E402
+
+    from app.tool_calling import describes_a_problem
+
+    stolen = [q["id"] for q in ALL_QUESTIONS if describes_a_problem(q["text"])]
+    assert not stolen, f"problem pattern captured golden-set questions: {stolen}"
