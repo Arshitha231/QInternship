@@ -10,6 +10,8 @@ from app.tool_calling import (
     AssistantTurn,
     ResolvedToolCall,
     _deterministic_resolve,
+    _llm_routed_via,
+    _retry_after_execution_failure,
     execute_with_retry,
     resolve_intent,
 )
@@ -81,7 +83,8 @@ def test_resolve_intent_never_calls_real_model_on_a_confident_deterministic_matc
 
     turn = resolve_intent("who is my manager?")
     assert turn.tool_call == ResolvedToolCall(
-        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1})
+        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1},
+        routed_via="deterministic")
 
 
 def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(monkeypatch):
@@ -96,7 +99,11 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
 
     turn = resolve_intent("Taylor Cloud")
     assert calls == ["Taylor Cloud"]
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    # resolve_intent() stamps routed_via itself -- "llm_fixed_tool" since
+    # this isn't the search_people plan tool -- even though fake_real_resolve
+    # didn't set it.
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="llm_fixed_tool")
 
 
 def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(monkeypatch):
@@ -104,7 +111,8 @@ def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(
     monkeypatch.setattr(tool_calling, "_real_resolve", lambda message: None)  # simulates OpenAIError degrade
 
     turn = resolve_intent("Taylor Cloud")
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="last_resort_fallback")
 
 
 def test_resolve_intent_never_touches_real_model_when_not_configured(monkeypatch):
@@ -120,7 +128,8 @@ def test_resolve_intent_never_touches_real_model_when_not_configured(monkeypatch
     monkeypatch.setattr(tool_calling, "_real_resolve", _boom)
 
     turn = resolve_intent("Taylor Cloud")
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="last_resort_fallback")
 
 
 def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch):
@@ -135,7 +144,38 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
     real_mode_turn = resolve_intent("who is my manager?")
 
     assert mock_mode_turn.tool_call == real_mode_turn.tool_call == ResolvedToolCall(
-        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1})
+        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1},
+        routed_via="deterministic")
+
+
+# ---------------------------------------------------------------------------
+# _llm_routed_via() -- distinguishes the plan-shaped tool from the original
+# fixed-parameter ones, purely by name, for the audit_log.routed_via column
+# (added so the search_people tool's reasoning_effort question can be
+# answered from real failure rates rather than impressions during testing).
+# ---------------------------------------------------------------------------
+
+def test_llm_routed_via_classifies_the_plan_tool():
+    assert _llm_routed_via(ResolvedToolCall(name="search_people", arguments={})) == "llm_plan_tool"
+
+
+def test_llm_routed_via_classifies_every_fixed_tool_the_same_way():
+    for name in ("find_people", "get_person", "get_org_chain", "find_project_owner",
+                 "find_mentor", "skill_gap", "skill_scarcity"):
+        assert _llm_routed_via(ResolvedToolCall(name=name, arguments={})) == "llm_fixed_tool"
+
+
+def test_retry_after_execution_failure_stamps_routed_via(monkeypatch):
+    # fake_real_resolve deliberately doesn't set routed_via itself -- same
+    # as a real _real_resolve() call never would -- to confirm
+    # _retry_after_execution_failure() is what stamps it, classified the
+    # same way a first attempt would be.
+    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})))
+    failed_call = ResolvedToolCall(name="find_people", arguments={"name": "Wrong Name"})
+    corrected = _retry_after_execution_failure("who is Wrong Name", failed_call, "no such person")
+    assert corrected == ResolvedToolCall(
+        name="find_people", arguments={"name": "Right Name"}, routed_via="llm_fixed_tool")
 
 
 # ---------------------------------------------------------------------------

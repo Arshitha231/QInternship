@@ -32,4 +32,14 @@ class AuditLog(Base):
     # thing an audit table must not do. Read null as "not recorded".
     source: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # Only ever set on the assistant-level row app.tool_calling._write_audit
+    # writes (action="assistant") -- "deterministic" / "llm_fixed_tool" /
+    # "llm_plan_tool" / "last_resort_fallback" / "direct". Null on every
+    # service-level row (find_people/get_person/... each write their own,
+    # with no routing concept of their own -- GET /people calls find_people
+    # directly, with nothing to record here) and on rows written before
+    # this column existed. Same "null means not recorded, never guessed"
+    # rule as `source`.
+    routed_via: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

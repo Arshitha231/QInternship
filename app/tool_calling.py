@@ -322,6 +322,13 @@ def build_messages(user_message: str) -> list[dict]:
 class ResolvedToolCall(BaseModel):
     name: str
     arguments: dict
+    # Set once, centrally, by resolve_intent()/_retry_after_execution_failure
+    # -- never at each of _deterministic_resolve()'s ~10 individual match
+    # branches, so adding this didn't mean touching all of them. Read by
+    # execute_with_fallback() when it writes the assistant-level audit row;
+    # None on every ResolvedToolCall built anywhere else (unified_search.py's
+    # direct-mode broadening constructs its own and sets "direct" itself).
+    routed_via: str | None = None
 
 
 class AssistantTurn(BaseModel):
@@ -630,6 +637,15 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
     return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
 
 
+def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
+    """Distinguishes the new plan-shaped tool from the original fixed-
+    parameter ones, purely by name -- both come out of the same
+    _real_resolve() call, so name is the only signal that tells them
+    apart. Shared by resolve_intent() and _retry_after_execution_failure()
+    so a retried call is classified the same way the first attempt was."""
+    return "llm_plan_tool" if tool_call.name == "search_people" else "llm_fixed_tool"
+
+
 def resolve_intent(message: str) -> AssistantTurn:
     """Deterministic router first, always — tried whether AI_MODE is real
     or mock, per ARCHITECTURE_2.md §6's "promote it to primary": an exact
@@ -643,15 +659,27 @@ def resolve_intent(message: str) -> AssistantTurn:
     free-text search the deterministic router used to always end on by
     itself — applied exactly once, here, rather than duplicated at every
     call site that used to fall back to it directly.
+
+    Every branch stamps ResolvedToolCall.routed_via before returning --
+    the one place this is set for a first attempt, so the ~10 individual
+    match branches inside _deterministic_resolve() didn't each need to know
+    about it. Lets the assistant-level audit row (execute_with_fallback's
+    _write_audit) answer "how did this get routed" without touching any of
+    the service functions downstream of it.
     """
     deterministic = _deterministic_resolve(message)
     if deterministic is not None:
+        if deterministic.tool_call is not None:
+            deterministic.tool_call.routed_via = "deterministic"
         return deterministic
     if _mode() == "real":
         real = _real_resolve(message)
         if real is not None:
+            if real.tool_call is not None:
+                real.tool_call.routed_via = _llm_routed_via(real.tool_call)
             return real
-    return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"query": message}))
+    return AssistantTurn(tool_call=ResolvedToolCall(
+        name="find_people", arguments={"query": message}, routed_via="last_resort_fallback"))
 
 
 # ---------------------------------------------------------------------------
@@ -726,10 +754,13 @@ def execute_tool_call(
     raise ValueError(f"model requested an unknown tool: {name!r}")
 
 
-def _write_audit(db: Session, caller: AuthenticatedUser, query_text: str, result_count: int) -> None:
+def _write_audit(
+    db: Session, caller: AuthenticatedUser, query_text: str, result_count: int,
+    routed_via: str | None = None,
+) -> None:
     db.add(AuditLog(
         actor_id=caller.id, action="assistant", query_text=query_text, result_count=result_count,
-        fields_returned="[]", timestamp=datetime.now(),
+        fields_returned="[]", routed_via=routed_via, timestamp=datetime.now(),
     ))
     db.commit()
 
@@ -749,7 +780,7 @@ def execute_with_fallback(
     try:
         result = execute_tool_call(db, caller, tool_call, view_mode)
     except (TypeError, ValueError, KeyError):
-        _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0)
+        _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0, tool_call.routed_via)
         return {
             "message": "I found a matching action but couldn't complete it — try rephrasing.",
             "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": None,
@@ -778,10 +809,12 @@ def execute_with_fallback(
                     f'Nobody matched "{requested}" directly. {len(related)} {family_label}-family '
                     f"speaker{plural} might help instead: {names}."
                 )
-                _write_audit(db, caller, f"{source} -> find_people(language related to {requested})", len(related))
+                _write_audit(
+                    db, caller, f"{source} -> find_people(language related to {requested})",
+                    len(related), tool_call.routed_via)
                 return {"message": text, "tool_call": tool_call.name,
                         "arguments": tool_call.arguments, "result": related}
-            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0)
+            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0, tool_call.routed_via)
             return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
                     "arguments": tool_call.arguments, "result": result}
 
@@ -795,14 +828,18 @@ def execute_with_fallback(
                     f'Nobody has "{requested}" as an exact skill match. {len(similar)} '
                     f"{noun} with related experience might help: {names}."
                 )
-                _write_audit(db, caller, f"{source} -> find_people(skill broadened from {requested})", len(similar))
+                _write_audit(
+                    db, caller, f"{source} -> find_people(skill broadened from {requested})",
+                    len(similar), tool_call.routed_via)
                 return {"message": text, "tool_call": tool_call.name,
                         "arguments": tool_call.arguments, "result": similar}
-            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0)
+            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0, tool_call.routed_via)
             return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
                     "arguments": tool_call.arguments, "result": result}
 
-    _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 1 if result else 0)
+    _write_audit(
+        db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})",
+        1 if result else 0, tool_call.routed_via)
     return {"message": None, "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": result}
 
 
@@ -838,7 +875,10 @@ def _retry_after_execution_failure(
             "Please provide a corrected function call for the same request."
         ),
     }])
-    return retry_turn.tool_call if retry_turn is not None else None
+    if retry_turn is None or retry_turn.tool_call is None:
+        return None
+    retry_turn.tool_call.routed_via = _llm_routed_via(retry_turn.tool_call)
+    return retry_turn.tool_call
 
 
 def execute_with_retry(
