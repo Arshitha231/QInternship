@@ -64,6 +64,12 @@ class PolicyDecision:
 
 
 def _max_rows(plan: PeopleQuery) -> int:
+    # Deliberately scans plan.filters only, never plan.filter_groups: the
+    # premise ("an exact match on a uniqueness constraint narrows to at most
+    # one person") only holds when every row must satisfy that filter. A
+    # unique-field filter sitting inside ONE OR-branch doesn't bound the
+    # other branches' matches at all, so capping to 1 there would silently
+    # truncate real results from every other group.
     for f in plan.filters:
         if f.op == "eq" and f.field in UNIQUE_EXACT_FIELDS:
             return 1
@@ -84,8 +90,12 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser, view_mode: ViewMode = 
     # 2. INVARIANT 6: a filter on a field the role can't see is not
     # redacted, it's a hard denial -- WHERE cost_centre = 'X' leaks
     # membership through which rows come back even with the column never
-    # selected.
-    illegal_filter = next((f for f in plan.filters if f.field not in allowed), None)
+    # selected. Checked across plan.filters AND every filter_groups group --
+    # an OR-branch buried in the second group is exactly as much of a leak
+    # as a top-level filter; there is no "only the first group is checked"
+    # shortcut here.
+    all_filters = [*plan.filters, *(f for group in plan.filter_groups for f in group)]
+    illegal_filter = next((f for f in all_filters if f.field not in allowed), None)
     if illegal_filter is not None:
         return PolicyDecision(allow=False, reason=f"filter on restricted field '{illegal_filter.field}'")
 

@@ -23,7 +23,7 @@ this module changes nothing about find_people's current behavior.
 """
 from __future__ import annotations
 
-from sqlalchemy import Select, func, literal, or_, select
+from sqlalchemy import Select, func, literal, or_, select, union
 from sqlalchemy.orm import aliased
 
 from app.auth import AuthenticatedUser
@@ -157,6 +157,27 @@ def apply_filter(db, stmt: Select, f: Filter) -> Select:
     raise UnsupportedFilterError(f"'{f.field}' has no compiler rule yet")
 
 
+def _compile_group_ids(db, group: list[Filter], required_filters: list[Filter]) -> Select:
+    """One OR-branch of plan.filter_groups, compiled as its own
+    id-selecting Select -- a fresh statement per group, not a shared one, so
+    each group's own joins (apply_filter's "office" branch, e.g.) stay
+    scoped to that branch and never leak into or get skipped by another.
+
+    `required_filters` (policy obligations) are applied INSIDE every group,
+    exactly the same way compile_query() applies them to the top-level
+    plan.filters -- not just once at the outer AND. Obligations also still
+    get applied at the outer level below (harmless redundancy, AND is
+    idempotent), but embedding them here too means a restricted row is
+    excluded structurally by every single branch, not only "in aggregate"
+    by an AND-distributes-over-OR argument a future refactor of the outer
+    query shape could accidentally invalidate.
+    """
+    stmt = select(Employee.id)
+    for f in [*group, *required_filters]:
+        stmt = apply_filter(db, stmt, f)
+    return stmt
+
+
 def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
     """Returns an unexecuted Select(Employee.id) -- ids only. Field-level
     shaping into a response object stays exactly where it already lives in
@@ -171,6 +192,16 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
 
     for f in [*plan.filters, *decision.required_filters]:
         stmt = apply_filter(db, stmt, f)
+
+    if plan.filter_groups:
+        # Bounded DNF: filters (above) is an unconditional AND constraint;
+        # filter_groups layers an OR-of-AND on top of it. Each group is its
+        # own id-selecting Select (see _compile_group_ids) so per-group
+        # joins never collide; a UNION of those id sets IS the OR, since
+        # membership in the union means "matched at least one group."
+        group_selects = [_compile_group_ids(db, group, decision.required_filters) for group in plan.filter_groups]
+        group_ids = group_selects[0] if len(group_selects) == 1 else union(*group_selects)
+        stmt = stmt.where(Employee.id.in_(group_ids))
 
     if plan.order_by is not None:
         if plan.order_by not in ORDERABLE_FIELDS:

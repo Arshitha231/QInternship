@@ -322,6 +322,58 @@ def test_execute_tool_call_search_people_defaults_to_no_filters(db_session):
     assert result
 
 
+def test_execute_tool_call_dispatches_search_people_with_filter_groups(db_session):
+    # The actual cross-field OR case: job_title contains "Manager" and
+    # skills contains "Terraform" are different fields, not expressible by
+    # a single `filters` op="in" -- proves the wiring passes filter_groups
+    # all the way through to compile_query's union, not just to Pydantic
+    # construction.
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [], "filter_groups": [
+            [{"field": "job_title", "op": "contains", "value": "Manager"}],
+            [{"field": "skills", "op": "contains", "value": "Terraform"}],
+        ]},
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+    matched_manager = any("manager" in p.job_title.lower() for p in result)
+    matched_terraform_holder = any(p.id in ("search-filter-eng", "search-filter-fin") for p in result)
+    assert matched_manager
+    assert matched_terraform_holder
+
+
+def test_execute_tool_call_search_people_filter_groups_defaults_to_empty(db_session):
+    # filter_groups isn't in "required" on the tool schema -- a plan that
+    # only ever fills `filters` (today's overwhelmingly common case) must
+    # keep working exactly as before with no filter_groups key at all.
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [{"field": "job_title", "op": "contains", "value": "Manager"}]},
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+    assert all("manager" in p.job_title.lower() for p in result)
+
+
+def test_execute_tool_call_search_people_filter_groups_respects_view_mode(db_session):
+    # Same Invariant-6-adjacent guarantee as
+    # test_execute_tool_call_search_people_threads_view_mode below, but for
+    # a restricted row reachable only through the SECOND filter_groups
+    # branch -- proves the obligation still applies when view_mode makes it
+    # relevant, not just when the match came from a flat `filters` plan.
+    plan_args = {"filters": [], "filter_groups": [
+        [{"field": "org_unit", "op": "eq", "value": "Finance Operations"}],
+        [{"field": "id", "op": "eq", "value": "restricted-1"}],
+    ]}
+    tool_call = ResolvedToolCall(name="search_people", arguments=plan_args)
+    hr_caller = AuthenticatedUser(id="hr-plan-vm-groups", role="hr")
+    work_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="work")
+    employee_mode_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="employee")
+    assert "restricted-1" in [p.id for p in work_result]
+    assert "restricted-1" not in [p.id for p in employee_mode_result]
+
+
 def test_execute_tool_call_search_people_threads_view_mode(db_session):
     # employee view_mode must still redact the same way find_people's own
     # dispatch already does -- confirms this branch actually passes
