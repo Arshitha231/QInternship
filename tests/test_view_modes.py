@@ -152,6 +152,24 @@ async def test_hr_loses_restricted_record_access_in_employee_mode(client):
     assert employee.status_code == 404
 
 
+async def test_manager_reference_to_a_restricted_person_hidden_in_employee_mode(client):
+    """Same sharp edge as the test above, one hop removed: HR looking up
+    someone ELSE whose manager is restricted-1 used to still see that
+    manager's name via the `manager` reference in employee mode, because
+    app.query_compiler.enforced_person_ref evaluated as if the caller were
+    always in full work mode. "managed-by-restricted-1" (conftest.py) has
+    manager_id="restricted-1" specifically for this."""
+    work = await client.get(
+        "/people/managed-by-restricted-1", params={"view_mode": "work"}, headers=auth_headers("hr"))
+    employee = await client.get(
+        "/people/managed-by-restricted-1", params={"view_mode": "employee"}, headers=auth_headers("hr"))
+
+    assert work.status_code == 200
+    assert work.json()["manager"]["id"] == "restricted-1"
+    assert employee.status_code == 200
+    assert "manager" not in employee.json()
+
+
 async def test_own_salary_still_visible_in_employee_mode(client):
     """Self-access is ABAC, not a role privilege, so it survives employee
     mode — an hr caller looking at their own profile in employee mode sees

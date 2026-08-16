@@ -7,14 +7,22 @@ against app.permissions.is_record_visible.
 import pytest
 
 from app.auth import AuthenticatedUser
-from app.permissions import is_record_visible
-from app.policy import DEFAULT_LIMIT, enforce
+from app.permissions import is_record_visible, visible_fields
+from app.policy import (
+    DEFAULT_LIMIT,
+    can_see_direct_reports,
+    compute_visible_fields,
+    enforce,
+    excluded_by_obligations,
+)
 from app.query_plan import Filter, PeopleQuery
 
 HR = AuthenticatedUser(id="hr-1", role="hr")
 MANAGER = AuthenticatedUser(id="mgr-1", role="manager")
 EMPLOYEE = AuthenticatedUser(id="emp-1", role="employee")
+IT = AuthenticatedUser(id="it-1", role="it")
 NON_HR_ROLES = (MANAGER, EMPLOYEE)
+VIEW_MODES = ("employee", "work")
 
 
 # ---------------------------------------------------------------------------
@@ -158,25 +166,145 @@ def _excluded_by_obligations(decision, employees) -> set[str]:
     return excluded
 
 
-@pytest.mark.parametrize("caller", [HR, MANAGER, EMPLOYEE])
-def test_obligations_agree_exactly_with_is_record_visible(db_session, caller):
+@pytest.mark.parametrize("caller", [HR, MANAGER, EMPLOYEE, IT])
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_obligations_agree_exactly_with_is_record_visible(db_session, caller, view_mode):
     from app.models import Employee
 
     employees = db_session.query(Employee).filter(Employee.is_active == True).all()  # noqa: E712
-    decision = enforce(PeopleQuery(select=["id"]), caller)
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
 
     excluded_by_obligation = _excluded_by_obligations(decision, employees)
-    excluded_by_permissions = {e.id for e in employees if not is_record_visible(caller, e)}
+    excluded_by_permissions = {e.id for e in employees if not is_record_visible(caller, e, view_mode)}
 
     assert excluded_by_obligation == excluded_by_permissions
 
 
-def test_hr_has_no_row_scoping_obligation():
-    decision = enforce(PeopleQuery(select=["id"]), HR)
+def test_hr_has_no_row_scoping_obligation_in_work_mode():
+    decision = enforce(PeopleQuery(select=["id"]), HR, "work")
     assert decision.required_filters == []
+
+
+def test_hr_gets_the_restricted_exclusion_obligation_in_employee_mode():
+    # The parity fix: before enforce() took a view_mode, this checked raw
+    # caller.role, so an hr caller "previewing" employee mode kept seeing
+    # restricted employees when nothing else in the same response would
+    # have -- is_record_visible's own effective_role-based collapse already
+    # denied them there. Now the two agree (also covered generically by
+    # test_obligations_agree_exactly_with_is_record_visible above; this one
+    # pins the specific case in plain terms since it's the concrete bug).
+    decision = enforce(PeopleQuery(select=["id"]), HR, "employee")
+    assert decision.required_filters == [Filter(field="availability_status", op="ne", value="restricted")]
 
 
 @pytest.mark.parametrize("caller", NON_HR_ROLES)
 def test_non_hr_gets_the_restricted_exclusion_obligation(caller):
     decision = enforce(PeopleQuery(select=["id"]), caller)
     assert decision.required_filters == [Filter(field="availability_status", op="ne", value="restricted")]
+
+
+# ---------------------------------------------------------------------------
+# can_see_direct_reports -- the one shared decision behind find_people's
+# direct_reports enrichment and get_org_chain's direction="down" gate,
+# consolidated from two independently-written inline checks that had
+# already drifted (only one of the two collapsed via effective_role).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_manager_and_hr_can_see_direct_reports_in_work_mode(view_mode):
+    assert can_see_direct_reports("manager", "work")
+    assert can_see_direct_reports("hr", "work")
+
+
+def test_employee_and_it_cannot_see_direct_reports_in_work_mode():
+    assert not can_see_direct_reports("employee", "work")
+    assert not can_see_direct_reports("it", "work")
+
+
+def test_hr_loses_direct_reports_visibility_in_employee_mode():
+    # Same collapse as the restricted-record obligation above -- hr
+    # previewing "employee" mode is an ordinary employee for this decision
+    # too, so they lose the manager/hr-only direct_reports view.
+    assert not can_see_direct_reports("hr", "employee")
+
+
+def test_manager_loses_direct_reports_visibility_in_employee_mode():
+    assert not can_see_direct_reports("manager", "employee")
+
+
+def test_can_see_direct_reports_defaults_to_work_mode():
+    # get_org_chain has no view_mode parameter at all and calls this with
+    # role only -- the default must match its pre-existing (raw-role)
+    # behavior exactly, not silently start collapsing.
+    assert can_see_direct_reports("manager") == can_see_direct_reports("manager", "work")
+    assert can_see_direct_reports("hr") == can_see_direct_reports("hr", "work")
+
+
+# ---------------------------------------------------------------------------
+# The before/after comparison this migration's plan requires: does the new
+# stack (excluded_by_obligations + compute_visible_fields, both driven by
+# enforce()) agree EXACTLY with the old stack (is_record_visible +
+# visible_fields) for every fixture employee, across all 8 role/view_mode
+# combinations? Both implementations still exist side by side -- see this
+# migration's plan for why app.permissions isn't touched -- so this runs
+# before find_people/get_person/get_org_chain's call sites are switched over,
+# and stays in the suite permanently afterward as a standing regression net,
+# not a throwaway migration check. A disagreement here is a real finding, not
+# a test to adjust.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("caller", [HR, MANAGER, EMPLOYEE, IT])
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_new_stack_agrees_with_old_stack_for_every_employee(db_session, caller, view_mode):
+    from app.models import Employee
+
+    employees = db_session.query(Employee).filter(Employee.is_active == True).all()  # noqa: E712
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+
+    for target in employees:
+        old_visible = is_record_visible(caller, target, view_mode)
+        new_visible = not excluded_by_obligations(decision, target)
+        assert old_visible == new_visible, (
+            f"record visibility disagreement for target={target.id} caller={caller.role} "
+            f"view_mode={view_mode}: old={old_visible} new={new_visible}"
+        )
+
+        old_fields = visible_fields(db_session, caller, target, view_mode)
+        new_fields = compute_visible_fields(db_session, caller, target, view_mode)
+        assert old_fields == new_fields, (
+            f"field-visibility disagreement for target={target.id} caller={caller.role} "
+            f"view_mode={view_mode}: old={old_fields} new={new_fields}"
+        )
+
+
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_new_stack_agrees_with_old_stack_on_self_lookup(db_session, view_mode):
+    # HR/MANAGER/EMPLOYEE/IT above are synthetic callers with no matching
+    # Employee row, so abac_extra_fields' self-grant and department_filter's
+    # same-division check never actually fire for them -- this exercises
+    # both against a real employee looking at their own record instead.
+    # "stranger-1" (conftest.py) has a real salary specifically for this.
+    from app.models import Employee
+
+    self_caller = AuthenticatedUser(id="stranger-1", role="employee")
+    target = db_session.get(Employee, "stranger-1")
+    decision = enforce(PeopleQuery(select=["id"]), self_caller, view_mode)
+
+    assert is_record_visible(self_caller, target, view_mode) == (not excluded_by_obligations(decision, target))
+    assert visible_fields(db_session, self_caller, target, view_mode) == \
+        compute_visible_fields(db_session, self_caller, target, view_mode)
+
+
+@pytest.mark.parametrize("view_mode", VIEW_MODES)
+def test_new_stack_agrees_with_old_stack_for_managers_own_report(db_session, view_mode):
+    # "mgr-1" is both a real Employee row and MANAGER's caller id above, so
+    # this exercises department_filter's same-division same-caller path for
+    # real, looking at their own direct report ("report-1").
+    from app.models import Employee
+
+    target = db_session.get(Employee, "report-1")
+    decision = enforce(PeopleQuery(select=["id"]), MANAGER, view_mode)
+
+    assert is_record_visible(MANAGER, target, view_mode) == (not excluded_by_obligations(decision, target))
+    assert visible_fields(db_session, MANAGER, target, view_mode) == \
+        compute_visible_fields(db_session, MANAGER, target, view_mode)

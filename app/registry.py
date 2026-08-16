@@ -13,9 +13,9 @@ populated tiers (INTERNAL, HR_ONLY): every field gets a tier and goes
 through the identical is_visible() check, including `id` and `full_name`
 — there is no "public" tier that skips the check.
 
-app/permissions.py's ABAC exceptions don't fit this per-role static model
-at all — "who comes back" isn't known until the query runs, so they stay
-exactly where they already are, applied post-retrieval, on top of
+app/permissions.py's ABAC exceptions don't fit this static (role, view_mode)
+model at all — "who comes back" isn't known until the query runs, so they
+stay exactly where they already are, applied post-retrieval, on top of
 whatever this registry says statically:
 
   * personal_mobile (self or direct manager): registered anyway (every
@@ -55,6 +55,8 @@ from typing import Literal
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
+
+from app.permissions import ViewMode
 
 
 class Sensitivity(str, Enum):
@@ -112,9 +114,15 @@ REGISTRY: dict[str, FieldSpec] = {
 
     # app.permissions.BASE_FIELDS (19 fields), relabeled INTERNAL verbatim.
     # filterable=False on fields find_people has no filter parameter for
-    # today — Round 2 can widen this deliberately, not by silent default.
+    # today — widened deliberately, not by silent default, as each gets a
+    # real caller. job_title's the first: Piece 2 (the model-emitted
+    # PeopleQuery path) needs "title contains Architect", which nothing
+    # could express before it had a REGISTRY entry at all. contains only --
+    # an exact job_title match isn't a realistic ask, and the Search index
+    # already had job_title as filterable, unused, waiting for this side to
+    # catch up (search_index_schema.json).
     "preferred_name": _f("preferred_name", "str", {"eq", "contains"}, Sensitivity.INTERNAL),
-    "job_title": _f("job_title", "str", set(), Sensitivity.INTERNAL, filterable=False),
+    "job_title": _f("job_title", "str", {"contains"}, Sensitivity.INTERNAL),
     "org_unit": _f("org_unit", "str", {"eq", "in"}, Sensitivity.INTERNAL, derived_from=("org_unit_id",)),
     "work_email": _f("work_email", "str", {"eq"}, Sensitivity.INTERNAL),
     "work_phone": _f("work_phone", "str", set(), Sensitivity.INTERNAL, filterable=False),
@@ -174,33 +182,51 @@ IGNORED_COLUMNS: frozenset[str] = frozenset({
     "delegate_id",            # FK; surfaces under "delegate"
 })
 
-ALLOWED_SENSITIVITY: dict[str, frozenset[Sensitivity]] = {
-    "employee": frozenset({Sensitivity.INTERNAL}),
-    "manager": frozenset({Sensitivity.INTERNAL}),
-    "hr": frozenset({Sensitivity.INTERNAL, Sensitivity.HR_ONLY, Sensitivity.DERIVED_HR}),
-    # `manager` gets no extra *sensitivity* tier over `employee` — its
-    # extra privileges (seeing direct_reports, e.g.) are row-scoping
-    # obligations (app/policy.py), not broader field access.
-    #
+# Keyed by (role, view_mode), matching app.permissions.ALLOWED exactly --
+# view modes didn't exist yet when this table was first built role-only, so
+# an hr/it caller browsing in "employee" preview mode used to still get the
+# full role-based set here even though every other part of the response
+# correctly collapses to the employee view. Only `hr` actually differs
+# between its two *reachable* modes (WORK_MODE_ROLES = {"hr", "it"} means
+# employee/manager can never actually reach "work" regardless of what they
+# request -- resolve_view_mode() pins them to "employee" first). The four
+# rows below written out for both roles anyway, same as permissions.ALLOWED
+# does, so every (role, view_mode) pair resolves without a KeyError -- two of
+# them ("employee","work") / ("manager","work")) describe a state no real
+# caller ever reaches, kept only so the table is total, not derived.
+ALLOWED_SENSITIVITY: dict[tuple[str, ViewMode], frozenset[Sensitivity]] = {
+    ("employee", "employee"): frozenset({Sensitivity.INTERNAL}),
+    ("employee", "work"): frozenset({Sensitivity.INTERNAL}),  # unreachable, kept for totality
+    # `manager` gets no extra *sensitivity* tier over `employee` in either
+    # mode -- its extra privileges (seeing direct_reports, e.g.) are
+    # row-scoping obligations (app/policy.py's can_see_direct_reports), not
+    # broader field access.
+    ("manager", "employee"): frozenset({Sensitivity.INTERNAL}),
+    ("manager", "work"): frozenset({Sensitivity.INTERNAL}),  # unreachable, kept for totality
+    # `hr` is the only role whose two *reachable* modes actually differ.
+    ("hr", "employee"): frozenset({Sensitivity.INTERNAL}),
+    ("hr", "work"): frozenset({Sensitivity.INTERNAL, Sensitivity.HR_ONLY, Sensitivity.DERIVED_HR}),
     # `it` (added alongside view modes in app/permissions.py, after this
-    # registry was first built): same tier as employee/manager, per that
-    # module's own ALLOWED table -- ("it", "work") gets BASE_FIELDS plus
-    # project_desc, explicitly NOT INTERNAL_FIELDS ("it administers the
-    # directory, it does not read salaries"). project_desc itself has no
-    # REGISTRY entry (nested under project_history, not an employees-table
-    # column) -- same known-gap category as direct_reports/training_status,
-    # not something this tier needs to account for.
-    "it": frozenset({Sensitivity.INTERNAL}),
+    # registry was first built): same tier as employee/manager in both
+    # modes, per that module's own ALLOWED table -- ("it", "work") gets
+    # BASE_FIELDS plus project_desc, explicitly NOT INTERNAL_FIELDS ("it
+    # administers the directory, it does not read salaries"). project_desc
+    # itself has no REGISTRY entry (nested under project_history, not an
+    # employees-table column) -- same known-gap category as
+    # direct_reports/training_status, not something this tier needs to
+    # account for.
+    ("it", "employee"): frozenset({Sensitivity.INTERNAL}),
+    ("it", "work"): frozenset({Sensitivity.INTERNAL}),
 }
 
 
-def is_visible(field: str, role: str) -> bool:
+def is_visible(field: str, role: str, view_mode: ViewMode = "work") -> bool:
     spec = REGISTRY.get(field)
     if spec is None:
         return False  # unlisted -> doesn't exist
     if spec.sensitivity is None:
         return False  # registered but unlabelled -> restricted until labelled
-    return spec.sensitivity in ALLOWED_SENSITIVITY[role]
+    return spec.sensitivity in ALLOWED_SENSITIVITY[(role, view_mode)]
 
 
 def assert_registry_covers_schema(engine: Engine, table_name: str = "employees") -> None:

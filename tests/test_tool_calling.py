@@ -10,6 +10,9 @@ from app.tool_calling import (
     AssistantTurn,
     ResolvedToolCall,
     _deterministic_resolve,
+    _llm_routed_via,
+    _retry_after_execution_failure,
+    execute_tool_call,
     execute_with_retry,
     resolve_intent,
 )
@@ -33,6 +36,20 @@ def test_confident_named_relationship_still_matches():
     turn = _deterministic_resolve("who does Sean Wilson report to?")
     assert turn is not None
     assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"name": "Sean Wilson"})
+
+
+def test_gap_keyword_is_not_a_bare_substring_match():
+    # Regression: "gap" used to be a bare `"gap" in text` check, which also
+    # matches inside "Singapore" (sin-GAP-ore) -- misrouting any question
+    # naming that office to skill_gap before the deterministic router's
+    # return value ever let a later branch, or the real model, see the
+    # text at all.
+    turn = _deterministic_resolve("who's based in Bangalore or Singapore?")
+    assert turn is None  # no confident deterministic match -- defers to the real model
+    # The legitimate phrasing ("gaps") must still match.
+    turn = _deterministic_resolve("what are our gaps on Rust and Terraform")
+    assert turn is not None
+    assert turn.tool_call.name == "skill_gap"
 
 
 def test_confident_injection_still_short_circuits():
@@ -81,7 +98,8 @@ def test_resolve_intent_never_calls_real_model_on_a_confident_deterministic_matc
 
     turn = resolve_intent("who is my manager?")
     assert turn.tool_call == ResolvedToolCall(
-        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1})
+        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1},
+        routed_via="deterministic")
 
 
 def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(monkeypatch):
@@ -96,7 +114,11 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
 
     turn = resolve_intent("Taylor Cloud")
     assert calls == ["Taylor Cloud"]
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    # resolve_intent() stamps routed_via itself -- "llm_fixed_tool" since
+    # this isn't the search_people plan tool -- even though fake_real_resolve
+    # didn't set it.
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="llm_fixed_tool")
 
 
 def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(monkeypatch):
@@ -104,7 +126,8 @@ def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(
     monkeypatch.setattr(tool_calling, "_real_resolve", lambda message: None)  # simulates OpenAIError degrade
 
     turn = resolve_intent("Taylor Cloud")
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="last_resort_fallback")
 
 
 def test_resolve_intent_never_touches_real_model_when_not_configured(monkeypatch):
@@ -120,7 +143,8 @@ def test_resolve_intent_never_touches_real_model_when_not_configured(monkeypatch
     monkeypatch.setattr(tool_calling, "_real_resolve", _boom)
 
     turn = resolve_intent("Taylor Cloud")
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"query": "Taylor Cloud"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"query": "Taylor Cloud"}, routed_via="last_resort_fallback")
 
 
 def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch):
@@ -135,7 +159,38 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
     real_mode_turn = resolve_intent("who is my manager?")
 
     assert mock_mode_turn.tool_call == real_mode_turn.tool_call == ResolvedToolCall(
-        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1})
+        name="get_org_chain", arguments={"person": "self", "direction": "up", "depth": 1},
+        routed_via="deterministic")
+
+
+# ---------------------------------------------------------------------------
+# _llm_routed_via() -- distinguishes the plan-shaped tool from the original
+# fixed-parameter ones, purely by name, for the audit_log.routed_via column
+# (added so the search_people tool's reasoning_effort question can be
+# answered from real failure rates rather than impressions during testing).
+# ---------------------------------------------------------------------------
+
+def test_llm_routed_via_classifies_the_plan_tool():
+    assert _llm_routed_via(ResolvedToolCall(name="search_people", arguments={})) == "llm_plan_tool"
+
+
+def test_llm_routed_via_classifies_every_fixed_tool_the_same_way():
+    for name in ("find_people", "get_person", "get_org_chain", "find_project_owner",
+                 "find_mentor", "skill_gap", "skill_scarcity"):
+        assert _llm_routed_via(ResolvedToolCall(name=name, arguments={})) == "llm_fixed_tool"
+
+
+def test_retry_after_execution_failure_stamps_routed_via(monkeypatch):
+    # fake_real_resolve deliberately doesn't set routed_via itself -- same
+    # as a real _real_resolve() call never would -- to confirm
+    # _retry_after_execution_failure() is what stamps it, classified the
+    # same way a first attempt would be.
+    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})))
+    failed_call = ResolvedToolCall(name="find_people", arguments={"name": "Wrong Name"})
+    corrected = _retry_after_execution_failure("who is Wrong Name", failed_call, "no such person")
+    assert corrected == ResolvedToolCall(
+        name="find_people", arguments={"name": "Right Name"}, routed_via="llm_fixed_tool")
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +294,107 @@ def test_execute_with_retry_stops_immediately_if_the_model_offers_no_correction(
     result = execute_with_retry(db_session, CALLER, bad_call, "who is Wrong Name")
     assert calls["n"] == 1  # gave up after the first non-answer, didn't keep spinning
     assert result["result"] is None
+
+
+# ---------------------------------------------------------------------------
+# search_people (Piece 2) dispatch and retry -- end to end against the real
+# db_session fixture and the real search_people_by_plan(), not a mocked
+# execute_tool_call, since the point is proving the actual wiring works,
+# not just that execute_with_retry's loop mechanics are sound in isolation
+# (those are already covered above using find_people).
+# ---------------------------------------------------------------------------
+
+def test_execute_tool_call_dispatches_search_people(db_session):
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [{"field": "job_title", "op": "contains", "value": "Manager"}]},
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+    assert all("manager" in p.job_title.lower() for p in result)
+
+
+def test_execute_tool_call_search_people_defaults_to_no_filters(db_session):
+    # "filters" is the only required property on the tool schema, but an
+    # empty list is still legal -- everyone active, capped normally.
+    tool_call = ResolvedToolCall(name="search_people", arguments={"filters": []})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result
+
+
+def test_execute_tool_call_search_people_threads_view_mode(db_session):
+    # employee view_mode must still redact the same way find_people's own
+    # dispatch already does -- confirms this branch actually passes
+    # view_mode through rather than silently defaulting to "work" for every
+    # caller regardless of what was resolved server-side.
+    restricted_filter = {"filters": [{"field": "id", "op": "eq", "value": "restricted-1"}]}
+    tool_call = ResolvedToolCall(name="search_people", arguments=restricted_filter)
+    hr_caller = AuthenticatedUser(id="hr-plan-vm", role="hr")
+    work_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="work")
+    employee_mode_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="employee")
+    assert [p.id for p in work_result] == ["restricted-1"]
+    assert employee_mode_result == []
+
+
+def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session, monkeypatch):
+    # A field/op the model invented despite the schema's enum raises at
+    # Filter(**f) construction (pydantic.ValidationError, a ValueError
+    # subclass) -- joins the same bounded retry loop as any other malformed
+    # call, no special-casing needed in execute_tool_call itself.
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_real_resolve(message, extra_messages=None):
+        assert extra_messages is not None  # this IS the retry call
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="search_people",
+            arguments={"filters": [{"field": "job_title", "op": "contains", "value": "Manager"}]},
+        ))
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    bad_call = ResolvedToolCall(name="search_people", arguments={
+        "filters": [{"field": "not_a_real_field", "op": "eq", "value": "x"}],
+    })
+    result = execute_with_retry(db_session, CALLER, bad_call, "find people whose not_a_real_field is x")
+    assert result["result"] is not None
+    assert all("manager" in p.job_title.lower() for p in result["result"])
+
+
+def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_session, monkeypatch):
+    # Same generic-message guarantee tests/test_search_people_by_plan.py
+    # already proves at the function level -- this confirms it end to end
+    # through the retry loop specifically, since that's the exact path
+    # that would otherwise hand the denial reason straight back to the model.
+    #
+    # cost_centre is filterable=False, so validate() would reject it
+    # structurally (with the field name, safely -- that's a legal-shape
+    # error, not a sensitivity one) before enforce()'s own role check is
+    # ever reached, for every caller including hr -- exactly the
+    # same reason tests/test_search_people_by_plan.py's own Invariant-6
+    # test bypasses validate() to isolate enforce()'s behavior specifically.
+    import app.vocabulary
+    from app.vocabulary import ValidationResult
+    monkeypatch.setattr(app.vocabulary, "validate", lambda plan: ValidationResult(valid=True))
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    prompts_seen = []
+
+    def fake_real_resolve(message, extra_messages=None):
+        if extra_messages:
+            prompts_seen.append(extra_messages[0]["content"])
+        return None  # give up after the first retry prompt -- we only need to inspect it
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    employee_caller = AuthenticatedUser(id="emp-invariant6", role="employee")
+    denied_call = ResolvedToolCall(
+        name="search_people", arguments={"filters": [{"field": "cost_centre", "op": "eq", "value": "CC-1"}]})
+    result = execute_with_retry(db_session, employee_caller, denied_call, "find people in cost centre CC-1")
+    assert result["result"] is None
+    assert len(prompts_seen) == 1
+    # The field name itself is unavoidably present -- it's an echo of the
+    # model's OWN attempted call, not a server secret. What must never
+    # appear is decision.reason, which would additionally confirm that
+    # "cost_centre" is a real, recognized, restricted field rather than
+    # just something the model happened to try.
+    assert "that request can't be answered as asked" in prompts_seen[0]
+    assert "filter on restricted field" not in prompts_seen[0]

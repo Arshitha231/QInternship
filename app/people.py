@@ -11,10 +11,23 @@ the model's reach.
 Step 8: find_people's retrieve step now tries Azure AI Search (hybrid
 keyword+fuzzy+vector via native RRF) first when there's a name/description
 query to rank on, falling back to the plain SQL query when Search isn't
-configured, has no query text to work with, or errors. Everything after
-retrieval — is_record_visible, capping, audit — is identical code running
-on identical Employee rows no matter which retrieval path produced them;
-Search never sees the caller and never makes a visibility decision.
+configured, has no query text to work with, or errors.
+
+"Filter records" is no longer a post-retrieval Python step. app.policy.enforce()
+is called once per request, and BOTH retrieval paths apply its
+required_filters natively before any row comes back — the SQL branch via
+app.query_compiler.apply_filter on its own Select, the Search branch by
+translating the same obligations into an OData filter (app/search_client.py's
+_build_filter). Search still never sees the caller's identity or role and
+never makes its own visibility decision — it only compiles whatever decision
+enforce() already made into its own filter syntax, same division of
+responsibility as before, just enforced earlier. is_record_visible/
+visible_fields (app/permissions.py) are no longer called anywhere in this
+file; app.policy.excluded_by_obligations/compute_visible_fields replace them,
+driven by the same enforce() decision. See this repo's migration notes for
+why app/permissions.py itself is untouched — those two functions remain the
+live gate for app/directory_tools.py and app/notifications.py, a separate,
+deferred scope.
 """
 from __future__ import annotations
 
@@ -37,14 +50,10 @@ from app.models import (
     Skill,
 )
 from app.models.enums import AvailabilityStatus, SkillLevel
-from app.permissions import (
-    ViewMode,
-    can_see_confidential_project,
-    effective_role,
-    is_record_visible,
-    visible_fields,
-)
-from app.query_compiler import enforced_person_ref
+from app.permissions import ViewMode, can_see_confidential_project
+from app.policy import can_see_direct_reports, compute_visible_fields, enforce, excluded_by_obligations
+from app.query_compiler import apply_filter, compile_query, enforced_person_ref
+from app.query_plan import PeopleQuery
 from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
@@ -249,12 +258,6 @@ def find_people(
         office=office, language=language, available=available,
     ).items() if v is not None}
 
-    # The role this request is answered as. In employee mode a privileged
-    # caller is an ordinary employee for every downstream decision — here
-    # that's the restricted-record filter and the direct_reports enrichment,
-    # both of which are role-keyed.
-    acting_role = effective_role(caller.role, view_mode)
-
     # Resolve skill/language synonyms once, up front — both the Search
     # filter and the SQL fallback need the same canonical name/id, and an
     # unknown skill/language or invalid level means no matches either way
@@ -353,25 +356,6 @@ def find_people(
     # cap on regardless of retrieval path — see the cap comment below.
     is_ranked_query = bool(effective_query and effective_query.strip())
 
-    candidates: list[Employee] | None = None
-    if exact_match_ids is None and is_ranked_query:
-        ranked_ids = search_people(
-            name=effective_query, skill=resolved_skill.name if resolved_skill else None,
-            level=parsed_level.value if parsed_level else None,
-            org_unit=org_unit_names, office=resolved_office,
-            language=resolved_lang.name if resolved_lang else None, available=available,
-            # A small buffer over the tight cap below, to absorb
-            # record-level filtering losses -- this branch is only ever
-            # reached when is_ranked_query is True (a pure filter combo
-            # never calls Search at all now), so there's no "wide headroom"
-            # case left to size for here.
-            top=MAX_SEARCH_RESULTS * 4,
-        )
-        if ranked_ids is not None:
-            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
-            by_id = {e.id: e for e in rows}
-            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
-
     # A result is only relevance-ranked — and therefore only trustworthy
     # under a tight cutoff — when there was actual free text for Search to
     # rank against (`effective_query`), or an exact-identifier short-circuit
@@ -380,7 +364,39 @@ def find_people(
     # above), so it always lands on the wide SQL-fallback cap below via
     # this same used_search=False path — RC3 (ARCHITECTURE_2.md §2) is now
     # structurally impossible for this case, not just capped correctly.
+    # Computed before retrieval now (not after) so both branches can apply
+    # it directly at the query level instead of over-fetching and slicing.
     used_search = is_ranked_query or exact_match_ids is not None
+    effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
+
+    # Row-level policy decision, computed once. Only `required_filters` is
+    # used here -- enforce()'s own cap logic (app/policy.py's _max_rows) has
+    # no concept of "this is a relevance-ranked query" and would always
+    # resolve to the wide DEFAULT_LIMIT, silently discarding the tight
+    # MAX_SEARCH_RESULTS cutoff above for ranked results. `select=["id"]` is
+    # arbitrary -- PersonSummary's SUMMARY_FIELDS need no per-record
+    # redaction (see the comment below), so dropped_fields is never
+    # consulted here, only required_filters.
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+
+    candidates: list[Employee] | None = None
+    if exact_match_ids is None and is_ranked_query:
+        ranked_ids = search_people(
+            name=effective_query, skill=resolved_skill.name if resolved_skill else None,
+            level=parsed_level.value if parsed_level else None,
+            org_unit=org_unit_names, office=resolved_office,
+            language=resolved_lang.name if resolved_lang else None, available=available,
+            required_filters=decision.required_filters,
+            # No overfetch margin needed anymore -- the restricted-employee
+            # obligation is now excluded at the index-filter level (above),
+            # not post-filtered in Python, so there's nothing left for a
+            # tighter-than-requested result to need headroom against.
+            top=MAX_SEARCH_RESULTS,
+        )
+        if ranked_ids is not None:
+            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
+            by_id = {e.id: e for e in rows}
+            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active == True)
@@ -412,23 +428,30 @@ def find_people(
         if resolved_lang:
             lang_subq = select(EmployeeSkill.employee_id).where(EmployeeSkill.skill_id == resolved_lang.id)
             stmt = stmt.where(Employee.id.in_(lang_subq))
+        for f in decision.required_filters:
+            stmt = apply_filter(db, stmt, f)
 
-        stmt = stmt.order_by(Employee.full_name)
+        stmt = stmt.order_by(Employee.full_name).limit(effective_cap)
         candidates = db.execute(stmt).scalars().all()
 
-    # 2. filter records
-    visible_records = [e for e in candidates if is_record_visible(caller, e, view_mode)]
-
+    # 2. filter records — no longer a Python post-filter: both branches
+    # above already exclude restricted employees at the query level (the
+    # OData filter for Search, the WHERE clause for SQL), so `candidates`
+    # is already policy-filtered. is_record_visible is not called anywhere
+    # in this function anymore.
+    #
     # 3. filter fields / 4. department check — PersonSummary only ever
     # carries SUMMARY_FIELDS, which is a subset of BASE_FIELDS visible to
     # every role with no ABAC/department gating. Per-record field filtering
     # is therefore provably a no-op for this shape; full RBAC/ABAC/
     # department filtering happens in get_person's detail view instead.
-
-    # 5. cap results — tight relevance cutoff for ranked Search results,
-    # the wider bulk-extraction ceiling for plain filter/browse queries.
-    effective_cap = MAX_SEARCH_RESULTS if used_search else MAX_RESULTS
-    capped = visible_records[:effective_cap]
+    #
+    # 5. cap results — tight relevance cutoff for ranked Search results, the
+    # wider bulk-extraction ceiling for plain filter/browse queries. Also
+    # already applied at the query level above (top=/`.limit()`); this slice
+    # is now just a defensive backstop, never expected to actually trim
+    # anything.
+    capped = candidates[:effective_cap]
 
     # A `name` search that resolves unambiguously to exactly one EXACT
     # full/preferred-name match can answer a relationship question ("who
@@ -471,23 +494,27 @@ def find_people(
             # only changes behavior for the one case a raw lookup missed:
             # the referenced manager/delegate is themself a restricted
             # record and the caller isn't hr.
-            manager_ref = enforced_person_ref(db, caller, e.manager_id) if e.manager_id else None
+            manager_ref = enforced_person_ref(db, caller, e.manager_id, view_mode) if e.manager_id else None
             if manager_ref:
                 kwargs["manager"] = manager_ref
                 fields_returned.add("manager")
-            delegate_ref = enforced_person_ref(db, caller, e.delegate_id) if e.delegate_id else None
+            delegate_ref = enforced_person_ref(db, caller, e.delegate_id, view_mode) if e.delegate_id else None
             if delegate_ref:
                 kwargs["delegate"] = delegate_ref
                 fields_returned.add("delegate")
-            # direct_reports: downward chain, manager/hr only — same RBAC
-            # gate as get_org_chain's "down" direction, same per-record
-            # is_record_visible filter as its downward traversal.
-            if acting_role in ("manager", "hr"):
-                reports = db.execute(
-                    select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
-                ).scalars().all()
-                visible_reports = [r for r in reports if is_record_visible(caller, r, view_mode)]
-                kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in visible_reports]
+            # direct_reports: downward chain, manager/hr only — same shared
+            # gate as get_org_chain's "down" direction (app.policy's
+            # can_see_direct_reports, consolidated from two independently
+            # -written inline checks that had already drifted). The
+            # restricted-employee obligation is pushed into this one-hop
+            # query directly via apply_filter, same as the main retrieval
+            # above, instead of a post-hoc is_record_visible Python filter.
+            if can_see_direct_reports(caller.role, view_mode):
+                reports_stmt = select(Employee).where(Employee.manager_id == e.id, Employee.is_active == True)
+                for f in decision.required_filters:
+                    reports_stmt = apply_filter(db, reports_stmt, f)
+                reports = db.execute(reports_stmt).scalars().all()
+                kwargs["direct_reports"] = [PersonRef(id=r.id, full_name=r.full_name) for r in reports]
                 fields_returned.add("direct_reports")
         results.append(PersonSummary(**kwargs))
 
@@ -501,6 +528,95 @@ def find_people(
 def _org_unit_name(db: Session, org_unit_id: int) -> str:
     unit = db.get(OrgUnit, org_unit_id)
     return unit.name if unit else ""
+
+
+def search_people_by_plan(
+    db: Session, caller: AuthenticatedUser, plan: PeopleQuery, view_mode: ViewMode = "work",
+) -> list[PersonSummary]:
+    """The model-emitted-PeopleQuery retrieval path (Piece 2) -- find_people's
+    named-parameter tool stays exactly as it is for the deterministic router
+    and the common cases; this is what the LLM fallback reaches for on a
+    request find_people's fixed parameters can't express ("Bangalore or
+    Singapore", "title contains Architect", any filter combination nobody
+    anticipated in advance). validate() -> snap() -> enforce() -> compile ->
+    respond, same pipeline shape as every other retrieval in this file, just
+    driven by a caller-constructed plan instead of named kwargs.
+
+    SQL only, deliberately -- app.query_plan.PeopleQuery's own docstring
+    already says it: "Deliberately cannot express free-text ranking...
+    reverted by mode 1". There's no query-text field anywhere on this
+    shape, so there is never anything for Azure Search to rank against
+    here, and find_people's own established rule is that a pure-filter
+    request with nothing to rank skips Search entirely regardless. A
+    Search-side compiler for this would have been dead code -- exactly the
+    non-goal ARCHITECTURE_2.md §16 already names.
+
+    validate()/enforce() failures raise ValueError, deliberately, so
+    execute_with_retry's existing bounded retry loop (app/tool_calling.py)
+    catches them for free -- no new retry mechanism needed. The two are
+    NOT given the same message treatment. validate()'s structural errors
+    (unknown field, illegal op, wrong value type) are safe to surface
+    verbatim -- they don't reveal anything about data sensitivity, only
+    about the plan's own legal shape. enforce()'s denial is different:
+    ARCHITECTURE_2.md §8's own rule is that "a denial must not reveal that
+    a restricted capability exists" (decision.reason is for the audit log,
+    never the caller), and _retry_after_execution_failure() feeds this
+    exception's message straight back to the model as part of the retry
+    prompt -- so a denial raises a generic message instead of
+    decision.reason, never naming the field it actually tripped on.
+
+    snap()'s unresolvable values (SnapNote.resolved is None) are NOT
+    treated as an error to retry -- retrying won't fix a value that
+    genuinely isn't in the database, same reasoning find_people's own
+    unresolvable skill/org_unit filters already follow (an empty result,
+    not an exception -- see tests/test_query_compiler.py's
+    test_unresolvable_*_returns_nothing_not_an_error). The unresolved value
+    is passed through as-is (snap() already does this substitution
+    internally), so compile_query() naturally returns zero rows for it.
+    The notes are folded into the audit query_text so they stay traceable;
+    a richer "did you mean X?" surfaced back to the caller is a real future
+    enhancement, not built in this pass.
+    """
+    # Local import: app.vocabulary imports app.org_chart (for
+    # FUZZY_MATCH_THRESHOLD), and app.org_chart imports app.people (for
+    # MAX_RESULTS) -- a module-level import here would be a real circular
+    # import. Same fix app.permissions.training_extra_fields already uses
+    # for the identical shape of cycle.
+    from app.vocabulary import snap, validate
+
+    validation = validate(plan)
+    if not validation.valid:
+        raise ValueError("; ".join(validation.errors))
+
+    snapped_plan, notes = snap(db, plan)
+
+    decision = enforce(snapped_plan, caller, view_mode)
+    if not decision.allow:
+        raise ValueError("that request can't be answered as asked")
+
+    stmt = compile_query(db, snapped_plan, decision)
+    ids = db.execute(stmt).scalars().all()
+    rows = db.execute(select(Employee).where(Employee.id.in_(ids))).scalars().all()
+    by_id = {e.id: e for e in rows}
+    ordered = [by_id[i] for i in ids if i in by_id]
+
+    results: list[PersonSummary] = [
+        PersonSummary(
+            id=e.id, full_name=e.full_name, preferred_name=e.preferred_name,
+            job_title=e.job_title, org_unit=_org_unit_name(db, e.org_unit_id),
+            office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
+            availability_status=e.availability_status.value,
+        )
+        for e in ordered
+    ]
+
+    query_text = plan.model_dump_json()
+    unresolved = "; ".join(f"{n.field}={n.original!r} unresolved" for n in notes if n.resolved is None)
+    if unresolved:
+        query_text = f"{query_text} [{unresolved}]"
+    _write_audit(db, caller, "search_people_by_plan", query_text, len(results), SUMMARY_FIELDS)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -520,16 +636,21 @@ def get_person(
 
         # 2. filter records — identical response (None -> 404) whether the
         # id doesn't exist or the record is record-level restricted.
-        if not is_record_visible(caller, target, view_mode):
+        # required_filters doesn't depend on `select`, so this lightweight
+        # decision and compute_visible_fields' own (differently-shaped)
+        # internal one always agree on required_filters -- two enforce()
+        # calls, but a pure, cheap function, not a second DB round trip.
+        decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+        if excluded_by_obligations(decision, target):
             return None
 
         # 3. filter fields (RBAC + ABAC) / 4. department check
-        fields = visible_fields(db, caller, target, view_mode)
+        fields = compute_visible_fields(db, caller, target, view_mode)
         fields_returned = fields
         found = True
 
         # 5. cap results — not applicable to a single-record lookup.
-        return _build_detail(db, caller, target, fields)
+        return _build_detail(db, caller, target, fields, view_mode)
     finally:
         # 6. write to audit_log — logged either way; the audit trail is
         # allowed to know more than the caller's response reveals.
@@ -555,13 +676,18 @@ def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: 
     # It didn't until the hook existed — an edited About was invisible to
     # search until the next manual full rebuild.
     reindex_employee(db, target)
-    fields = visible_fields(db, caller, target)
+    fields = compute_visible_fields(db, caller, target)
     result = _build_detail(db, caller, target, fields)
     _write_audit(db, caller, "update_own_bio", f"person_id={person_id}", 1, fields)
     return result
 
 
-def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str]) -> PersonDetail:
+def _build_detail(
+    db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str], view_mode: ViewMode = "work",
+) -> PersonDetail:
+    # view_mode defaults to "work" -- update_own_bio (below) has no view_mode
+    # concept of its own to give this, same deferred-scope reasoning as
+    # get_org_chain never gaining one; get_person passes its real value.
     kwargs: dict = {"id": target.id, "full_name": target.full_name}
 
     if "preferred_name" in fields:
@@ -589,11 +715,11 @@ def _build_detail(db: Session, caller: AuthenticatedUser, target: Employee, fiel
         kwargs["photo_url"] = target.photo_url
 
     if "manager" in fields and target.manager_id:
-        manager_ref = enforced_person_ref(db, caller, target.manager_id)
+        manager_ref = enforced_person_ref(db, caller, target.manager_id, view_mode)
         if manager_ref:
             kwargs["manager"] = manager_ref
     if "delegate" in fields and target.delegate_id:
-        delegate_ref = enforced_person_ref(db, caller, target.delegate_id)
+        delegate_ref = enforced_person_ref(db, caller, target.delegate_id, view_mode)
         if delegate_ref:
             kwargs["delegate"] = delegate_ref
 

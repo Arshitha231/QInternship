@@ -86,6 +86,12 @@ _FILTER_CLAUSE_RE = {
     "org_unit": re.compile(r"^org_unit eq '(.*)'$"),
     "office_or_city": re.compile(r"^\(office eq '(.*)' or office_city eq '(.*)'\)$"),
     "available": re.compile(r"^availability_status eq 'available'$"),
+    # app.policy.enforce()'s restricted-employee obligation, translated to
+    # OData by app.search_client._apply_required_filter -- excludes at the
+    # index-filter level now, not a post-retrieval Python step (this
+    # migration's whole point), so the fake backend needs to understand it
+    # exactly like Azure's real filter evaluation would.
+    "restricted": re.compile(r"^availability_status ne '(.*)'$"),
     "skill": re.compile(r"^skills/any\(s: s/name eq '([^']*)'(?: and s/level eq '([^']*)')?\)$"),
     "language": re.compile(r"^skills/any\(s: s/category eq 'language' and s/name eq '([^']*)'\)$"),
 }
@@ -130,6 +136,11 @@ def doc_matches_filter(doc: dict, filter_str: str) -> bool:
             continue
         if _FILTER_CLAUSE_RE["available"].match(clause):
             if doc["availability_status"] != "available":
+                return False
+            continue
+        m = _FILTER_CLAUSE_RE["restricted"].match(clause)
+        if m:
+            if doc["availability_status"] == m.group(1):
                 return False
             continue
         m = _FILTER_CLAUSE_RE["language"].match(clause)
