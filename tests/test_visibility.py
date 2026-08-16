@@ -243,3 +243,71 @@ async def test_get_person_audit_reflects_restricted_denial(client, db_session):
     assert row.actor_id == "auditor-3"
     assert row.result_count == 0
     assert row.fields_returned == "[]"
+
+
+# ---------------------------------------------------------------------------
+# linkedin_profile. Readable by every role (a LinkedIn page is already
+# public, so it sits in BASE_FIELDS, not INTERNAL_FIELDS); editable only by
+# HR in work mode, like every other update_employee field.
+#
+# The migration is the part worth guarding. Six PRs added this column to the
+# model, schemas, permissions, registry and the React form with NO migration,
+# and the whole suite passed — because tests build their schema from the
+# models with create_all(), so SQLite always has the column while the
+# deployed database does not. test_sql_portability.py covers the general
+# class; this covers the specific column.
+# ---------------------------------------------------------------------------
+
+def test_linkedin_profile_has_a_migration():
+    """A model column with no migration passes every test and 500s the
+    deployed app on the first employee query."""
+    import re
+    from pathlib import Path
+
+    versions = Path(__file__).resolve().parent.parent / "alembic" / "versions"
+    adds = [
+        f.name for f in versions.glob("*.py")
+        if re.search(r"add_column\(\s*[\"']employees[\"']\s*,\s*sa\.Column\(\s*[\"']linkedin_profile[\"']",
+                     f.read_text())
+    ]
+    assert adds, "employees.linkedin_profile exists on the model but no migration adds it"
+
+
+async def test_linkedin_profile_is_visible_to_every_role(client, db_session):
+    from app.models import Employee
+
+    target = db_session.query(Employee).filter(Employee.id == "stranger-1").one()
+    target.linkedin_profile = "https://www.linkedin.com/in/test-person-abc123"
+    db_session.commit()
+    try:
+        for role in ("employee", "manager", "hr"):
+            resp = await client.get("/people/stranger-1", headers=auth_headers(role))
+            assert resp.status_code == 200
+            assert resp.json()["linkedin_profile"] == "https://www.linkedin.com/in/test-person-abc123", role
+    finally:
+        target.linkedin_profile = None
+        db_session.commit()
+
+
+async def test_linkedin_profile_is_null_not_absent_when_unset(client, db_session):
+    """Present-as-null, matching bio and away_until_month.
+
+    The absent-never-null rule in this codebase is about VISIBILITY: a field
+    the caller may not see is left unset and dropped by exclude_unset, so its
+    key is genuinely missing. linkedin_profile is in BASE_FIELDS, so every
+    caller may see it — _build_detail therefore always sets it, and a person
+    with no URL on file comes back as null rather than absent. Null here
+    means "no URL recorded", which is information the caller is entitled to;
+    an absent key would wrongly imply a permission boundary.
+    """
+    from app.models import Employee
+
+    target = db_session.query(Employee).filter(Employee.id == "stranger-1").one()
+    assert target.linkedin_profile is None
+    body = (await client.get("/people/stranger-1", headers=auth_headers("hr"))).json()
+    assert "linkedin_profile" in body
+    assert body["linkedin_profile"] is None
+    # the contrast that makes the distinction real: a genuinely gated field
+    # is ABSENT for a caller who can't see it, not null.
+    employee_body = (await client.get("/people/stranger-1", headers=auth_headers("employee"))).json()
+    assert "salary" not in employee_body

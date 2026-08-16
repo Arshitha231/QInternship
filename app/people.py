@@ -713,6 +713,8 @@ def _build_detail(
         kwargs["employment_type"] = target.employment_type.value
     if "photo_url" in fields:
         kwargs["photo_url"] = target.photo_url
+    if "linkedin_profile" in fields:
+        kwargs["linkedin_profile"] = target.linkedin_profile
 
     if "manager" in fields and target.manager_id:
         manager_ref = enforced_person_ref(db, caller, target.manager_id, view_mode)
