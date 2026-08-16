@@ -18,7 +18,7 @@ from app.continuity import get_hr_review_queue as get_hr_review_queue_service
 from app.continuity import get_org_exposure as get_org_exposure_service
 from app.db import engine, get_db
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
-from app.models import Employee, TrainingCourse
+from app.models import DocSubjectMatch, Employee, TrainingCourse
 from app.models.enums import CourseStatus, display_status
 from app.notifications import notifications_for, notify_date_milestones
 from app.org_chart import get_org_chain as get_org_chain_service
@@ -29,17 +29,24 @@ from app.permissions import resolve_view_mode
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
 from app.project_skills import set_required_skills as set_required_skills_service
-from app.proposals import ProposalNotActionable, ProposalNotFound, ReviewDenied
+from app.proposals import ProposalNotActionable, ProposalNotFound, ReviewDenied, SubjectNotFound
 from app.proposals import accept as accept_proposal
+from app.proposals import bulk_accept as bulk_accept_proposals
+from app.proposals import bulk_reject as bulk_reject_proposals
 from app.proposals import correct as correct_proposal
+from app.proposals import edit as edit_proposal
 from app.proposals import list_proposals
+from app.proposals import list_subjects
 from app.proposals import reassign as reassign_proposal
 from app.proposals import reject as reject_proposal
+from app.proposals import resolve_subject
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
+    BulkProposalRequest,
     ContinuityOverview,
     CorrectProposalRequest,
+    EditProposalRequest,
     EmployeeContinuityDetail,
     EngagementExposure,
     HrReviewQueueItem,
@@ -53,6 +60,7 @@ from app.schemas import (
     ProjectSkillRequirementOut,
     ReassignProposalRequest,
     RecordCourseStatusRequest,
+    ResolveSubjectRequest,
     UpdateBioRequest,
     UpdateEmployeeRequest,
 )
@@ -574,30 +582,90 @@ async def upload_doc_route(
     except UnsupportedDocument as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
 
-    proposals = process_document(db, user, doc)
-    unresolved = sum(1 for p in proposals if p.employee_id is None)
+    doc_type, proposals = process_document(db, user, doc)
+    people_mentioned = (
+        db.query(DocSubjectMatch).filter(DocSubjectMatch.source_doc_id == doc.id).count()
+    )
     return {
         "doc_id": doc.id,
         "filename": doc.filename,
         "characters_extracted": len(doc.extracted_text),
+        "doc_type": doc_type.value,
+        "people_mentioned": people_mentioned,
         "proposed_changes": len(proposals),
-        "unresolved": unresolved,
         "status": "pending",
+    }
+
+
+@app.get("/doc_subject_matches")
+def list_doc_subject_matches_route(
+    doc_id: int | None = Query(None, description="Restrict to one uploaded document."),
+    status: str | None = Query(None, description="unresolved | resolved | new_hire_candidate"),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The required first screen: every person a document mentions, with
+    ranked candidate employees for each. Unresolved rows sort first."""
+    try:
+        subjects = list_subjects(
+            db, user, resolve_view_mode(user.role, view_mode), doc_id=doc_id, status=status)
+    except ReviewDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"unknown status: {status}") from exc
+    return {"doc_id": doc_id, "subjects": subjects}
+
+
+@app.post("/doc_subject_matches/{subject_id}/resolve")
+def resolve_doc_subject_match_route(
+    subject_id: int,
+    body: ResolveSubjectRequest,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Confirm who a mentioned person is (employee_id), or flag them for HR
+    to create first (new_hire). Only after this does that person's
+    proposed_changes rows become visible in GET /proposed_changes."""
+    try:
+        subject = resolve_subject(
+            db, user, subject_id, resolve_view_mode(user.role, view_mode),
+            employee_id=body.employee_id, new_hire=body.new_hire)
+    except ReviewDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SubjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="doc_subject_match not found") from exc
+    except ProposalNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "id": subject.id,
+        "extracted_name": subject.extracted_name,
+        "resolution_status": subject.resolution_status.value,
+        "resolved_employee_id": subject.resolved_employee_id,
+        "resolved_by": subject.resolved_by,
+        "resolved_at": subject.resolved_at,
     }
 
 
 @app.get("/proposed_changes")
 def list_proposed_changes_route(
     doc_id: int | None = Query(None, description="Restrict to one uploaded document."),
+    employee_id: str | None = Query(None, description="Restrict to one employee."),
     status: str | None = Query(None, description="pending | accepted | edited | rejected"),
     view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """The review queue, grouped by employee. Unresolved rows sort first."""
+    """The review queue, grouped by employee. Only rows whose
+    doc_subject_match has been resolved ever appear here — an unresolved
+    person's proposals live in GET /doc_subject_matches instead."""
     try:
         groups = list_proposals(
-            db, user, resolve_view_mode(user.role, view_mode), doc_id=doc_id, status=status)
+            db, user, resolve_view_mode(user.role, view_mode),
+            doc_id=doc_id, employee_id=employee_id, status=status)
     except ReviewDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
@@ -613,10 +681,26 @@ def accept_proposed_change_route(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     """Commit one proposed change to the real tables, re-index, and audit it
-    with source=ai_extraction. The only path by which extracted content
-    becomes searchable."""
+    with source=ai_extraction. One of only two paths by which extracted
+    content becomes searchable (the other is /edit)."""
     return _review_action(
         accept_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
+
+
+@app.post("/proposed_changes/{proposal_id}/edit")
+def edit_proposed_change_route(
+    proposal_id: int,
+    body: EditProposalRequest,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Commit the reviewer's own value — not the raw AI output. Status
+    lands as `edited`, distinct from `accept`'s `accepted`, so extraction
+    quality stays measurable."""
+    return _review_action(
+        edit_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode),
+        edited_value=body.edited_value)
 
 
 @app.post("/proposed_changes/{proposal_id}/reassign")
@@ -627,7 +711,8 @@ def reassign_proposed_change_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """Point a proposal at a different employee. Stays pending."""
+    """Point one field-level proposal at a different employee, independent
+    of its doc_subject_match. Stays pending."""
     return _review_action(
         reassign_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode),
         employee_id=body.employee_id)
@@ -641,13 +726,15 @@ def correct_proposed_change_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """Send a correction back through the function-calling loop. Stays pending."""
+    """Send a correction back through the function-calling loop. Stays
+    pending. An alternative to /edit for a harder case: ask the model to
+    re-extract with a hint, rather than typing the corrected value directly."""
     return _review_action(
         correct_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode),
         instruction=body.instruction)
 
 
-@app.delete("/proposed_changes/{proposal_id}")
+@app.post("/proposed_changes/{proposal_id}/reject")
 def reject_proposed_change_route(
     proposal_id: int,
     view_mode: str | None = Query(None),
@@ -660,10 +747,42 @@ def reject_proposed_change_route(
         reject_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
 
 
+@app.post("/proposed_changes/bulk_accept")
+def bulk_accept_proposed_changes_route(
+    body: BulkProposalRequest,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Accept every matching pending row — a loop over the exact same
+    accept() every single-row call goes through, no separate commit logic."""
+    return _bulk_action(
+        bulk_accept_proposals, db, user, resolve_view_mode(user.role, view_mode), body)
+
+
+@app.post("/proposed_changes/bulk_reject")
+def bulk_reject_proposed_changes_route(
+    body: BulkProposalRequest,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    return _bulk_action(
+        bulk_reject_proposals, db, user, resolve_view_mode(user.role, view_mode), body)
+
+
+def _bulk_action(fn, db, user, mode: str, body: BulkProposalRequest) -> dict:
+    try:
+        results = fn(db, user, mode, ids=body.ids, doc_id=body.doc_id, employee_id=body.employee_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"results": results}
+
+
 def _review_action(fn, db, user, proposal_id: int, mode: str, **kwargs) -> dict:
-    """Shared exception -> status-code translation for the four review
+    """Shared exception -> status-code translation for the single-row review
     actions. They differ only in which service function they call, and
-    duplicating the same four except-clauses four times is how one of them
+    duplicating the same except-clauses for each one is how one of them
     ends up quietly returning 500 for a missing row."""
     try:
         proposal = fn(db, user, proposal_id, view_mode=mode, **kwargs)
@@ -677,8 +796,9 @@ def _review_action(fn, db, user, proposal_id: int, mode: str, **kwargs) -> dict:
         "id": proposal.id,
         "status": proposal.status.value,
         "employee_id": proposal.employee_id,
-        "field_type": proposal.field_type.value,
-        "proposed_content": json.loads(proposal.proposed_content),
+        "change_type": proposal.change_type.value,
+        "proposed_value": json.loads(proposal.proposed_value),
+        "original_value": json.loads(proposal.original_value) if proposal.original_value else None,
         "reviewed_by": proposal.reviewed_by,
         "reviewed_at": proposal.reviewed_at,
     }

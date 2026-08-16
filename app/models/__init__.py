@@ -1,5 +1,6 @@
 from app.models.audit_log import AuditLog
 from app.models.course_requirement import CourseRequirement
+from app.models.doc_subject_match import DocSubjectMatch
 from app.models.employee import Employee
 from app.models.employee_certification import EmployeeCertification
 from app.models.employee_course_status import EmployeeCourseStatus
@@ -19,6 +20,7 @@ from app.models.work_authorization_record import WorkAuthorizationRecord
 __all__ = [
     "AuditLog",
     "CourseRequirement",
+    "DocSubjectMatch",
     "Employee",
     "EmployeeCertification",
     "EmployeeCourseStatus",

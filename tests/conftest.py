@@ -187,6 +187,14 @@ def _seed() -> None:
         mkemp("extract-dup-1", "Jamie Doubleton", "Software Engineer", "jamie.d1@example.test")
         mkemp("extract-dup-2", "Jamie Doubleton", "Data Engineer", "jamie.d2@example.test")
 
+        # A fourth shape: same name, different DEPARTMENTS (extract-dup-1/2
+        # above share the default org unit, so they can't exercise the
+        # department-mention tiebreaker) — for ranking tests that need the
+        # weak department signal to actually distinguish two candidates.
+        mkemp("extract-dept-a", "Sam Ranked", "Software Engineer", "sam.ranked.a@example.test")
+        mkemp("extract-dept-b", "Sam Ranked", "Financial Analyst", "sam.ranked.b@example.test",
+              org_unit_id=fin_dept.id)
+
         # --- bulk pool for the result-cap test: more than MAX_RESULTS -----
         for i in range(MAX_RESULTS + 10):
             mkemp(f"bulk-{i}", f"Bulk Person {i}", "Software Engineer", f"bulk{i}@example.test")

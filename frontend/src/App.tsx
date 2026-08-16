@@ -5,13 +5,14 @@ import { UnifiedResults } from "./components/UnifiedResults";
 import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { ContinuityPage } from "./components/ContinuityPage";
+import { ReviewPage } from "./components/ReviewPage";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
 import { DEV_IDENTITIES } from "./identities";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
-type Mode = "profile" | "graphs" | "continuity";
+type Mode = "profile" | "graphs" | "continuity" | "review";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -169,10 +170,12 @@ export default function App() {
           // UI never claims to be in a mode the server isn't honouring.
           if (!WORK_MODE_ROLES.includes(next.role)) setViewMode("employee");
           else setViewMode("work");
-          // The Continuity tab doesn't exist at all for non-hr identities
-          // (see the tab bar below) -- if it was open when switching to
-          // one, there'd be no tab left to click to get back out.
+          // The Continuity/Review tabs don't exist at all for non-hr/non-it
+          // identities respectively (see the tab bar below) -- if one was
+          // open when switching away, there'd be no tab left to click back
+          // out of it.
           if (next.role !== "hr" && mode === "continuity") setMode("profile");
+          if (next.role !== "it" && mode === "review") setMode("profile");
         }}
         onOpenPerson={(id, name) => {
           resetProfile(id, name);
@@ -217,6 +220,19 @@ export default function App() {
             }}
           >
             Continuity
+          </button>
+        )}
+        {identity.role === "it" && (
+          <button
+            role="tab"
+            aria-selected={mode === "review"}
+            className={`tab ${mode === "review" ? "active" : ""}`}
+            onClick={() => {
+              setMode("review");
+              setQuery("");
+            }}
+          >
+            Review
           </button>
         )}
       </div>
@@ -264,8 +280,10 @@ export default function App() {
               setMode("profile");
             }}
           />
-        ) : identity.role === "hr" ? (
+        ) : mode === "continuity" && identity.role === "hr" ? (
           <ContinuityPage identity={identity} viewMode={viewMode} />
+        ) : mode === "review" && identity.role === "it" ? (
+          <ReviewPage identity={identity} viewMode={viewMode} />
         ) : null}
       </main>
     </div>
