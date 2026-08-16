@@ -102,12 +102,65 @@ def test_keyword_arm_alone_still_ranks_when_nothing_is_embedded(db_session):
     assert mode == "keyword", "no embeddings and no embedding endpoint — semantic must be absent, not faked"
 
 
-def test_short_words_do_not_flatten_the_keyword_ranking(db_session):
+def test_stopwords_do_not_flatten_the_keyword_ranking(db_session):
     # "the"/"of"/"to" appear in most descriptions; a query made only of them
     # must match nothing rather than returning the whole corpus.
     ids, mode = rank_projects(db_session, "the of to a")
     assert ids == []
     assert mode == "none"
+
+
+def test_short_technical_acronyms_are_not_dropped():
+    """Regression: the keyword arm used to filter tokens by length > 3,
+    which silently discarded SSO, MFA, AWS, SQL, ETL and CI — precisely the
+    distinctive terms it exists to catch. Measured before the fix: "nobody
+    can log in, SSO and MFA keep failing" tokenised to
+    ["nobody", "keep", "failing"] and ranked an unrelated policy document
+    first, dragging the semantically-correct project down through RRF."""
+    from app.project_search import _STOPWORDS, _words
+
+    kept = [w for w in _words("nobody can log in, SSO and MFA keep failing")
+            if w not in _STOPWORDS and len(w) > 1]
+    assert "sso" in kept
+    assert "mfa" in kept
+    assert "can" not in kept, "function words should still be dropped"
+
+
+def test_ubiquitous_terms_are_dropped_but_rare_ones_survive(db_session):
+    """A term matching most of the corpus carries no ranking signal, and
+    fusing that non-ranking into RRF is what let "failing"/"keep" outvote a
+    correct semantic match. A rare term must still rank.
+
+    Needs a corpus big enough for the document-frequency ceiling to engage —
+    the shipped fixture has one embeddable project, where the deliberate
+    max(1, ...) floor correctly keeps everything.
+    """
+    from app.project_search import _keyword_ranking
+
+    atlas = db_session.query(Project).filter(Project.name == "Project Atlas").one()
+    decoys = []
+    for i in range(8):
+        p = Project(
+            name=f"Decoy Project {i}", type=ProjectType.project,
+            description="Filler text containing ubiquitousmarker and nothing else of note.",
+            owning_unit_id=atlas.owning_unit_id, owner_id=atlas.owner_id,
+            classification=ProjectClassification.internal,
+        )
+        db_session.add(p)
+        decoys.append(p)
+    atlas_original = atlas.description
+    atlas.description = f"{atlas_original} ubiquitousmarker raretermxyz"
+    db_session.commit()
+    try:
+        # present in all 9 -> above the 25% ceiling -> no ranking at all
+        assert _keyword_ranking(db_session, "ubiquitousmarker") == []
+        # present in 1 of 9 -> distinctive -> ranks
+        assert _keyword_ranking(db_session, "raretermxyz") == [atlas.id]
+    finally:
+        atlas.description = atlas_original
+        for p in decoys:
+            db_session.delete(p)
+        db_session.commit()
 
 
 def test_confidential_project_is_unreachable_by_keyword(db_session):
@@ -133,6 +186,45 @@ def test_assignment_rank_prefers_current_then_lead_then_recent():
     assert ranked[1] is current_contributor  # current beats any past role
     assert ranked[2] is past_lead            # among past, more recent first
     assert ranked[3] is old_lead
+
+
+def test_project_relevance_outranks_individual_involvement(db_session, monkeypatch):
+    """Regression: the hop used to sort by how strong a person's own
+    involvement was BEFORE the project's fused rank, so a Lead on the
+    fifth-best-matching project outranked a Contributor on the best one.
+    Measured symptom: "our test suite is so flaky" retrieved the Quality
+    Engineering test project first, then listed a different project's leads
+    above anyone actually on it."""
+    import app.project_search as ps
+
+    atlas = db_session.query(Project).filter(Project.name == "Project Atlas").one()
+    other = Project(
+        name="Decoy Project", type=ProjectType.project,
+        description="An unrelated decoy used only by this test.",
+        owning_unit_id=atlas.owning_unit_id, owner_id=atlas.owner_id,
+        classification=ProjectClassification.internal,
+    )
+    db_session.add(other)
+    db_session.flush()
+    # A Lead on the LOWER-ranked project, versus Atlas's existing Analyst.
+    db_session.add(EmployeeProject(
+        employee_id="mgr-1", project_id=other.id, role="Lead",
+        start_date=date(2024, 1, 1), end_date=None,
+    ))
+    db_session.commit()
+
+    # Force the ranking: Atlas first, decoy second.
+    monkeypatch.setattr(ps, "rank_projects", lambda db, q: ([atlas.id, other.id], "keyword"))
+    try:
+        results = ps.find_experts(db_session, HR, "anything")
+        assert results
+        assert results[0].project_name == "Project Atlas", (
+            "a Lead on the second-ranked project outranked the top-ranked project's team"
+        )
+    finally:
+        db_session.query(EmployeeProject).filter(EmployeeProject.project_id == other.id).delete()
+        db_session.query(Project).filter(Project.id == other.id).delete()
+        db_session.commit()
 
 
 def test_find_experts_returns_people_from_a_matching_project(db_session):

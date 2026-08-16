@@ -262,6 +262,31 @@ def _semantic_ranking(db: Session, query_text: str) -> list[int]:
     return [pid for _score, pid in scored]
 
 
+# Function words only. Deliberately NOT a length cutoff, which is what this
+# replaced: "SSO", "MFA", "AWS", "SQL", "ETL", "CI" are all three characters
+# or fewer and are exactly the distinctive terms this arm exists to catch.
+# Measured: with a >3-character filter, "nobody can log in, SSO and MFA keep
+# failing" tokenised to ["nobody", "keep", "failing"] and ranked Global
+# Mobility Policy first, dragging the semantically-correct answer (IT
+# Operations Tooling Upgrade, which the vector arm ranked #1) down through
+# RRF.
+_STOPWORDS = frozenset({
+    "a", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can", "cant",
+    "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it", "its",
+    "me", "my", "no", "not", "of", "on", "or", "our", "out", "over", "so", "some", "that",
+    "the", "their", "them", "then", "there", "this", "to", "up", "us", "was", "we", "were",
+    "what", "when", "which", "who", "why", "with", "you", "your",
+})
+
+# A query term matching most of the corpus carries no ranking signal --
+# "failing", "team", "process" appear in a large share of descriptions and
+# only add noise. Terms above this document frequency are dropped from the
+# keyword arm (the vector arm still sees the full query). 0.25 keeps
+# genuinely distinctive vocabulary (kubernetes, sso, etl, latency) and drops
+# the connective tissue.
+MAX_DOCUMENT_FREQUENCY = 0.25
+
+
 def _words(text: str) -> list[str]:
     """Query tokens. Keeps +/#/. so "C++", "C#" and "Node.js" survive
     tokenisation instead of splintering into meaningless fragments."""
@@ -269,21 +294,38 @@ def _words(text: str) -> list[str]:
 
 
 def _keyword_ranking(db: Session, query_text: str) -> list[int]:
-    """Project ids whose name or description contains meaningful words from
-    the query, ranked by how many distinct words hit. Substring matching in
-    Python rather than SQL LIKE-per-word: 128 rows is one cheap scan, and it
-    behaves identically on SQLite and Azure SQL with no dialect surface at
-    all. Words of 3 characters or fewer are dropped -- "the", "our", "is"
-    match everything and would flatten the ranking."""
-    words = [w for w in _words(query_text) if len(w) > 3]
-    if not words:
+    """Project ids whose name or description contains distinctive words from
+    the query, ranked by how many distinct words hit.
+
+    Substring matching in Python rather than SQL LIKE-per-word: 126 rows is
+    one cheap scan, and it behaves identically on SQLite and Azure SQL with
+    no dialect surface at all.
+
+    Precision-oriented on purpose. This arm's job is to catch the exact
+    proper noun or acronym an embedding blurs; a ranking built out of words
+    that appear everywhere is worse than no ranking at all, because RRF then
+    fuses real signal with noise.
+    """
+    candidates = [w for w in dict.fromkeys(_words(query_text)) if w not in _STOPWORDS and len(w) > 1]
+    if not candidates:
         return []
 
     projects = embeddable_projects(db)
+    if not projects:
+        return []
+
+    haystacks = {p.id: f"{p.name} {p.description or ''}".lower() for p in projects}
+    ceiling = max(1, int(len(projects) * MAX_DOCUMENT_FREQUENCY))
+    words = [
+        w for w in candidates
+        if sum(1 for hay in haystacks.values() if w in hay) <= ceiling
+    ]
+    if not words:
+        return []
+
     scored: list[tuple[int, int]] = []
     for project in projects:
-        haystack = f"{project.name} {project.description or ''}".lower()
-        hits = sum(1 for w in words if w in haystack)
+        hits = sum(1 for w in words if w in haystacks[project.id])
         if hits:
             scored.append((hits, project.id))
     scored.sort(key=lambda s: -s[0])
@@ -371,8 +413,18 @@ def find_experts(
             return results
 
         today = date.today()
-        # best assignment per person, keyed by employee id
-        best: dict[str, tuple[tuple[int, int, int], int, Project, EmployeeProject]] = {}
+        # Best (project, assignment) per person, keyed by employee id, held
+        # as (project_position, assignment_rank, project, assignment).
+        #
+        # project_position comes FIRST, ahead of how strong the person's own
+        # involvement is. The project IS the relevance signal here -- it's
+        # what actually matched the described problem -- so a contributor on
+        # the best-matching project is a better answer than a Lead on the
+        # fifth-best one. Ordering these the other way round is what made
+        # "our test suite is so flaky" return Data & AI Tooling Upgrade's
+        # leads above the Quality Engineering test-suite project the query
+        # had actually retrieved first.
+        best: dict[str, tuple[int, tuple[int, int, int], Project, EmployeeProject]] = {}
 
         for position, project_id in enumerate(project_ids):
             project = db.get(Project, project_id)
@@ -397,15 +449,15 @@ def find_experts(
                 if not is_record_visible(caller, employee, view_mode):
                     continue
                 key = _assignment_rank(assignment, today)
-                # position keeps the project's own fused rank in the sort,
-                # below the per-person evidence strength.
-                candidate = (key, position, project, assignment)
+                candidate = (position, key, project, assignment)
                 current = best.get(employee.id)
-                if current is None or (key, position) < (current[0], current[1]):
+                # Someone on several matched projects is shown against the
+                # best-matching one, then their strongest involvement in it.
+                if current is None or (position, key) < (current[0], current[1]):
                     best[employee.id] = candidate
 
         ordered = sorted(best.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[1][2].id))
-        for employee_id, (_key, _position, project, assignment) in ordered[:MAX_EXPERTS]:
+        for employee_id, (_position, _key, project, assignment) in ordered[:MAX_EXPERTS]:
             employee = db.get(Employee, employee_id)
             unit = db.get(OrgUnit, employee.org_unit_id) if employee.org_unit_id else None
             results.append(ProblemExpert(
