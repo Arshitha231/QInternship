@@ -146,7 +146,7 @@ REGISTRY: dict[str, FieldSpec] = {
     "project_history": _f("project_history", "list[str]", set(), Sensitivity.INTERNAL, filterable=False),
     "tenure_band": _f(
         "tenure_band", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("hire_date",)),
-
+ "linkedin_profile": _f("linkedin_profile", "str", set(), Sensitivity.INTERNAL, filterable=False),
     # app.permissions.INTERNAL_FIELDS (5 fields), relabeled HR_ONLY verbatim.
     # salary/salary_currency/date_of_birth additionally carry a self-only
     # ABAC grant (permissions.abac_extra_fields) on top of this HR_ONLY
