@@ -86,7 +86,15 @@ def continuity_thresholds_path() -> Path:
     fixture file via CONTINUITY_THRESHOLDS_PATH without reimporting
     app.continuity — same convention as every other setting in this file.
     """
-    return Path(os.environ.get("CONTINUITY_THRESHOLDS_PATH", "config/continuity_thresholds.yml"))
+    override = os.environ.get("CONTINUITY_THRESHOLDS_PATH")
+    if override:
+        return Path(override)
+    # Anchored to the repo root, not the process's cwd. The old default was
+    # the bare relative "config/continuity_thresholds.yml", which only
+    # resolved when the app happened to be started from the repo root --
+    # true locally, not guaranteed under the App Service's startup command.
+    # Same __file__-anchored convention as main.py's FRONTEND_DIST.
+    return Path(__file__).resolve().parent.parent / "config" / "continuity_thresholds.yml"
 
 
 # --- Training API connection settings -------------------------------------
