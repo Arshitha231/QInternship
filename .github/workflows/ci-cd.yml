@@ -239,9 +239,19 @@ jobs:
           # the SQL firewall, and for the index rebuild it's the only place
           # that won't publish a laptop's local employee ids into the shared
           # employees-index. They have to be deployed to be runnable there.
+          #
+          # `config` is NOT an operator tool -- it is read at request time by
+          # app/continuity.py's _load_thresholds() on every /continuity/*
+          # call. Leaving it out doesn't degrade anything, it 500s the whole
+          # feature while every other route stays green, so the deploy looks
+          # healthy from /health. That is the fourth time this include list
+          # has silently dropped a required file (seed_training.py,
+          # seed_people_data.py, backfill_project_history.py were the first
+          # three); tests/test_deploy_manifest.py now fails the build instead.
           zip -r deploy.zip app alembic alembic.ini requirements.txt .python-version seed.py \
             seed_training.py seed_people_data.py seed_it_division.py build_search_index.py \
-            backfill_project_history.py \
+            backfill_project_history.py seed_continuity.py \
+            config \
             frontend/dist \
             -x "*__pycache__*" -x "*.pyc"
 
