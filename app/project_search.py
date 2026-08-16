@@ -366,23 +366,34 @@ def rank_projects(db: Session, query_text: str) -> tuple[list[int], str]:
 
 # --- The project -> employee hop ------------------------------------------
 
-def _assignment_rank(assignment: EmployeeProject, today: date) -> tuple[int, int, int]:
+def _assignment_rank(assignment: EmployeeProject, today: date, is_owner: bool) -> tuple[int, int, int, int]:
     """Sort key for one person's link to one matched project, best first.
 
-    Ordering, in priority order: currently assigned beats finished; a
-    leading role beats a contributing one; more recent involvement beats
-    older. A person who finished a two-week stint three years ago is real
-    evidence but weak evidence, and shouldn't outrank the current tech
-    lead just because their project scored marginally higher.
+    Ordering, in priority order: currently assigned beats finished; the
+    project's real owner (Project.owner_id) beats everyone else; a role
+    matching _LEAD_ROLES beats an ordinary contributor; more recent
+    involvement beats older. A person who finished a two-week stint three
+    years ago is real evidence but weak evidence, and shouldn't outrank
+    the current tech lead just because their project scored marginally
+    higher.
+
+    owner_id is a real FK, checked ahead of _LEAD_ROLES rather than folded
+    into it: a genuine owner whose free-text role happens to read "Backend
+    Engineer" (never in _LEAD_ROLES) must still outrank a non-owner whose
+    role string happens to say "Tech Lead" — the structural field is the
+    primary signal, the free-text match is a fallback for everyone else,
+    same "structural field over free-text" reasoning already applied to
+    confidential-project membership.
     """
     current = 0 if assignment.end_date is None else 1
+    owner_tier = 0 if is_owner else 1
     role = (assignment.role or "").strip().lower()
     lead = 0 if role in _LEAD_ROLES else 1
     if assignment.end_date is None:
         recency = 0
     else:
         recency = max(0, (today - assignment.end_date).days)
-    return (current, lead, recency)
+    return (current, owner_tier, lead, recency)
 
 
 def _reason(project: Project, assignment: EmployeeProject) -> str:
@@ -448,7 +459,7 @@ def find_experts(
                     continue
                 if not is_record_visible(caller, employee, view_mode):
                     continue
-                key = _assignment_rank(assignment, today)
+                key = _assignment_rank(assignment, today, assignment.employee_id == project.owner_id)
                 candidate = (position, key, project, assignment)
                 current = best.get(employee.id)
                 # Someone on several matched projects is shown against the

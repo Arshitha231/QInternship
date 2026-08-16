@@ -180,12 +180,33 @@ def test_assignment_rank_prefers_current_then_lead_then_recent():
 
     ranked = sorted(
         [past_lead, current_contributor, old_lead, current_lead],
-        key=lambda a: _assignment_rank(a, today),
+        key=lambda a: _assignment_rank(a, today, is_owner=False),
     )
     assert ranked[0] is current_lead        # current + lead wins
     assert ranked[1] is current_contributor  # current beats any past role
     assert ranked[2] is past_lead            # among past, more recent first
     assert ranked[3] is old_lead
+
+
+def test_owner_id_outranks_a_lead_role_string_even_when_its_own_role_string_does_not_match():
+    # Regression: _LEAD_ROLES used to be the only "who's driving this"
+    # signal, matched against EmployeeProject.role -- unconstrained free
+    # text. A genuine owner (Project.owner_id) whose role string reads
+    # "Backend Engineer" (not in _LEAD_ROLES at all) got no ranking credit
+    # for owning the project, and could be outranked by a non-owner whose
+    # role string happened to say "Tech Lead".
+    today = date(2026, 1, 1)
+    owner_engineer = EmployeeProject(role="Backend Engineer", start_date=date(2021, 1, 1), end_date=None)
+    non_owner_lead = EmployeeProject(role="Tech Lead", start_date=date(2021, 1, 1), end_date=None)
+
+    ranked = sorted(
+        [non_owner_lead, owner_engineer],
+        key=lambda a: _assignment_rank(a, today, is_owner=(a is owner_engineer)),
+    )
+    assert ranked[0] is owner_engineer, (
+        "Project.owner_id must outrank a free-text _LEAD_ROLES match, even when the owner's "
+        "own role string ('Backend Engineer') isn't one of _LEAD_ROLES's recognized strings"
+    )
 
 
 def test_project_relevance_outranks_individual_involvement(db_session, monkeypatch):
