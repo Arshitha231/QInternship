@@ -23,8 +23,13 @@ from app.db import _PROJECT_ROOT, _resolve
 def test_relative_sqlite_path_anchors_to_project_root():
     resolved = _resolve("sqlite:///directory.db")
     assert resolved == f"sqlite:///{_PROJECT_ROOT / 'directory.db'}"
-    # Four slashes: sqlite's own spelling for an absolute path.
-    assert resolved.startswith("sqlite:////")
+    # "Four slashes" is only sqlite's spelling for an absolute path on POSIX,
+    # where the path itself starts with "/" -- a Windows absolute path
+    # starts with a drive letter instead, so `sqlite:///C:\...` (three
+    # slashes) is the correct, connectable spelling there. Assert on what
+    # both platforms actually agree on -- the path is absolute -- same check
+    # test_the_test_suites_own_url_survives_resolution below already uses.
+    assert Path(resolved.removeprefix("sqlite:///")).is_absolute()
 
 
 def test_nested_relative_path_anchors_too():
