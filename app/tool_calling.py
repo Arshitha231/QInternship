@@ -198,18 +198,22 @@ TOOLS = [
         "description": (
             "Structured people search using an explicit filter list, for requests find_people's "
             "fixed parameters can't express: multiple values for the SAME field ('Bangalore or "
-            "Singapore' -> office with op=in and both values), or a field find_people has no "
-            "parameter for (job_title contains 'Architect'). Prefer find_people whenever its own "
-            "parameters already cover the request — this is for what find_people can't say, not a "
-            "general replacement for it. Every filter in the list is AND'd together; there is no "
-            "way to OR different fields against each other."
+            "Singapore' -> office with op=in and both values), a field find_people has no "
+            "parameter for (job_title contains 'Architect'), or a genuine OR across DIFFERENT "
+            "fields ('knows Kubernetes OR works in Cloud Ops' -> filter_groups, see below). Prefer "
+            "find_people whenever its own parameters already cover the request — this is for what "
+            "find_people can't say, not a general replacement for it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "filters": {
                     "type": "array",
-                    "description": "AND'd together. Use op=\"in\" with multiple values for an OR across values of the SAME field.",
+                    "description": (
+                        "AND'd together. Use op=\"in\" with multiple values for an OR across values "
+                        "of the SAME field. This is the common case — prefer it over filter_groups "
+                        "whenever the request is a plain AND (or same-field OR)."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -228,6 +232,40 @@ TOOLS = [
                         "additionalProperties": False,
                     },
                 },
+                "filter_groups": {
+                    "type": "array",
+                    "description": (
+                        "Only for a real cross-field OR that filters/op=in cannot express — 'knows "
+                        "Kubernetes OR works in Cloud Ops' (different fields on each side of the "
+                        "OR). Each element is a GROUP: a list of filters AND'd together, same shape "
+                        "as `filters`. The groups themselves are OR'd against each other — a person "
+                        "matches if they satisfy ANY one group. Leave this empty for anything `filters` "
+                        "already covers; only reach for it when the request is genuinely an OR "
+                        "between different fields. Combines with `filters` by AND: anything in "
+                        "`filters` must hold no matter which group matched."
+                    ),
+                    "items": {
+                        "type": "array",
+                        "description": "One OR-branch: filters inside a group are AND'd together.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "field": {"type": "string", "enum": FILTERABLE_FIELDS},
+                                "op": {"type": "string", "enum": list(get_args(Op))},
+                                "value": {
+                                    "description": "A string for eq/ne/contains; a list of strings for in.",
+                                    "anyOf": [
+                                        {"type": "string"},
+                                        {"type": "array", "items": {"type": "string"}},
+                                        {"type": "boolean"},
+                                    ],
+                                },
+                            },
+                            "required": ["field", "op", "value"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
                 "order_by": {"type": "string", "enum": sorted(ORDERABLE_FIELDS)},
                 "limit": {"type": "integer", "description": "Hint only, never widens the server-side cap."},
             },
@@ -244,9 +282,18 @@ get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, searc
 Together they cover people, teams, skills, and projects — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
-request — multiple values for the same field ("Bangalore or Singapore"), or a field \
-find_people has no parameter for (job title). If find_people's parameters already cover the \
-request, use find_people; search_people is not a general replacement for it.
+request — multiple values for the same field ("Bangalore or Singapore"), a field \
+find_people has no parameter for (job title), or a genuine OR across DIFFERENT fields \
+("anyone who knows Kubernetes or works in Cloud Ops" — skill on one side, org_unit on the \
+other). If find_people's parameters already cover the request, use find_people; search_people \
+is not a general replacement for it.
+
+Within search_people: use `filters` (plain AND list) for everything you can — including \
+"same field, multiple values" via op="in". Reach for `filter_groups` ONLY when the request is \
+truly an OR between different fields; each group is its own AND list, and the groups are OR'd \
+against each other. Don't reach for filter_groups just because a request has the word "or" in \
+it — "Bangalore or Singapore" is still one field, one `filters` entry with op="in", not \
+filter_groups.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -344,6 +391,18 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
      {"filters": [{"field": "office", "op": "in", "value": ["Bangalore", "Singapore"]}]}),
     ("find anyone with architect in their job title", "search_people",
      {"filters": [{"field": "job_title", "op": "contains", "value": "Architect"}]}),
+    # filter_groups: a genuine cross-field OR -- "same field, multiple
+    # values" above stays a plain `filters` op="in", never filter_groups.
+    ("anyone who knows Kubernetes or works in Cloud Ops", "search_people",
+     {"filters": [], "filter_groups": [
+         [{"field": "skills", "op": "contains", "value": "Kubernetes"}],
+         [{"field": "org_unit", "op": "eq", "value": "Cloud Operations Team"}],
+     ]}),
+    ("find people who speak French or are based in the Bangalore office", "search_people",
+     {"filters": [], "filter_groups": [
+         [{"field": "languages", "op": "contains", "value": "French"}],
+         [{"field": "office", "op": "eq", "value": "Bangalore"}],
+     ]}),
     # Out-of-scope / off-topic — no tool call, exact fallback wording.
     ("what's the weather like in Seattle today", None, None),
     ("can you tell me who's the worst performer on the team", None, None),
@@ -856,6 +915,7 @@ def execute_tool_call(
         plan = PeopleQuery(
             select=[],
             filters=[Filter(**f) for f in args.get("filters", [])],
+            filter_groups=[[Filter(**f) for f in group] for group in args.get("filter_groups", [])],
             order_by=args.get("order_by"),
             limit=args.get("limit"),
         )

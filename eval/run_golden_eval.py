@@ -207,6 +207,7 @@ INDEPENDENT_CALLS = {
     "direct_reports": lambda db, caller, args: independent_truth.direct_reports(db, caller, **args),
     "org_chain": lambda db, caller, args: independent_truth.org_chain(db, caller, **args),
     "filter_people": lambda db, caller, args: independent_truth.filter_people(db, caller, **args),
+    "filter_people_or": lambda db, caller, args: independent_truth.filter_people_or(db, caller, **args),
     "find_mentor": lambda db, caller, args: independent_truth.find_mentor(
         db, caller, skill=args["skill"], caller_id=caller.id),
 }

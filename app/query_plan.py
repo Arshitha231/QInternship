@@ -42,12 +42,31 @@ class PeopleQuery(BaseModel):
     job, per ARCHITECTURE_2.md's non-goal "moving structured filters into
     Search... reverted by mode 1") or a recursive/multi-step computation
     (that's NamedOperation, below).
+
+    `filters` is always AND'd -- unchanged, and still the whole story for a
+    plan with no `filter_groups`, so the common case stays on the flatter,
+    easier-to-generate shape. `filter_groups` is bounded DNF for genuine
+    cross-field OR ("knows Kubernetes OR works in Cloud Ops") that `filters`
+    structurally cannot express (every entry in `filters` is AND'd, and
+    `op="in"` only ORs multiple values of the SAME field): a list of groups,
+    each group itself a flat list of Filters AND'd together, with the groups
+    OR'd against each other. Exactly one level -- a group is `list[Filter]`,
+    never `list[list[Filter]]` -- no recursive/arbitrary boolean expression
+    tree; that's deliberately more than this needs. `filters` and
+    `filter_groups` compose by AND when both are given: `filters` are a
+    constraint every match must satisfy regardless of which group it came
+    from, `filter_groups` (if present) is an additional OR-of-AND condition
+    layered on top. A group must be non-empty -- an empty group would mean
+    "OR unconditionally true," silently neutralizing every other group's
+    restriction, so app.vocabulary.validate() rejects that shape rather than
+    accepting a plan whose OR always fires.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     select: list[Field]
     filters: list[Filter] = []
+    filter_groups: list[list[Filter]] = []
     order_by: Field | None = None
     limit: int | None = None
 

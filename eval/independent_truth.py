@@ -211,6 +211,22 @@ def filter_people(
     return {e.id for e in rows if is_record_visible(caller, e)}
 
 
+def filter_people_or(db: Session, caller: AuthenticatedUser, *, groups: list[dict]) -> set[str]:
+    """Ground truth for search_people's filter_groups (bounded DNF): the
+    union of filter_people(**group) across `groups` -- each group is its
+    own AND clause (reusing filter_people's existing per-field AND
+    semantics unchanged), OR'd together by simple set union. Independent in
+    the same sense as filter_people itself (module docstring): a plain
+    Python union of per-group SQLAlchemy queries, not a call into
+    app.query_compiler's own OR-of-AND compilation, which is exactly what
+    these golden questions grade.
+    """
+    result: set[str] = set()
+    for group in groups:
+        result |= filter_people(db, caller, **group)
+    return result
+
+
 def find_mentor(db: Session, caller: AuthenticatedUser, *, skill: str, caller_id: str) -> list[str]:
     """Independent reimplementation of the *specified* ranking (per
     app.directory_tools.find_mentor's own docstring): expert > available >

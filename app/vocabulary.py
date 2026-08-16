@@ -98,6 +98,19 @@ def _check_field(name: str, errors: list[str], *, context: str) -> bool:
     return True
 
 
+def _validate_filter(filt: Filter, errors: list[str], *, context: str) -> None:
+    if not _check_field(filt.field, errors, context=context):
+        return
+    spec = REGISTRY[filt.field]
+    if not spec.filterable:
+        errors.append(f"field '{filt.field}' is not filterable")
+        return
+    if filt.op not in spec.ops:
+        errors.append(f"operator '{filt.op}' not legal for field '{filt.field}' (allowed: {sorted(spec.ops)})")
+    elif not _value_type_matches(filt.op, filt.value, spec.type):
+        errors.append(f"value for '{filt.field}' does not match expected type '{spec.type}' for op '{filt.op}'")
+
+
 def validate(plan: PeopleQuery) -> ValidationResult:
     errors: list[str] = []
 
@@ -105,16 +118,20 @@ def validate(plan: PeopleQuery) -> ValidationResult:
         _check_field(f, errors, context="select")
 
     for filt in plan.filters:
-        if not _check_field(filt.field, errors, context="filter"):
+        _validate_filter(filt, errors, context="filter")
+
+    # Bounded DNF (app/query_plan.py's PeopleQuery docstring): each group is
+    # its own AND-list, checked with the identical per-filter rule as the
+    # flat `filters` case above -- a group is structurally just `filters`
+    # with a different combinator, not a different vocabulary. An empty
+    # group is rejected here rather than silently compiling to "OR true",
+    # which would neutralize every other group's restriction.
+    for group in plan.filter_groups:
+        if not group:
+            errors.append("filter_groups group must contain at least one filter")
             continue
-        spec = REGISTRY[filt.field]
-        if not spec.filterable:
-            errors.append(f"field '{filt.field}' is not filterable")
-            continue
-        if filt.op not in spec.ops:
-            errors.append(f"operator '{filt.op}' not legal for field '{filt.field}' (allowed: {sorted(spec.ops)})")
-        elif not _value_type_matches(filt.op, filt.value, spec.type):
-            errors.append(f"value for '{filt.field}' does not match expected type '{spec.type}' for op '{filt.op}'")
+        for filt in group:
+            _validate_filter(filt, errors, context="filter_groups")
 
     if plan.order_by is not None and _check_field(plan.order_by, errors, context="order_by"):
         spec = REGISTRY[plan.order_by]
@@ -170,10 +187,10 @@ def _snap_one(value: str, vocab: list[str]) -> str | None:
     return match[0] if match else None
 
 
-def snap(db: Session, plan: PeopleQuery) -> tuple[PeopleQuery, list[SnapNote]]:
+def _snap_filters(db: Session, filters: list[Filter]) -> tuple[list[Filter], list[SnapNote]]:
     notes: list[SnapNote] = []
     new_filters = []
-    for filt in plan.filters:
+    for filt in filters:
         if filt.field not in SNAPPABLE_FIELDS:
             new_filters.append(filt)
             continue
@@ -195,4 +212,16 @@ def snap(db: Session, plan: PeopleQuery) -> tuple[PeopleQuery, list[SnapNote]]:
             # before snap() ever runs it) -- passed through unchanged rather
             # than assumed impossible, so this stays correct if that changes.
             new_filters.append(filt)
-    return plan.model_copy(update={"filters": new_filters}), notes
+    return new_filters, notes
+
+
+def snap(db: Session, plan: PeopleQuery) -> tuple[PeopleQuery, list[SnapNote]]:
+    new_filters, notes = _snap_filters(db, plan.filters)
+
+    new_groups: list[list[Filter]] = []
+    for group in plan.filter_groups:
+        new_group, group_notes = _snap_filters(db, group)
+        new_groups.append(new_group)
+        notes.extend(group_notes)
+
+    return plan.model_copy(update={"filters": new_filters, "filter_groups": new_groups}), notes

@@ -87,6 +87,71 @@ def test_multiple_errors_are_all_reported_not_just_the_first():
 
 
 # ---------------------------------------------------------------------------
+# filter_groups -- bounded DNF. Each group gets the identical per-filter
+# structural check as plan.filters; an empty group is its own rejection
+# (see app/query_plan.py's PeopleQuery docstring for why: it would compile
+# to "OR unconditionally true").
+# ---------------------------------------------------------------------------
+
+def test_valid_filter_groups_plan_passes():
+    result = validate(PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="skills", op="contains", value="Kubernetes")],
+        [Filter(field="org_unit", op="eq", value="Cloud Operations Team")],
+    ]))
+    assert result.valid is True
+    assert result.errors == []
+
+
+def test_empty_group_is_rejected():
+    result = validate(PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+        [],
+    ]))
+    assert result.valid is False
+    assert any("filter_groups" in e and "at least one filter" in e for e in result.errors)
+
+
+def test_illegal_operator_inside_a_group_is_rejected():
+    # Same rule as test_illegal_operator_for_field_is_rejected, just for a
+    # filter living inside a group instead of the flat filters list -- a
+    # group isn't a different vocabulary, just a different combinator.
+    result = validate(PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="job_title", op="eq", value="x")],
+    ]))
+    assert result.valid is False
+    assert any("job_title" in e for e in result.errors)
+
+
+def test_illegal_operator_in_the_second_group_specifically_is_rejected():
+    # Proves every group is checked, not just group 0.
+    result = validate(PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+        [Filter(field="job_title", op="eq", value="x")],
+    ]))
+    assert result.valid is False
+    assert any("job_title" in e for e in result.errors)
+
+
+def test_unlabelled_field_inside_a_group_is_rejected():
+    result = validate(PeopleQuery.model_construct(
+        select=["id"], filters=[], order_by=None, limit=None,
+        filter_groups=[[Filter.model_construct(field="personal_mobile", op="eq", value="x")]],
+    ))
+    assert result.valid is False
+    assert any("personal_mobile" in e and "unlabelled" in e for e in result.errors)
+
+
+def test_filter_groups_and_flat_filters_errors_both_reported():
+    result = validate(PeopleQuery(
+        select=["id"],
+        filters=[Filter(field="job_title", op="eq", value="x")],
+        filter_groups=[[Filter(field="job_title", op="eq", value="y")]],
+    ))
+    assert result.valid is False
+    assert len(result.errors) == 2
+
+
+# ---------------------------------------------------------------------------
 # snap() -- value correction against the real DB vocabulary. Same
 # exact -> case-insensitive -> fuzzy -> unresolvable ladder
 # test_name_resolution.py already covers for resolve_person_name, mirrored
@@ -185,6 +250,34 @@ def test_snap_does_not_mutate_the_original_plan(db_session):
     plan = PeopleQuery(select=["id"], filters=[Filter(field="org_unit", op="eq", value="platform engineering")])
     snap(db_session, plan)
     assert plan.filters[0].value == "platform engineering"  # unchanged -- snap() returns a new plan
+
+
+def test_snap_resolves_values_inside_filter_groups(db_session):
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="platform engineering")],
+        [Filter(field="office", op="eq", value="Tset HQ")],
+    ])
+    snapped, notes = snap(db_session, plan)
+    assert snapped.filter_groups[0][0].value == "Platform Engineering"
+    assert snapped.filter_groups[1][0].value == "Test HQ"
+    assert {n.field for n in notes} == {"org_unit", "office"}
+
+
+def test_snap_leaves_filter_groups_shape_untouched_when_nothing_to_snap(db_session):
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="availability_status", op="eq", value="available")],
+    ])
+    snapped, notes = snap(db_session, plan)
+    assert snapped.filter_groups == plan.filter_groups
+    assert notes == []
+
+
+def test_snap_does_not_mutate_the_original_plans_filter_groups(db_session):
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="platform engineering")],
+    ])
+    snap(db_session, plan)
+    assert plan.filter_groups[0][0].value == "platform engineering"  # unchanged -- snap() returns a new plan
 
 
 def test_all_snappable_fields_are_registered_as_filterable():

@@ -219,6 +219,118 @@ def test_only_active_employees_are_ever_returned(db_session):
 
 
 # ---------------------------------------------------------------------------
+# filter_groups -- bounded DNF (app/query_plan.py's PeopleQuery docstring):
+# outer OR across groups, inner AND within a group, one level, no recursion.
+# ---------------------------------------------------------------------------
+
+def test_filter_groups_ors_two_disjoint_single_id_groups(db_session):
+    # Simplest possible proof the union actually implements OR: two groups
+    # that could never both match the same row, same result shape as
+    # test_id_in_list's `op="in"` case but built from filter_groups instead.
+    result = set(_run(db_session, PeopleQuery(
+        select=["id"],
+        filter_groups=[
+            [Filter(field="id", op="eq", value="report-1")],
+            [Filter(field="id", op="eq", value="mgr-1")],
+        ],
+        limit=1000,
+    )))
+    assert result == {"report-1", "mgr-1"}
+
+
+def test_filter_groups_ors_across_different_fields(db_session):
+    # The actual "cross-field OR" case filters/op=in cannot express: office
+    # and skills are different fields, and apply_filter's office branch
+    # does its own .join(Office, ...) -- proving that join stays scoped to
+    # its own group's Select and doesn't collide with the other group's
+    # skills subquery.
+    result = set(_run(db_session, PeopleQuery(
+        select=["id"],
+        filter_groups=[
+            [Filter(field="office", op="eq", value="Satellite City")],
+            [Filter(field="skills", op="contains", value="Power BI")],
+        ],
+        limit=1000,
+    )))
+    assert "search-filter-fin" in result  # Satellite City, first group
+    assert "search-dana" in result        # Power BI, second group
+
+
+def test_filter_groups_alone_with_no_top_level_filters(db_session):
+    # plan.filters entirely empty -- filter_groups must stand on its own,
+    # not silently require a top-level filter to combine with.
+    result = set(_run(db_session, PeopleQuery(
+        select=["id"],
+        filters=[],
+        filter_groups=[[Filter(field="id", op="eq", value="report-1")]],
+    )))
+    assert result == {"report-1"}
+
+
+def test_filters_and_filter_groups_compose_by_and(db_session):
+    # filters is an unconditional AND constraint layered UNDER the OR:
+    # restricted-1 matches the second group by id exactly, but fails the
+    # top-level availability_status filter, so it must not appear even
+    # though "one of its groups" says yes.
+    result = _run(db_session, PeopleQuery(
+        select=["id"],
+        filters=[Filter(field="availability_status", op="eq", value="available")],
+        filter_groups=[
+            [Filter(field="id", op="eq", value="report-1")],
+            [Filter(field="id", op="eq", value="restricted-1")],
+        ],
+        limit=1000,
+    ))
+    assert result == ["report-1"]
+
+
+def test_filter_groups_single_group_behaves_like_plain_filters(db_session):
+    # len(filter_groups) == 1 is a degenerate OR-of-one -- must not error on
+    # sqlalchemy.union()'s "needs at least 2 selects" shape, and must return
+    # exactly what the equivalent plain `filters` plan would.
+    via_group = set(_run(db_session, PeopleQuery(
+        select=["id"], filter_groups=[[Filter(field="org_unit", op="eq", value="Finance Operations")]], limit=1000)))
+    via_filters = set(_run(db_session, PeopleQuery(
+        select=["id"], filters=[Filter(field="org_unit", op="eq", value="Finance Operations")], limit=1000)))
+    assert via_group == via_filters
+
+
+def test_filter_groups_obligation_excludes_restricted_even_from_the_matching_group(db_session):
+    # The non-negotiable: a restricted row must not slip through because
+    # it happens to match a DIFFERENT OR-branch than the one obligations
+    # were checked against. restricted-1 matches the second group by id
+    # exactly; for a non-hr caller it must still be excluded.
+    plan = PeopleQuery(
+        select=["id"],
+        filter_groups=[
+            [Filter(field="org_unit", op="eq", value="Finance Operations")],
+            [Filter(field="id", op="eq", value="restricted-1")],
+        ],
+    )
+    employee_decision = enforce(plan, EMPLOYEE)
+    employee_result = db_session.execute(compile_query(db_session, plan, employee_decision)).scalars().all()
+    assert "restricted-1" not in employee_result
+    assert "search-filter-fin" in employee_result  # first group's own match is untouched
+
+    hr_decision = enforce(plan, HR)
+    hr_result = db_session.execute(compile_query(db_session, plan, hr_decision)).scalars().all()
+    assert "restricted-1" in hr_result  # hr has no such obligation -- not spuriously excluded either
+
+
+def test_filter_groups_rejects_a_non_filterable_field_in_the_second_group(db_session):
+    # Mirrors test_non_filterable_field_raises_unsupported_not_silently_wrong
+    # above, but the illegal field is in the SECOND group -- proving
+    # _compile_group_ids doesn't only get exercised for group 0.
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="id", op="eq", value="report-1")],
+        [Filter(field="work_phone", op="eq", value="x")],
+    ])
+    decision = PolicyDecision(allow=True, reason="test-only, bypassing validate()")
+    with pytest.raises(UnsupportedFilterError):
+        compile_query(db_session, plan, decision)
+
+
+# ---------------------------------------------------------------------------
 # enforced_person_ref() -- view_mode threading. Regression test for the
 # concrete bug this closes: before view_mode was threaded through, this
 # always evaluated as if the caller were in full "work" mode, so an hr

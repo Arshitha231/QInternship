@@ -89,6 +89,67 @@ def test_filter_on_visible_field_does_not_deny():
 
 
 # ---------------------------------------------------------------------------
+# INVARIANT 6, extended to filter_groups (bounded DNF): a restricted field
+# hiding in ANY group -- not just plan.filters or group 0 -- is the same
+# hard denial. An obligation/policy check that only ever looked at the
+# first group would let a model route a restricted-field filter through
+# group 1 (or later) and slip past enforce() entirely.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("caller", NON_HR_ROLES)
+def test_filter_on_restricted_field_in_the_first_group_denies_the_whole_plan(caller):
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="cost_centre", op="eq", value="CC-1")],
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+    ])
+    decision = enforce(plan, caller)
+    assert decision.allow is False
+
+
+@pytest.mark.parametrize("caller", NON_HR_ROLES)
+def test_filter_on_restricted_field_in_the_second_group_denies_the_whole_plan(caller):
+    # The one that would actually catch a "only checks group 0" bug --
+    # cost_centre is legal-looking group 0, restricted field pushed to
+    # group 1 specifically.
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+        [Filter(field="cost_centre", op="eq", value="CC-1")],
+    ])
+    decision = enforce(plan, caller)
+    assert decision.allow is False
+
+
+def test_filter_on_restricted_field_in_a_group_is_allowed_for_hr():
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+        [Filter(field="cost_centre", op="eq", value="CC-1")],
+    ])
+    assert enforce(plan, HR).allow is True
+
+
+def test_filter_groups_of_only_visible_fields_does_not_deny():
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+        [Filter(field="skills", op="contains", value="Terraform")],
+    ])
+    for caller in (HR, MANAGER, EMPLOYEE):
+        assert enforce(plan, caller).allow is True
+
+
+def test_max_rows_ignores_a_unique_field_filter_inside_a_group():
+    # _max_rows() deliberately only scans plan.filters, not filter_groups --
+    # a unique-field match in ONE OR-branch doesn't bound how many rows the
+    # OTHER branches can contribute, so this must NOT collapse to 1 the way
+    # the equivalent top-level `filters` case does (see
+    # test_unique_field_exact_match_caps_at_one above).
+    plan = PeopleQuery(select=["id"], filter_groups=[
+        [Filter(field="work_email", op="eq", value="a@example.test")],
+        [Filter(field="org_unit", op="eq", value="Infrastructure")],
+    ])
+    assert enforce(plan, HR).max_rows == DEFAULT_LIMIT
+
+
+# ---------------------------------------------------------------------------
 # Denial reason never leaking a distinction the caller shouldn't see --
 # "doesn't exist" and "exists but restricted" must be structurally
 # identical outcomes (allow=False, no other field populated); only the
