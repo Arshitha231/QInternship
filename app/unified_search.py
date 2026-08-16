@@ -35,7 +35,7 @@ from app.auth import AuthenticatedUser
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
-    MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
 )
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
@@ -340,6 +340,13 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         return f"{n} {'person' if n == 1 else 'people'} {label} in the reporting chain."
 
     if tool_name == "find_project_owner":
+        if isinstance(result, AmbiguousProjectMatch):
+            # Says which ones, rather than picking. "Migration" matches 16
+            # projects in this directory; the old code answered with
+            # whichever sorted first and gave no hint the others existed.
+            shown = ", ".join(result.matches)
+            return (f'"{result.query}" matches several projects — {shown}. '
+                    f"Which one did you mean?")
         if result is None:
             return "Couldn't find an owner for that."
         return f"{result.owner_name} owns {result.project_name} ({result.project_type})."
