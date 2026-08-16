@@ -95,6 +95,7 @@ export interface UpdateEmployeeChanges {
   hire_date?: string;
   cost_centre?: string | null;
   employment_type?: "fte" | "contractor" | "intern";
+  linkedin_profile?: string | null; // <-- PHASE 4: Added here
 }
 
 export interface PersonDetail {
@@ -129,6 +130,7 @@ export interface PersonDetail {
   salary?: string;
   salary_currency?: string;
   date_of_birth?: string;
+  linkedin_profile?: string;
 }
 
 export interface OrgChainNode {
