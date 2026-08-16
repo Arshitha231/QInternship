@@ -147,14 +147,46 @@ def _embed_query(text: str) -> list[float] | None:
     """Query embedding per request (index-time embedding was the batch job
     in step 7). Any failure here just drops the vector half of the hybrid
     search — never propagates as an error."""
+    vectors = embed_texts([text])
+    return None if vectors is None else vectors[0]
+
+
+# Batch ceiling per embeddings request. The whole project corpus (128 rows)
+# fits well inside one call, but chunking keeps a future larger corpus from
+# hitting the endpoint's own per-request input limit.
+EMBED_BATCH_SIZE = 96
+
+
+def embed_texts(texts: list[str]) -> list[list[float]] | None:
+    """Embed a batch in as few calls as possible, or None if the embedding
+    resource is unconfigured/unreachable.
+
+    None rather than an exception, and all-or-nothing rather than partial:
+    every caller here (hybrid search's vector arm, app/project_search.py's
+    corpus build) degrades to a non-vector path on None, and a partially
+    embedded corpus would rank some projects against a query and silently
+    omit others — worse than not ranking semantically at all.
+
+    Results stay in the order the texts were given, which is what lets
+    project_search.rebuild_embeddings() zip them back onto its pending rows.
+    """
+    if not texts:
+        return []
     client = _get_openai_client()
     if client is None:
         return None
+    out: list[list[float]] = []
     try:
-        response = client.embeddings.create(model=EMBEDDING_DEPLOYMENT, input=[text])
-        return response.data[0].embedding
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            chunk = texts[start:start + EMBED_BATCH_SIZE]
+            response = client.embeddings.create(model=EMBEDDING_DEPLOYMENT, input=chunk)
+            # The API documents `data` as returned in input order, but it
+            # also carries an explicit index per item -- sorting on it costs
+            # nothing and removes the assumption entirely.
+            out.extend(item.embedding for item in sorted(response.data, key=lambda d: d.index))
     except OpenAIError:
         return None
+    return out
 
 
 def search_people(

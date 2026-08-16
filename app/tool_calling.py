@@ -41,6 +41,7 @@ from app.models import AuditLog
 from app.org_chart import get_org_chain, resolve_person_name
 from app.people import find_people, find_related_language_speakers, get_person, search_people_by_plan
 from app.permissions import ViewMode
+from app.project_search import find_experts
 from app.query_compiler import ORDERABLE_FIELDS
 from app.query_plan import Filter, Op, PeopleQuery
 from app.registry import REGISTRY
@@ -194,6 +195,31 @@ TOOLS = [
         },
     }},
     {"type": "function", "function": {
+        "name": "find_experts",
+        "description": (
+            "Find people who have worked on a DESCRIBED PROBLEM, by matching the problem against "
+            "what our projects actually did and then returning the people who worked on them. Use "
+            "this when the caller describes a situation they're stuck on in their own words "
+            "(\"our deployments keep timing out\", \"I'm debugging a flaky Kafka consumer\") rather "
+            "than naming a skill, a person, or a filterable attribute. Pass the caller's problem "
+            "description through as `problem`, in their words — do NOT reduce it to a single "
+            "keyword, the whole description is what gets matched. Prefer find_people/search_people "
+            "when the request names a concrete skill or attribute to filter on, find_mentor when "
+            "they want to LEARN a named skill rather than solve a problem now."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "problem": {
+                    "type": "string",
+                    "description": "The problem the caller described, in their own words.",
+                },
+            },
+            "required": ["problem"],
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
         "name": "search_people",
         "description": (
             "Structured people search using an explicit filter list, for requests find_people's "
@@ -240,13 +266,22 @@ TOOLS = [
 SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadrant Technologies.
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
-get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people. \
-Together they cover people, teams, skills, and projects — nothing else.
+get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people, \
+find_experts. Together they cover people, teams, skills, and projects — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
 request — multiple values for the same field ("Bangalore or Singapore"), or a field \
 find_people has no parameter for (job title). If find_people's parameters already cover the \
 request, use find_people; search_people is not a general replacement for it.
+
+Use find_experts when the caller DESCRIBES A PROBLEM they're facing rather than naming what \
+they want to filter on — "our nightly ETL keeps falling over", "I'm stuck debugging a memory \
+leak in the payments service". Pass their description through as `problem` unchanged; it is \
+matched against what our projects actually did, and the people who worked on those projects \
+come back. A request that names a concrete skill ("who knows Terraform") is find_people, not \
+find_experts; a request to LEARN a named skill ("who can teach me Terraform") is find_mentor. \
+The distinction is whether the caller named the thing to search for (find_people/find_mentor) \
+or described a situation and left it to us to work out what's relevant (find_experts).
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -328,6 +363,16 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
     ("who is on project nightingale", "find_project_owner", {"name": "Project Nightingale"}),
     ("find someone who could mentor me in terraform", "find_mentor", {"skill": "Terraform"}),
     ("i want to get better at kubernetes, who can help", "find_mentor", {"skill": "Kubernetes"}),
+    # find_experts: a DESCRIBED problem, not a named skill. The whole
+    # description goes through as `problem` -- reducing these to a keyword
+    # is what the tool exists to avoid.
+    ("our nightly data pipeline keeps falling over and I can't work out why",
+     "find_experts", {"problem": "our nightly data pipeline keeps falling over and I can't work out why"}),
+    ("I'm stuck on a nasty memory leak in the payments service, who's dealt with this before",
+     "find_experts",
+     {"problem": "a nasty memory leak in the payments service"}),
+    ("we're getting constant timeouts on deploys, has anyone here fixed something like that",
+     "find_experts", {"problem": "constant timeouts on deploys"}),
     ("we need rust, react, and terraform for this project, what are our gaps",
      "skill_gap", {"required_skills": ["Rust", "React", "Terraform"]}),
     ("are we covered on GDPR and SOC 2 compliance",
@@ -425,6 +470,27 @@ _INJECTION_PATTERNS = re.compile(
 # router's return value ever let a later branch, or the real model, see
 # the text at all. Matches "gap" and "gaps" ("what are our gaps").
 _SKILL_GAP_PATTERN = re.compile(r"\bgaps?\b", re.IGNORECASE)
+
+# Mode 3 (find_experts): phrasings that unambiguously describe a PROBLEM
+# the caller is facing, rather than naming something to filter on.
+#
+# Deliberately narrow, and deliberately excluding the obvious-looking
+# "who can help" / "help me with": those are ambiguous with the LEARNING
+# intent find_mentor serves, and one of the mentor few-shots ("i want to
+# get better at kubernetes, who can help") is exactly that shape. Widening
+# this to catch them would steal mentor questions, which is worse than
+# deferring -- an ambiguous phrasing is what returning None is for. Checked
+# after the "mentor" branch regardless, so an explicit mentor request wins
+# even if it also happens to describe a problem.
+_PROBLEM_PATTERN = re.compile(
+    r"\bstuck (on|with)\b"
+    r"|\bkeeps? (failing|crashing|breaking|dying|timing out|falling over)\b"
+    r"|\bhaving (trouble|issues|problems)\b"
+    r"|\bdebugging\b|\btroubleshoot(ing)?\b"
+    r"|\b(run|ran) into this\b|\bseen this before\b"
+    r"|\bdealt with (this|something like)\b",
+    re.IGNORECASE,
+)
 
 # First-person phrasing ("my manager", "who am I", "email me") — same
 # self-reference concept the real model is taught via SYSTEM_PROMPT, but
@@ -585,6 +651,13 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     if "mentor" in text:
         skill = text.split(" in ", 1)[-1].strip(" ?.!") if " in " in text else message.strip(" ?.!")
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_mentor", arguments={"skill": skill}))
+    if _PROBLEM_PATTERN.search(text):
+        # The WHOLE message goes through as `problem`, not an extracted
+        # keyword: project_search matches the description against what
+        # projects actually did, so narrowing it to one noun throws away
+        # the signal the semantic arm exists to use.
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_experts", arguments={"problem": message.strip(" ?.!")}))
     if "scarc" in text:
         return AssistantTurn(tool_call=ResolvedToolCall(name="skill_scarcity", arguments={}))
     if _SKILL_GAP_PATTERN.search(text) or "covered on" in text:
@@ -839,6 +912,14 @@ def execute_tool_call(
         return skill_gap(db, caller, **args)
     if name == "skill_scarcity":
         return skill_scarcity(db, caller, **args)
+    if name == "find_experts":
+        # view_mode is threaded through (unlike the other directory_tools
+        # calls, which predate it) because this one returns people reached
+        # by a hop rather than by a direct lookup -- is_record_visible has
+        # to see the same mode the rest of the request is running in, or an
+        # HR caller in employee mode could surface a restricted person here
+        # that every other route correctly hides from them.
+        return find_experts(db, caller, problem=args.get("problem", ""), view_mode=view_mode)
     if name == "search_people":
         # Filter(**f)/PeopleQuery(...) validate structurally at construction
         # time -- Field/Op are Literal types, so a field/op the model

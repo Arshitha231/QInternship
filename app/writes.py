@@ -31,6 +31,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, EmployeeProject, Project
 from app.models.enums import EmploymentType
 from app.permissions import ViewMode, can_edit, editable_fields
+from app.project_search import reindex_project
 from app.search_reindex import reindex_employee, reindex_employee_id
 
 
@@ -218,3 +219,14 @@ def _reindex_project_members(db: Session, project_id: int) -> None:
     ]
     for employee_id in member_ids:
         reindex_employee_id(db, employee_id)
+
+    # The project's own Mode 3 embedding is derived from its description, so
+    # editing that description makes the stored vector stale in exactly the
+    # way an employee's profile_text goes stale above. Same call, one row.
+    #
+    # Degrades rather than fails: reindex_project() returns False when the
+    # embedding endpoint is unreachable, leaving the previous vector in
+    # place. That's a stale corpus entry, not a broken write — and
+    # source_hash makes the staleness detectable, so the next
+    # build_project_embeddings.py run repairs it.
+    reindex_project(db, project_id)

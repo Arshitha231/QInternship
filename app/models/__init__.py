@@ -10,6 +10,7 @@ from app.models.notification import Notification
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.project import Project
+from app.models.project_embedding import ProjectEmbedding
 from app.models.project_skill_requirement import ProjectSkillRequirement
 from app.models.proposed_change import ProposedChange
 from app.models.skill import Skill
@@ -30,6 +31,7 @@ __all__ = [
     "Office",
     "OrgUnit",
     "Project",
+    "ProjectEmbedding",
     "ProjectSkillRequirement",
     "ProposedChange",
     "Skill",

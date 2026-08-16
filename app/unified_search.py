@@ -29,7 +29,9 @@ from sqlalchemy.orm import Session
 from app.auth import AuthenticatedUser
 from app.people import find_people
 from app.permissions import ViewMode
-from app.schemas import MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProjectOwnerResult
+from app.schemas import (
+    MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+)
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
     TOOLS,
@@ -205,6 +207,22 @@ def _people_and_citations(
         summaries = _resolve_summaries(db, caller, [(c.id, c.full_name) for c in candidates], view_mode)
         return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
 
+    if tool_name == "find_experts":
+        # ProblemExpert already carries every PersonSummary field, so cards
+        # are built directly rather than re-resolved through find_people the
+        # way MentorCandidate has to be — one fewer query per result, and no
+        # chance of a name that no longer resolves silently dropping a
+        # person the hop legitimately found. Order is the ranking's, kept.
+        experts = [e for e in result if isinstance(e, ProblemExpert)]
+        summaries = [
+            PersonSummary(
+                id=e.id, full_name=e.full_name, job_title=e.job_title,
+                org_unit=e.org_unit, availability_status=e.availability_status,
+            )
+            for e in experts
+        ]
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
     if tool_name == "get_org_chain":
         # OrgChainNode already carries org_unit/availability_status as
         # plain strings, matching PersonSummary's required fields exactly
@@ -306,6 +324,18 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
             return "No mentor candidates matched that skill right now."
         return (f"{len(candidates)} potential mentor{'s' if len(candidates) != 1 else ''} found, "
                 f"starting with {candidates[0].full_name} ({candidates[0].level}).")
+
+    if tool_name == "find_experts":
+        experts = result or []
+        if not experts:
+            return "Nothing in our project history matches that problem."
+        top = experts[0]
+        # Says WHY, from the assignment record, and names the retrieval that
+        # actually ran. A keyword-only answer (the corpus not embedded yet)
+        # is never phrased as if it were a semantic match.
+        qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
+        others = f", and {len(experts) - 1} other{'s' if len(experts) > 2 else ''}" if len(experts) > 1 else ""
+        return f"{top.full_name} {top.reason}{others}{qualifier}."
 
     if tool_name == "skill_gap":
         items = result or []

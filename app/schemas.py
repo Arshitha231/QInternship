@@ -188,6 +188,34 @@ class MentorCandidate(BaseModel):
     reason: str
 
 
+class ProblemExpert(BaseModel):
+    """One find_experts result (Mode 3, app/project_search.py) — a person
+    reached by hopping from a project that matched a described problem.
+
+    `reason` states only what the assignment record shows ("works on
+    Project Atlas as Tech Lead"), never that this person is the best one to
+    ask: same discipline as MentorCandidate above and continuity.py's
+    dependency reasons. `retrieval` records which arms actually ran
+    ("semantic+keyword" / "keyword"), so a keyword-only answer — which is
+    what happens before the corpus has been embedded — is never presented
+    as a semantic match.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    availability_status: str
+    project_id: int
+    project_name: str
+    role: str
+    current: bool
+    reason: str
+    retrieval: str
+
+
 class SkillGapItem(BaseModel):
     """One entry in a skill_gap result — coverage for one requested skill."""
 
