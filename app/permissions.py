@@ -61,6 +61,7 @@ BASE_FIELDS: set[str] = {
     "slack_handle", "office", "effective_timezone", "employment_type", "photo_url",
     "manager", "delegate", "availability_status", "away_until_month",
     "skills", "languages", "bio", "project_history", "tenure_band",
+    "linkedin_profile", # <-- PHASE 4: Added here
 }
 
 # Internal HR information. Granted to exactly one (role, view_mode) pair —
@@ -151,7 +152,7 @@ EDITABLE: dict[tuple[str, str], set[str]] = {
     ("hr", "work"): {
         "full_name", "preferred_name", "job_title", "work_email", "work_phone",
         "salary", "salary_currency", "date_of_birth", "hire_date", "cost_centre",
-        "employment_type",
+        "employment_type", "linkedin_profile", # <-- PHASE 4: Added here
     },
     # IT's write surface: project descriptions (PUT/DELETE
     # /projects/{id}/description) plus, as of the doc-review pipeline, the
