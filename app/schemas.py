@@ -139,8 +139,11 @@ class PersonDetail(BaseModel):
     # so the exact decimal survives the trip: JSON numbers are IEEE 754
     # doubles in most clients, and pay is not a value to hand to a float.
     salary: str | None = None
-    salary_currency: str | None = None
     date_of_birth: date | None = None
+    
+    salary_currency: str | None = None
+    
+    linkedin_profile: str | None = None
 
 
 class OrgChainNode(BaseModel):
@@ -291,6 +294,7 @@ class UpdateEmployeeRequest(BaseModel):
     hire_date: date | None = None
     cost_centre: str | None = Field(default=None, max_length=50)
     employment_type: Literal["fte", "contractor", "intern"] | None = None
+    linkedin_profile: str | None = Field(default=None, max_length=500)
 
 
 class ProjectDescriptionRequest(BaseModel):
