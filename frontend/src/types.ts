@@ -261,3 +261,72 @@ export interface HrReviewQueueItem {
   engagements_affected: number;
   highest_exposure: "none" | "low" | "medium" | "high";
 }
+
+// AI-assisted doc upload for IT (app/doc_extraction.py, app/proposals.py) —
+// IT-only, work mode only, same non-visibility guarantee App.tsx's tab
+// gating gives Continuity: for any other role/mode this page never renders
+// and its calls never fire (the backend 403s them regardless).
+
+export interface UploadDocResult {
+  doc_id: number;
+  filename: string;
+  characters_extracted: number;
+  doc_type: "project_doc" | "resume";
+  people_mentioned: number;
+  proposed_changes: number;
+  status: string;
+}
+
+export interface DocSubjectCandidate {
+  employee_id: string;
+  full_name: string;
+  confidence: number;
+  // e.g. "email_match", "name_exact", "name_fuzzy+department_match" — see
+  // app/doc_extraction.py's rank_candidates for exactly which strings this
+  // can be; rendered as-is, humanised at the display layer.
+  match_reason: string;
+}
+
+export interface DocSubjectMatchOut {
+  id: number;
+  source_doc_id: number;
+  extracted_name: string;
+  extracted_signals: Record<string, string>;
+  candidates: DocSubjectCandidate[];
+  resolution_status: "unresolved" | "resolved" | "new_hire_candidate";
+  resolved_employee_id: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  proposed_change_count: number;
+}
+
+// proposed_value/original_value are deliberately untyped objects, not a
+// discriminated union keyed on change_type — the backend treats them the
+// same way (a bare JSON blob whose keys depend on change_type), and /edit's
+// wire contract is "send back the same keys". Rendered generically as
+// key:value pairs rather than three hardcoded per-type layouts.
+export interface ProposedChangeOut {
+  id: number;
+  change_type: "skill" | "contribution" | "project_entry";
+  status: "pending" | "accepted" | "edited" | "rejected";
+  confidence: number;
+  proposed_value: Record<string, unknown>;
+  original_value: Record<string, unknown> | null;
+  source_doc_id: number;
+  subject_match_id: number | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+}
+
+export interface ProposedChangeGroup {
+  employee_id: string;
+  employee_name: string | null;
+  changes: ProposedChangeOut[];
+}
+
+export interface BulkResultRow {
+  id: number;
+  ok: boolean;
+  status?: string;
+  error?: string;
+}

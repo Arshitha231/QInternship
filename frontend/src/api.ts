@@ -1,7 +1,8 @@
 import type {
-  ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem,
-  Identity, NotificationOut, OrgChainNode, PersonDetail, PersonSummary, UnifiedSearchResponse,
-  UpdateEmployeeChanges, ViewMode,
+  BulkResultRow, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
+  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode, PersonDetail,
+  PersonSummary, ProposedChangeGroup, UnifiedSearchResponse, UpdateEmployeeChanges,
+  UploadDocResult, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -187,3 +188,109 @@ export function getHrReviewQueue(identity: Identity, windowDays?: number): Promi
   const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
   return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs}`, identity);
 }
+
+// --- AI-assisted doc upload for IT — IT-only, work mode only. Every call
+// here 403s for any other (role, view_mode); ReviewPage never renders the
+// calling UI at all outside that pair, same non-visibility guarantee
+// Continuity's HR-only calls above have.
+
+// Bespoke fetch rather than the generic request<T> helper: a multipart
+// upload must NOT set Content-Type itself — the browser has to compute the
+// multipart boundary and set the header for us, and passing one explicitly
+// (even matching) breaks that.
+export async function uploadDoc(
+  identity: Identity, file: File, viewMode: ViewMode,
+): Promise<UploadDocResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/docs/upload?view_mode=${viewMode}`, {
+    method: "POST",
+    headers: headers(identity),
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new ApiError(res.status, detail?.detail ?? `${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<UploadDocResult>;
+}
+
+export function listDocSubjectMatches(
+  identity: Identity, viewMode: ViewMode, filters: { docId?: number; status?: string } = {},
+): Promise<{ doc_id: number | null; subjects: DocSubjectMatchOut[] }> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (filters.docId !== undefined) params.set("doc_id", String(filters.docId));
+  if (filters.status) params.set("status", filters.status);
+  return request(`/doc_subject_matches?${params.toString()}`, identity);
+}
+
+export function resolveDocSubjectMatch(
+  identity: Identity, subjectId: number,
+  body: { employee_id: string } | { new_hire: true },
+  viewMode: ViewMode,
+): Promise<DocSubjectMatchOut> {
+  return request(`/doc_subject_matches/${subjectId}/resolve?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function listProposedChanges(
+  identity: Identity, viewMode: ViewMode,
+  filters: { docId?: number; employeeId?: string; status?: string } = {},
+): Promise<{ doc_id: number | null; groups: ProposedChangeGroup[] }> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (filters.docId !== undefined) params.set("doc_id", String(filters.docId));
+  if (filters.employeeId) params.set("employee_id", filters.employeeId);
+  if (filters.status) params.set("status", filters.status);
+  return request(`/proposed_changes?${params.toString()}`, identity);
+}
+
+function proposedChangeAction(
+  identity: Identity, proposalId: number, action: string, viewMode: ViewMode, body?: unknown,
+) {
+  return request(`/proposed_changes/${proposalId}/${action}?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+export const acceptProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
+  proposedChangeAction(identity, id, "accept", viewMode);
+
+export const editProposedChange = (
+  identity: Identity, id: number, editedValue: Record<string, unknown>, viewMode: ViewMode,
+) => proposedChangeAction(identity, id, "edit", viewMode, { edited_value: editedValue });
+
+export const rejectProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
+  proposedChangeAction(identity, id, "reject", viewMode);
+
+export const reassignProposedChange = (
+  identity: Identity, id: number, employeeId: string, viewMode: ViewMode,
+) => proposedChangeAction(identity, id, "reassign", viewMode, { employee_id: employeeId });
+
+interface BulkSelector {
+  ids?: number[];
+  docId?: number;
+  employeeId?: string;
+}
+
+function bulkProposedChangeAction(
+  identity: Identity, action: string, viewMode: ViewMode, selector: BulkSelector,
+): Promise<{ results: BulkResultRow[] }> {
+  return request(`/proposed_changes/${action}?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ids: selector.ids, doc_id: selector.docId, employee_id: selector.employeeId,
+    }),
+  });
+}
+
+export const bulkAcceptProposedChanges = (identity: Identity, viewMode: ViewMode, selector: BulkSelector) =>
+  bulkProposedChangeAction(identity, "bulk_accept", viewMode, selector);
+
+export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode, selector: BulkSelector) =>
+  bulkProposedChangeAction(identity, "bulk_reject", viewMode, selector);
