@@ -351,6 +351,13 @@ _INJECTION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Word-boundary, not a bare "gap" in text substring check -- "Singapore"
+# contains "gap" (sin-GAP-ore), so the bare substring version misrouted any
+# question naming that office to skill_gap before the deterministic
+# router's return value ever let a later branch, or the real model, see
+# the text at all. Matches "gap" and "gaps" ("what are our gaps").
+_SKILL_GAP_PATTERN = re.compile(r"\bgaps?\b", re.IGNORECASE)
+
 # First-person phrasing ("my manager", "who am I", "email me") — same
 # self-reference concept the real model is taught via SYSTEM_PROMPT, but
 # the mock resolver had no equivalent rule at all: "who is my manager?"
@@ -512,7 +519,7 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_mentor", arguments={"skill": skill}))
     if "scarc" in text:
         return AssistantTurn(tool_call=ResolvedToolCall(name="skill_scarcity", arguments={}))
-    if "gap" in text or "covered on" in text:
+    if _SKILL_GAP_PATTERN.search(text) or "covered on" in text:
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="skill_gap", arguments={"required_skills": [message.strip(" ?.!")]}))
     if "owns" in text or "responsible for" in text or "who is on" in text or "who's on" in text:
