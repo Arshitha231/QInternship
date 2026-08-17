@@ -61,7 +61,7 @@ export interface TreeGroup {
   childIds: string[];
 }
 
-export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
+export function useTreeConnectors(groups: TreeGroup[], deps: unknown[], scale = 1) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const branchRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -97,11 +97,19 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
       childIds: string[],
       paths: { id: string; d: string }[],
     ) {
+      // getBoundingClientRect() reports post-transform SCREEN pixels -- with
+      // this hook's callers now wrapped in ZoomPanFrame's CSS `scale()`,
+      // every measured delta here shrinks/grows with that scale even though
+      // svgSize below (scrollWidth/scrollHeight, a LAYOUT property untouched
+      // by paint-only transforms) does not. Dividing by `scale` converts
+      // back to the same unscaled "layout pixel" unit svgSize's viewBox is
+      // already in, so the two stay aligned at any zoom level. A no-op when
+      // a caller doesn't pass one (default 1).
       const p = nodeRefs.current.get(parentId);
       if (!p) return;
       const pr = p.getBoundingClientRect();
-      const px = pr.left + pr.width / 2 - wrapRect.left;
-      const py = pr.bottom - wrapRect.top;
+      const px = (pr.left + pr.width / 2 - wrapRect.left) / scale;
+      const py = (pr.bottom - wrapRect.top) / scale;
 
       const items = childIds
         .map((id) => {
@@ -109,14 +117,16 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
           if (!el) return null;
           const r = el.getBoundingClientRect();
           const branchEl = branchRefs.current.get(id);
-          const branchBottom = branchEl
-            ? branchEl.getBoundingClientRect().bottom - wrapRect.top
-            : r.bottom - wrapRect.top;
+          const branchBottom = (
+            branchEl
+              ? branchEl.getBoundingClientRect().bottom - wrapRect.top
+              : r.bottom - wrapRect.top
+          ) / scale;
           return {
             id,
-            cx: r.left + r.width / 2 - wrapRect.left,
-            cy: r.top - wrapRect.top,
-            top: Math.round(r.top - wrapRect.top),
+            cx: (r.left + r.width / 2 - wrapRect.left) / scale,
+            cy: (r.top - wrapRect.top) / scale,
+            top: Math.round((r.top - wrapRect.top) / scale),
             branchBottom,
           };
         })
@@ -159,8 +169,13 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
       ro.disconnect();
       window.removeEventListener("resize", recompute);
     };
+    // scale is appended here rather than left to each caller to remember --
+    // a zoom change doesn't touch layout size, so ResizeObserver never fires
+    // for it on its own, and stale line paths at the old scale is a worse
+    // failure mode than one extra recompute on every other caller's (fixed
+    // scale=1) render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, scale]);
 
   return { wrapRef, registerNode, registerBranch, linePaths, svgSize };
 }

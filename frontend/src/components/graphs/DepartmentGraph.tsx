@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, getOrgChart } from "../../api";
 import type { Identity, OrgChainNode, PersonDetail } from "../../types";
 import { NodeBox, useTreeConnectors, type TreeGroup } from "./treeShared";
+import { useZoomPan, ZoomPanFrame } from "../ZoomPanFrame";
 
 // Strict hierarchical tree, not a force-directed radial layout: manager
 // directly above, direct reports in a row directly below, connected with
@@ -96,13 +97,14 @@ export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: 
     groups.push({ parentId: focusId, childIds: reports.map((r) => r.id) });
     for (const r of reports) collectExpandedGroups(r.id, groups);
   }
+  const zoomPan = useZoomPan();
   const { wrapRef, registerNode, registerBranch, linePaths, svgSize } = useTreeConnectors(groups, [
     manager,
     reports,
     expandedIds,
     childrenCache,
     focusId,
-  ]);
+  ], zoomPan.zoom);
 
   function renderBranch(node: OrgChainNode) {
     const expanded = expandedIds.has(node.id);
@@ -160,30 +162,32 @@ export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: 
   };
 
   return (
-    <div className="org-tree-wrap" ref={wrapRef}>
-      <svg
-        className="org-tree-lines"
-        width={svgSize.width}
-        height={svgSize.height}
-        viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
-      >
-        {linePaths.map((p) => (
-          <path key={p.id} d={p.d} className="tree-edge" />
-        ))}
-      </svg>
-      <div className="org-tree">
-        {manager && (
-          <div className="tree-tier tree-tier-manager">
-            <NodeBox node={manager} onClick={() => handleNodeClick(manager.id)} registerRef={registerNode(manager.id)} />
+    <ZoomPanFrame height={480} {...zoomPan}>
+      <div className="org-tree-wrap" ref={wrapRef}>
+        <svg
+          className="org-tree-lines"
+          width={svgSize.width}
+          height={svgSize.height}
+          viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+        >
+          {linePaths.map((p) => (
+            <path key={p.id} d={p.d} className="tree-edge" />
+          ))}
+        </svg>
+        <div className="org-tree">
+          {manager && (
+            <div className="tree-tier tree-tier-manager">
+              <NodeBox node={manager} onClick={() => handleNodeClick(manager.id)} registerRef={registerNode(manager.id)} />
+            </div>
+          )}
+          <div className="tree-tier tree-tier-center">
+            <NodeBox node={center} focus registerRef={registerNode(center.id)} />
           </div>
-        )}
-        <div className="tree-tier tree-tier-center">
-          <NodeBox node={center} focus registerRef={registerNode(center.id)} />
+          {reports.length > 0 && (
+            <div className="tree-tier tree-tier-reports">{reports.map((r) => renderBranch(r))}</div>
+          )}
         </div>
-        {reports.length > 0 && (
-          <div className="tree-tier tree-tier-reports">{reports.map((r) => renderBranch(r))}</div>
-        )}
       </div>
-    </div>
+    </ZoomPanFrame>
   );
 }

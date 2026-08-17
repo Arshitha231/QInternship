@@ -95,3 +95,12 @@ export const Sun = ({ size = 17, className }: IconProps) => (
 export const Moon = ({ size = 17, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" /></svg>
 );
+export const Home = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m3 11 9-8 9 8" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg>
+);
+export const Minus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M5 12h14" /></svg>
+);
+export const Plus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M12 5v14M5 12h14" /></svg>
+);

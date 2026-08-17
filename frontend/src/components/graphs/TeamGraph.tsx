@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, findPeople } from "../../api";
 import type { Identity, OrgChainNode, PersonDetail, ViewMode } from "../../types";
 import { NodeBox, useTreeConnectors, type TreeGroup } from "./treeShared";
+import { useZoomPan, ZoomPanFrame } from "../ZoomPanFrame";
 
 // Same hierarchical tree as DepartmentGraph -- a fixed node on top (here,
 // the team itself) with its members in a row directly below, connected
@@ -86,7 +87,8 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
   const groups: TreeGroup[] = hubId
     ? [{ parentId: hubId, childIds: [focusId, ...(teammates ?? []).map((t) => t.id)] }]
     : [];
-  const { wrapRef, registerNode, linePaths, svgSize } = useTreeConnectors(groups, [hubId, teammates, focusId]);
+  const zoomPan = useZoomPan();
+  const { wrapRef, registerNode, linePaths, svgSize } = useTreeConnectors(groups, [hubId, teammates, focusId], zoomPan.zoom);
 
   if (error) {
     return (
@@ -112,30 +114,32 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
   };
 
   return (
-    <div className="org-tree-wrap" ref={wrapRef}>
-      <svg
-        className="org-tree-lines"
-        width={svgSize.width}
-        height={svgSize.height}
-        viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
-      >
-        {linePaths.map((p) => (
-          <path key={p.id} d={p.d} className="tree-edge" />
-        ))}
-      </svg>
-      <div className="org-tree">
-        {hubId && (
-          <div className="tree-tier tree-tier-manager">
-            <HubBox label={orgUnit!} registerRef={registerNode(hubId)} />
-          </div>
-        )}
-        <div className="tree-tier tree-tier-reports">
-          <NodeBox node={focusNode} focus registerRef={registerNode(focusId)} />
-          {teammates.map((t) => (
-            <NodeBox key={t.id} node={t} onClick={() => handleNodeClick(t.id, t.full_name)} registerRef={registerNode(t.id)} />
+    <ZoomPanFrame height={480} {...zoomPan}>
+      <div className="org-tree-wrap" ref={wrapRef}>
+        <svg
+          className="org-tree-lines"
+          width={svgSize.width}
+          height={svgSize.height}
+          viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+        >
+          {linePaths.map((p) => (
+            <path key={p.id} d={p.d} className="tree-edge" />
           ))}
+        </svg>
+        <div className="org-tree">
+          {hubId && (
+            <div className="tree-tier tree-tier-manager">
+              <HubBox label={orgUnit!} registerRef={registerNode(hubId)} />
+            </div>
+          )}
+          <div className="tree-tier tree-tier-reports">
+            <NodeBox node={focusNode} focus registerRef={registerNode(focusId)} />
+            {teammates.map((t) => (
+              <NodeBox key={t.id} node={t} onClick={() => handleNodeClick(t.id, t.full_name)} registerRef={registerNode(t.id)} />
+            ))}
+          </div>
         </div>
       </div>
-    </div>
+    </ZoomPanFrame>
   );
 }

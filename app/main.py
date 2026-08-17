@@ -12,6 +12,16 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
+from app.community_links import LinkDenied, LinkNotFound, SuggestionDenied, SuggestionNotActionable, SuggestionNotFound
+from app.community_links import auto_assign_mentors as auto_assign_mentors_service
+from app.community_links import confirm_suggested_official_link as confirm_suggested_official_link_service
+from app.community_links import create_personal_link as create_personal_link_service
+from app.community_links import delete_personal_link as delete_personal_link_service
+from app.community_links import generate_suggested_official_links as generate_suggested_official_links_service
+from app.community_links import list_community_links as list_community_links_service
+from app.community_links import list_suggested_official_links as list_suggested_official_links_service
+from app.community_links import reject_suggested_official_link as reject_suggested_official_link_service
+from app.community_links import update_personal_link as update_personal_link_service
 from app.continuity import get_employee_continuity as get_employee_continuity_service
 from app.continuity import get_engagement_exposure as get_engagement_exposure_service
 from app.continuity import get_hr_review_queue as get_hr_review_queue_service
@@ -44,8 +54,10 @@ from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
     BulkProposalRequest,
+    CommunityLinkOut,
     ContinuityOverview,
     CorrectProposalRequest,
+    CreateCommunityLinkRequest,
     EditProposalRequest,
     EmployeeContinuityDetail,
     EngagementExposure,
@@ -61,7 +73,9 @@ from app.schemas import (
     ReassignProposalRequest,
     RecordCourseStatusRequest,
     ResolveSubjectRequest,
+    SuggestedOfficialLinkOut,
     UpdateBioRequest,
+    UpdateCommunityLinkRequest,
     UpdateEmployeeRequest,
 )
 from app.tool_calling import answer as answer_service
@@ -802,6 +816,155 @@ def _review_action(fn, db, user, proposal_id: int, mode: str, **kwargs) -> dict:
         "reviewed_by": proposal.reviewed_by,
         "reviewed_at": proposal.reviewed_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Community Graph — private per-employee "who to contact for what" list.
+# See app/community_links.py's module docstring for the visibility rule
+# (unconditionally owner-only, no role exception) and the mentor-link
+# expiration mechanics.
+# ---------------------------------------------------------------------------
+
+@app.get("/community_links", response_model=list[CommunityLinkOut])
+def list_community_links_route(
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[CommunityLinkOut]:
+    """The caller's own community graph only — official + personal, merged,
+    with mentor-link expiration applied. No person_id parameter, on
+    purpose, same reason /me/notifications has none: there is no route
+    shape here that could read someone else's graph, for any role."""
+    return list_community_links_service(db, user)
+
+
+@app.post("/community_links", status_code=201, response_model=CommunityLinkOut)
+def create_community_link_route(
+    body: CreateCommunityLinkRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> CommunityLinkOut:
+    """Add a personal link. owner is always the caller — the request body
+    has no field for it, so nobody can add to someone else's graph even by
+    supplying an id."""
+    try:
+        return create_personal_link_service(
+            db, user, body.contact_employee_id, body.role_label, body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/community_links/{link_id}", response_model=CommunityLinkOut)
+def update_community_link_route(
+    link_id: int,
+    body: UpdateCommunityLinkRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> CommunityLinkOut:
+    """Only if owner + source=personal, else 403 — official links are
+    read-only regardless of role."""
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="no fields supplied")
+    try:
+        return update_personal_link_service(db, user, link_id, changes)
+    except LinkNotFound as exc:
+        raise HTTPException(status_code=404, detail="Community link not found") from exc
+    except LinkDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/community_links/{link_id}", status_code=204)
+def delete_community_link_route(
+    link_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> None:
+    """Only if owner + source=personal, else 403 — same gate as PATCH."""
+    try:
+        delete_personal_link_service(db, user, link_id)
+    except LinkNotFound as exc:
+        raise HTTPException(status_code=404, detail="Community link not found") from exc
+    except LinkDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.get("/suggested_official_links", response_model=list[SuggestedOfficialLinkOut])
+def list_suggested_official_links_route(
+    office_id: int | None = Query(None, description="Restrict to one office."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[SuggestedOfficialLinkOut]:
+    """HR review queue for office/role -> candidate mappings bootstrapped
+    from existing office/job-title data. HR-only."""
+    try:
+        return list_suggested_official_links_service(db, user, office_id=office_id)
+    except SuggestionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.post("/suggested_official_links/generate", status_code=201, response_model=list[SuggestedOfficialLinkOut])
+def generate_suggested_official_links_route(
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[SuggestedOfficialLinkOut]:
+    """HR-triggered scan that stages new pending suggestions — never
+    creates a real community_links edge itself. HR-only, same gate as the
+    rest of the review queue."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Generating official-link suggestions is an HR action")
+    return generate_suggested_official_links_service(db)
+
+
+@app.post("/suggested_official_links/{suggestion_id}/confirm", response_model=SuggestedOfficialLinkOut)
+def confirm_suggested_official_link_route(
+    suggestion_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SuggestedOfficialLinkOut:
+    """Creates the real official edge, fanned out to every active employee
+    in the suggestion's office — see app.community_links for why."""
+    try:
+        return confirm_suggested_official_link_service(db, user, suggestion_id)
+    except SuggestionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SuggestionNotFound as exc:
+        raise HTTPException(status_code=404, detail="Suggestion not found") from exc
+    except SuggestionNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/suggested_official_links/{suggestion_id}/reject", response_model=SuggestedOfficialLinkOut)
+def reject_suggested_official_link_route(
+    suggestion_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SuggestedOfficialLinkOut:
+    try:
+        return reject_suggested_official_link_service(db, user, suggestion_id)
+    except SuggestionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SuggestionNotFound as exc:
+        raise HTTPException(status_code=404, detail="Suggestion not found") from exc
+    except SuggestionNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/community_links/auto_assign_mentors", status_code=201, response_model=list[CommunityLinkOut])
+def auto_assign_mentors_route(
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[CommunityLinkOut]:
+    """Sweep for new hires without a mentor and pair each with an eligible
+    colleague, creating the official mentor link directly — see
+    app.community_links.auto_assign_mentors for why this one official-link
+    kind skips the suggest/confirm review queue the others go through.
+    HR-only, same gate as the rest of the review queue."""
+    try:
+        return auto_assign_mentors_service(db, user)
+    except SuggestionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @app.post("/ask")

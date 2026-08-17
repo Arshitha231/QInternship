@@ -537,6 +537,58 @@ class HrReviewQueueItem(BaseModel):
     highest_exposure: Literal["none", "low", "medium", "high"]
 
 
+# --- Community Graph (app/community_links.py) — private per-employee -----
+# "who to contact for what" list. Every response here is scoped to the
+# caller's own graph; there is no shape anywhere in this section that takes
+# another employee's id as the subject of a query.
+
+class CommunityLinkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    owner_employee_id: str
+    contact_employee_id: str
+    role_label: str
+    reason: str | None = None
+    source: str
+    office_id: int | None = None
+    department_id: int | None = None
+    is_mentor_link: bool
+    created_at: datetime
+
+
+class CreateCommunityLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contact_employee_id: str
+    role_label: str = Field(max_length=200)
+    reason: str = Field(max_length=500)
+
+
+class UpdateCommunityLinkRequest(BaseModel):
+    """PATCH semantics — only supplied keys are touched, same convention as
+    UpdateEmployeeRequest. Personal links only; enforced in
+    app/community_links.py, not here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role_label: str | None = Field(default=None, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class SuggestedOfficialLinkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    office_id: int
+    role_label: str
+    candidate_employee_id: str
+    status: str
+    created_at: datetime
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+
+
 class EmployeeContinuityDetail(BaseModel):
     """GET /continuity/employees/{id} — HR drill-down. `engagements` lists
     EVERY one of this employee's current client-engagement assignments,

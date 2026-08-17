@@ -454,11 +454,38 @@ button { font: inherit; }
 .graph-node.clickable:focus-visible circle { outline: 2px solid var(--purple); outline-offset: 2px; }
 .graph-node.clickable:hover circle { filter: brightness(0.96); }
 
+/* Shared zoom/pan/home chrome (ZoomPanFrame.tsx) for all four graph views.
+   .graph-canvas above is the one bordered/clipped "card" frame; nested
+   content (.org-tree-wrap, GraphCanvas's bare svg, Community's ring) stays
+   unstyled at that level so the two don't nest into a visible double box.
+   Controls are overlaid ON the canvas (absolutely positioned corners), not
+   a separate toolbar row above it -- the frame's `height` prop is exactly
+   the graph's visible area this way, matching the size it was before
+   pan/zoom controls existed at all, rather than that height plus a row. */
+.zoom-pan-frame {
+  position: relative; cursor: grab; touch-action: none; user-select: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.zoom-pan-frame:active { cursor: grabbing; }
+.zoom-pan-viewport { transform-origin: center center; }
+
+.zoom-pan-controls {
+  position: absolute; top: 12px; left: 12px; z-index: 5;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 3px;
+}
+.zoom-pan-btn {
+  width: 30px; height: 30px; padding: 0; border: none; background: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; color: var(--ink); cursor: pointer;
+}
+.zoom-pan-btn:hover { background: var(--page); }
+.zoom-pan-extra { position: absolute; top: 12px; right: 12px; z-index: 5; }
+
 /* ---------- department org tree ---------- */
 .org-tree-wrap {
   position: relative;
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius-card);
-  padding: 32px 24px 40px; overflow-x: auto;
+  padding: 32px 24px 40px;
 }
 .org-tree-lines { position: absolute; top: 0; left: 0; pointer-events: none; }
 .tree-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
@@ -755,3 +782,43 @@ button { font: inherit; }
 .review-status-accepted { background: var(--green-100); border-color: transparent; color: var(--green-800); }
 .review-status-edited { background: var(--purple-100); border-color: transparent; color: var(--purple-800); }
 .review-status-rejected { background: var(--red-100); border-color: transparent; color: var(--red); }
+
+/* Community Graph — the source badge shared between the (now-removed) list
+   cards and the canvas nodes below. */
+.community-source-pill { flex-shrink: 0; font-size: 11.5px; margin-top: 6px; }
+.community-source-official { background: var(--amber-100); border-color: transparent; color: var(--amber); }
+.community-source-personal { background: var(--purple-100); border-color: transparent; color: var(--purple-800); }
+
+/* Community Graph canvas (CommunityGraphCanvas.tsx) — self at the center, a
+   ring of contacts around it (radius grows with the node count, see
+   CommunityGraphCanvas.tsx's radiusForCount, so adjacent cards can't
+   overlap regardless of how many there are), inside ZoomPanFrame's shared
+   pannable/zoomable viewport. Nodes reuse .tree-node/.avatar/.status-dot as
+   -is; edges reuse .tree-edge, the same connector line style Department/
+   Team use, so this reads as the same app's line language even though the
+   layout itself is radial rather than their tiered tree. Everything below
+   is specific to this view's ring positioning and edit-mode chrome; the
+   pan/zoom/toolbar frame itself is .zoom-pan-* (ZoomPanFrame.tsx). */
+.community-canvas-wrap { display: flex; flex-direction: column; gap: 12px; }
+.community-canvas-ring { position: relative; }
+.community-canvas-edges { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+.community-canvas-node {
+  position: absolute; transform: translate(-50%, -50%); width: 154px; cursor: pointer;
+}
+.community-canvas-node.skel { transform: translate(-50%, -50%); cursor: default; }
+.community-node-what {
+  font-size: 11px; color: var(--purple-800); margin: 6px 0 0; font-style: italic;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.community-node-remove {
+  position: absolute; top: -8px; right: -8px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--white); border: 1px solid var(--border); color: var(--red);
+  display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2;
+}
+.community-node-remove:hover { background: var(--red-100); border-color: var(--red); }
+.community-node-remove:disabled { opacity: 0.5; cursor: default; }
+
+.community-add-fab { align-self: flex-start; }
+.community-add-empty { align-self: center; }
+.community-add-form { max-width: 420px; }

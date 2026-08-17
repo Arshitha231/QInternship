@@ -223,3 +223,25 @@ class NotificationKind(str, enum.Enum):
 # marking, not less, so this is a rule rather than a list that silently stops.
 def is_milestone_year(years: int) -> bool:
     return years == 1 or (years >= 5 and years % 5 == 0)
+
+
+class CommunityLinkSource(str, enum.Enum):
+    """community_links.source. An official row is read-only to the employee
+    (app/community_links.py's _load_owned_personal) regardless of role — an
+    employee may only add alongside, never edit or override one. A mentor
+    link is created official and flips to personal at expiration; see
+    CommunityLink.is_mentor_link."""
+
+    official = "official"
+    personal = "personal"
+
+
+class SuggestedLinkStatus(str, enum.Enum):
+    """suggested_official_links.status — HR's review queue for office/role
+    -> candidate mappings bootstrapped from existing office/job-title data.
+    Same staging discipline as ProposedChangeStatus: nothing becomes a real
+    community_links edge until an explicit `confirmed`."""
+
+    pending = "pending"
+    confirmed = "confirmed"
+    rejected = "rejected"

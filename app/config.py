@@ -58,6 +58,25 @@ def notify_levels_up() -> int:
         return UNLIMITED_LEVELS
 
 
+def new_hire_mentor_window_days() -> int:
+    """How recently someone must have been hired to still count as a "new
+    employee" for automatic mentor assignment
+    (app/community_links.py's auto_assign_mentors).
+
+    A setting rather than a constant because onboarding policy ("mentors for
+    the first quarter" vs "first month") is a fact about this company's HR
+    process, not about this code — same reasoning as hr_org_unit_name below.
+    Widening or narrowing it never reassigns anyone who's already outside
+    the window and already skipped a mentor: the sweep only ever looks at
+    who is a new hire *right now*, not who used to be.
+    """
+    raw = os.environ.get("NEW_HIRE_MENTOR_WINDOW_DAYS", "90").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 90
+
+
 def hr_org_unit_name() -> str:
     """Which org unit's people count as "HR" for notification purposes.
 
