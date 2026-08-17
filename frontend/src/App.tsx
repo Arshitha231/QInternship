@@ -325,7 +325,17 @@ export default function App() {
           ...(identity.role === "it" && viewMode === "work" ? (["review"] as const) : []),
         ]}
         onExit={() => setHelp("off")}
-        onRequestMode={(m) => setMode(m as Mode)}
+        onRequestMode={(m) => {
+          // Clearing the query matters as much as setting the mode: the
+          // content area renders SEARCH RESULTS whenever hasQuery is true,
+          // whatever `mode` says (see the ternary above). Setting mode
+          // alone left the tour narrating the Graphs tabs while the page
+          // still showed a result list, and the step's target never
+          // existed. The real tab buttons clear the query for the same
+          // reason -- this just does what clicking them does.
+          setMode(m as Mode);
+          setQuery("");
+        }}
       />
     </div>
   );

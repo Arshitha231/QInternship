@@ -92,7 +92,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     key: "tabs",
     title: "Sections",
     body:
-      "Profile is search and people. Graphs draws the org three ways. Continuity (HR) and Review (IT) " +
+      "Profile is search and people. Graphs draws the org four ways. Continuity (HR) and Review (IT) " +
       "appear only for the roles that own them — which is why the tabs you see change when you switch " +
       "identity.",
     tourStep: 7,
@@ -111,11 +111,60 @@ export const HELP_TOPICS: HelpTopic[] = [
     key: "graphs",
     title: "Graphs",
     body:
-      "Three views of the same organisation: reporting lines, team structure, and who shares which skills. " +
-      "Drag to pan, scroll to zoom, click any node to open that person. Good for finding structure that a " +
-      "list of names can't show you.",
+      "Four views of the same organisation, each answering a different question. Every one centres on a " +
+      "focus person — the purple node — and clicking any other person re-centres the whole graph on them, " +
+      "so you navigate by walking the structure rather than searching again. Drag to pan, scroll to zoom. " +
+      "The tabs below switch views; the legend under them tells you what each colour means in the current one.",
     mode: "graphs",
     tourStep: 9,
+  },
+  {
+    key: "graph-department",
+    title: "Department graph — reporting lines",
+    body:
+      "Answers \"where does this person sit in the hierarchy?\". A strict tree: the focus person's manager " +
+      "directly above them, their direct reports in a row directly below, joined by right-angled connectors. " +
+      "It deliberately shows ONE level each way — no grandparents, no grandchildren — so the picture stays " +
+      "readable. Anyone in the reports row who manages people of their own gets an expand toggle; expanding " +
+      "one branch never expands its siblings, so depth is something you choose rather than something the " +
+      "graph decides. Purple is the focus person, pale purple is their reporting chain.",
+    mode: "graphs",
+    tourStep: 10,
+  },
+  {
+    key: "graph-team",
+    title: "Team graph — who they work alongside",
+    body:
+      "Answers \"who else is on this team?\". Same tree shape as the Department view, but the box on top is " +
+      "the TEAM itself (amber) rather than a manager, with its members in a row underneath (pale purple). " +
+      "There's no expand control because a roster is already flat — one level, not a chain. Read it as " +
+      "peers, not hierarchy: two people side by side here are colleagues, which the reporting view wouldn't " +
+      "tell you if they report to different managers.",
+    mode: "graphs",
+    tourStep: 11,
+  },
+  {
+    key: "graph-skills",
+    title: "Skills graph — who else knows this",
+    body:
+      "Answers \"who do I go to for X?\". Two KINDS of node, not one: green nodes are skills, pale purple " +
+      "nodes are people. An edge means that person holds that skill. It starts from the focus person's own " +
+      "skills and fans out to whoever else shares each one — so a skill node with many people attached is " +
+      "well covered, and one with almost none is a bus-factor risk worth noticing. Use it to find a mentor, " +
+      "or someone to pull in right now.",
+    mode: "graphs",
+    tourStep: 12,
+  },
+  {
+    key: "graph-community",
+    title: "Community graph — your own contacts",
+    body:
+      "Answers \"who do I personally go to for what?\". Unlike the other three, this one is ALWAYS yours: it " +
+      "shows the logged-in person's private contact graph whoever is focused above, and nobody else can see " +
+      "it — the endpoint takes no id at all, so there is no way to view a colleague's. Treat it as your own " +
+      "notes on the org rather than a fact about it.",
+    mode: "graphs",
+    tourStep: 13,
   },
   {
     key: "continuity",
@@ -125,7 +174,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       "never the person — \"this project has a single-person dependency\", not \"this employee is a risk\" — " +
       "and shows the delivery dependencies and internal backups behind each rating.",
     mode: "continuity",
-    tourStep: 10,
+    tourStep: 14,
   },
   {
     key: "review",
@@ -134,7 +183,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       "The queue of changes extracted from uploaded documents, waiting on a human. Nothing an automated " +
       "step proposes reaches a record until someone accepts it here, field by field.",
     mode: "review",
-    tourStep: 11,
+    tourStep: 15,
   },
 ];
 
