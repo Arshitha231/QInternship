@@ -45,11 +45,15 @@ from app.directory_tools import skill_gap, skill_scarcity  # noqa: E402
 from app.tool_calling import (  # noqa: E402
     CHAT_ENDPOINT,
     CHAT_KEY,
+    MAX_CHAIN_STEPS,
     OUT_OF_SCOPE_MESSAGE,
     ResolvedToolCall,
     AssistantTurn,
     _get_openai_client,
     _is_content_filter_block,
+    _llm_routed_via,
+    _serialize_step_result,
+    _step_feedback_message,
     build_messages,
     TOOLS,
     OPENAI_CHAT_DEPLOYMENT,
@@ -63,18 +67,27 @@ CALL_DELAY_SECONDS = 8.0  # pacing between real LLM calls, see module docstring
 MAX_RETRIES = 5
 
 
-def resolve_intent_strict(message: str) -> AssistantTurn:
+def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None) -> AssistantTurn:
     """Same logic as app.tool_calling._real_resolve, minus the silent
     mock fallback — retries on OpenAIError instead, so this eval measures
     the real model, not a rate-limit-triggered heuristic standing in for it.
+
+    `extra_messages` mirrors _real_resolve's own parameter exactly (used by
+    run_chain_strict below, the same way app.tool_calling.execute_chain
+    uses _real_resolve's) -- this file re-implements the retry/backoff
+    wrapper around the API call, not the message-shape logic itself, so
+    the two stay behaviorally identical.
     """
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         try:
             client = _get_openai_client()
+            messages = build_messages(message)
+            if extra_messages:
+                messages.extend(extra_messages)
             response = client.chat.completions.create(
                 model=OPENAI_CHAT_DEPLOYMENT,
-                messages=build_messages(message),
+                messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
                 # Same fix as app.tool_calling._real_resolve -- keeping this
@@ -87,7 +100,13 @@ def resolve_intent_strict(message: str) -> AssistantTurn:
             if choice.tool_calls:
                 call = choice.tool_calls[0]
                 arguments = json.loads(call.function.arguments)
-                return AssistantTurn(tool_call=ResolvedToolCall(name=call.function.name, arguments=arguments))
+                # Same lift app.tool_calling._real_resolve performs -- see
+                # that function's own comment. Needed here too so
+                # run_chain_strict below can tell whether the model asked
+                # for another step, exactly like production does.
+                needs_followup = bool(arguments.pop("needs_followup", False))
+                return AssistantTurn(tool_call=ResolvedToolCall(
+                    name=call.function.name, arguments=arguments, needs_followup=needs_followup))
             return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
         except OpenAIError as exc:
             if _is_content_filter_block(exc):
@@ -101,6 +120,50 @@ def resolve_intent_strict(message: str) -> AssistantTurn:
                   flush=True)
             time.sleep(backoff)
     raise RuntimeError(f"exhausted {MAX_RETRIES} retries against Azure OpenAI") from last_error
+
+
+def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> dict:
+    """Mirrors app.tool_calling.execute_chain's loop shape -- same
+    MAX_CHAIN_STEPS bound, same _serialize_step_result/_step_feedback_message
+    functions production uses, so this measures the real chain behavior,
+    not a re-derived approximation of it. Differs only where this whole
+    file already differs from production: resolve_intent_strict's own
+    retry/backoff on OpenAIError instead of _real_resolve's silent
+    degrade, and no retry-on-EXECUTION-failure (run() below never had
+    that for the single-call path either -- a step that raises just
+    records the error and stops, same as today).
+
+    Returns a dict shaped like run()'s own per-question record fields:
+    {tool_call, arguments, result, steps, exec_error}. `steps` is the
+    count actually taken, the number this whole exercise exists to
+    measure against the single-call baseline.
+    """
+    attempt = first_call
+    extra_messages: list[dict] = []
+    result = None
+    exec_error = None
+
+    for step in range(1, MAX_CHAIN_STEPS + 1):
+        try:
+            result = execute_tool_call(db, caller, attempt)
+        except (TypeError, ValueError, KeyError) as exc:
+            exec_error = str(exc)
+            return {"tool_call": attempt.name, "arguments": attempt.arguments,
+                    "result": None, "steps": step, "exec_error": exec_error}
+
+        if not (attempt.needs_followup and step < MAX_CHAIN_STEPS):
+            break
+
+        extra_messages.append(_step_feedback_message(step, attempt, result))
+        time.sleep(CALL_DELAY_SECONDS)  # pacing applies to every model call, chained or not
+        next_turn = resolve_intent_strict(message, extra_messages=extra_messages)
+        if next_turn.tool_call is None:
+            break  # model says it's done -- finalize with this step's result
+        next_turn.tool_call.routed_via = _llm_routed_via(next_turn.tool_call)
+        attempt = next_turn.tool_call
+
+    return {"tool_call": attempt.name, "arguments": attempt.arguments,
+            "result": result, "steps": step, "exec_error": exec_error}
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +271,8 @@ INDEPENDENT_CALLS = {
     "org_chain": lambda db, caller, args: independent_truth.org_chain(db, caller, **args),
     "filter_people": lambda db, caller, args: independent_truth.filter_people(db, caller, **args),
     "filter_people_or": lambda db, caller, args: independent_truth.filter_people_or(db, caller, **args),
+    "team_skill_availability": lambda db, caller, args: independent_truth.team_skill_availability(db, caller, **args),
+    "project_owners_manager": lambda db, caller, args: independent_truth.project_owners_manager(db, caller, **args),
     "find_mentor": lambda db, caller, args: independent_truth.find_mentor(
         db, caller, skill=args["skill"], caller_id=caller.id),
 }
@@ -315,12 +380,29 @@ def run() -> list[dict]:
 
         raw_result = None
         exec_error = None
-        if turn.tool_call is not None:
+        steps = 1
+        if turn.tool_call is not None and turn.tool_call.needs_followup:
+            # The model itself asked for a chain on its FIRST call -- the
+            # exact same trigger app.tool_calling.answer() checks, so a
+            # question the model can (and does) answer in one call costs
+            # exactly what it costs today: this branch is simply never
+            # entered for it. `steps` is recorded either way (1 here, N
+            # below) specifically to compare against the single-call
+            # baseline side by side, per this feature's own verification
+            # requirement.
+            chain_result = run_chain_strict(db, caller, turn.tool_call, q["text"])
+            record["tool_call"] = chain_result["tool_call"]
+            record["arguments"] = chain_result["arguments"]
+            raw_result = chain_result["result"]
+            exec_error = chain_result["exec_error"]
+            steps = chain_result["steps"]
+        elif turn.tool_call is not None:
             try:
                 raw_result = execute_tool_call(db, caller, turn.tool_call)
             except (TypeError, ValueError, KeyError) as exc:
                 exec_error = str(exc)
 
+        record["steps"] = steps
         extractor = EXTRACTORS[q["extractor"]]
         returned_list = extractor(raw_result) if raw_result is not None or turn.tool_call is not None else []
 
@@ -371,6 +453,23 @@ def summarize(results: list[dict]) -> None:
         for r in weak:
             print(f"    [{r['id']}] recall={r['recall_at_k']:.2f} precision={r['precision_at_k']:.2f}"
                   f"  \"{r['text']}\"  (tool={r.get('tool_call')})")
+
+    # Side-by-side single-call vs chained measurement (this feature's own
+    # verification requirement): every question records `steps` regardless
+    # of whether it chained, so a single-call question's cost is directly
+    # comparable to a chained one's, not asserted separately.
+    stepped = [r for r in results if "steps" in r]
+    chained = [r for r in stepped if r["steps"] > 1]
+    single = [r for r in stepped if r["steps"] == 1]
+    if stepped:
+        print(f"\nChain step counts  (n={len(stepped)})")
+        print(f"  single-call questions: {len(single)}  (must all be steps=1 -- confirms zero added cost when unused)")
+        print(f"  chained questions:     {len(chained)}")
+        if any(r["steps"] != 1 for r in single):
+            print("  WARNING: a question not asking for a chain still took >1 step -- investigate before trusting scores")
+        for r in chained:
+            status = "ERROR: " + r["exec_error"] if r.get("exec_error") else f"recall={r.get('recall_at_k', 'n/a')}"
+            print(f"    [{r['id']}] {r['steps']} steps  \"{r['text']}\"  ({status})")
 
     oos_results = [r for r in results if r["tier"] == 0]
     if oos_results:
