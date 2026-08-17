@@ -14,6 +14,7 @@ from app.tool_calling import (
     MAX_ROUTING_RETRIES,
     AssistantTurn,
     ResolvedToolCall,
+    _chain_step_messages,
     _deterministic_resolve,
     _llm_routed_via,
     _retry_after_execution_failure,
@@ -466,8 +467,9 @@ def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_ses
 # tool's own **args dispatch could receive it as if it were a real parameter.
 # ---------------------------------------------------------------------------
 
-def _fake_openai_response(tool_name: str, arguments: dict):
-    call = SimpleNamespace(function=SimpleNamespace(name=tool_name, arguments=json.dumps(arguments)))
+def _fake_openai_response(tool_name: str, arguments: dict, call_id: str = "call_test123"):
+    call = SimpleNamespace(
+        id=call_id, function=SimpleNamespace(name=tool_name, arguments=json.dumps(arguments)))
     message = SimpleNamespace(tool_calls=[call], content=None)
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
@@ -483,6 +485,7 @@ def test_needs_followup_is_lifted_out_of_the_models_own_json(monkeypatch):
     turn = tool_calling._real_resolve("who on Priya's team knows Terraform")
     assert turn.tool_call.needs_followup is True
     assert "needs_followup" not in turn.tool_call.arguments
+    assert turn.tool_call.tool_call_id == "call_test123"
 
 
 def test_needs_followup_defaults_false_when_the_model_omits_it(monkeypatch):
@@ -588,11 +591,15 @@ def test_chain_failure_returns_the_generic_message_not_an_earlier_steps_result(d
         return ["step one result"]
 
     def fake_real_resolve(message, extra_messages=None):
-        content = extra_messages[0]["content"] if extra_messages else ""
-        if content.startswith("Step "):
-            # Chain asking for the next step, after step 1 succeeded.
+        if not extra_messages:
+            return None
+        first = extra_messages[0]
+        if first.get("role") == "assistant":
+            # Chain asking for the next step, after step 1 succeeded --
+            # native assistant/tool_calls message, the shape
+            # _chain_step_messages builds.
             return AssistantTurn(tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}))
-        if content.startswith("That call failed"):
+        if first.get("content", "").startswith("That call failed"):
             # Retry-after-failure ask, inside step 2's own bounded retry --
             # offers the same doomed call again so retries exhaust.
             return AssistantTurn(tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}))
@@ -641,6 +648,28 @@ def test_chain_writes_one_audit_row_per_step_sharing_one_chain_id(db_session, mo
     ))
     assert [r.chain_step for r in rows] == [1, 2]
     assert len({r.chain_id for r in rows}) == 1  # both steps share one chain_id
+
+
+def test_chain_step_messages_builds_the_native_assistant_tool_pair():
+    tool_call = ResolvedToolCall(
+        name="find_people", arguments={"name": "Sarah White"}, tool_call_id="call_abc123")
+    messages = _chain_step_messages(tool_call, ["a result"])
+
+    assert len(messages) == 2
+    assistant_msg, tool_msg = messages
+
+    assert assistant_msg["role"] == "assistant"
+    assert assistant_msg["content"] is None
+    assert len(assistant_msg["tool_calls"]) == 1
+    call = assistant_msg["tool_calls"][0]
+    assert call["id"] == "call_abc123"
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "find_people"
+    assert json.loads(call["function"]["arguments"]) == {"name": "Sarah White"}
+
+    assert tool_msg["role"] == "tool"
+    assert tool_msg["tool_call_id"] == "call_abc123"  # echoes the same id -- what the API requires
+    assert tool_msg["content"] == _serialize_step_result(["a result"])
 
 
 def test_single_call_request_still_gets_chain_id_none(db_session, monkeypatch):

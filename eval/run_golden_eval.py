@@ -49,11 +49,11 @@ from app.tool_calling import (  # noqa: E402
     OUT_OF_SCOPE_MESSAGE,
     ResolvedToolCall,
     AssistantTurn,
+    _chain_step_messages,
     _get_openai_client,
     _is_content_filter_block,
     _llm_routed_via,
     _serialize_step_result,
-    _step_feedback_message,
     build_messages,
     TOOLS,
     OPENAI_CHAT_DEPLOYMENT,
@@ -106,7 +106,8 @@ def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None
                 # for another step, exactly like production does.
                 needs_followup = bool(arguments.pop("needs_followup", False))
                 return AssistantTurn(tool_call=ResolvedToolCall(
-                    name=call.function.name, arguments=arguments, needs_followup=needs_followup))
+                    name=call.function.name, arguments=arguments, needs_followup=needs_followup,
+                    tool_call_id=call.id))
             return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
         except OpenAIError as exc:
             if _is_content_filter_block(exc):
@@ -124,8 +125,8 @@ def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None
 
 def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> dict:
     """Mirrors app.tool_calling.execute_chain's loop shape -- same
-    MAX_CHAIN_STEPS bound, same _serialize_step_result/_step_feedback_message
-    functions production uses, so this measures the real chain behavior,
+    MAX_CHAIN_STEPS bound, same _chain_step_messages function production
+    uses, so this measures the real chain behavior,
     not a re-derived approximation of it. Differs only where this whole
     file already differs from production: resolve_intent_strict's own
     retry/backoff on OpenAIError instead of _real_resolve's silent
@@ -154,7 +155,7 @@ def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> 
         if not (attempt.needs_followup and step < MAX_CHAIN_STEPS):
             break
 
-        extra_messages.append(_step_feedback_message(step, attempt, result))
+        extra_messages.extend(_chain_step_messages(attempt, result))
         time.sleep(CALL_DELAY_SECONDS)  # pacing applies to every model call, chained or not
         next_turn = resolve_intent_strict(message, extra_messages=extra_messages)
         if next_turn.tool_call is None:

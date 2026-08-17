@@ -555,20 +555,16 @@ def build_messages(user_message: str) -> list[dict]:
             })
     for example_text, steps in CHAIN_FEW_SHOT_EXAMPLES:
         messages.append({"role": "user", "content": example_text})
-        for i, (tool_name, arguments) in enumerate(steps, start=1):
+        # Same shape production actually sends (_chain_step_messages) --
+        # each step is just another assistant/tool_calls + tool pair, so
+        # a multi-step example needs nothing beyond what the single-step
+        # loop above already does, repeated per step.
+        for tool_name, arguments in steps:
             messages.append(_tool_call_message(tool_name, arguments))
             messages.append({
                 "role": "tool", "tool_call_id": f"example_{tool_name}",
                 "content": "(illustrative example — not a real result)",
             })
-            if i < len(steps):
-                # Same wording production actually sends (_step_feedback_message),
-                # so the pattern the model is shown here is the pattern it will
-                # really see, not a paraphrase of it.
-                messages.append(_step_feedback_message(
-                    i, ResolvedToolCall(name=tool_name, arguments=arguments),
-                    "(illustrative example — not a real result)",
-                ))
     messages.append({"role": "user", "content": user_message})
     return messages
 
@@ -595,6 +591,13 @@ class ResolvedToolCall(BaseModel):
     # (no model output exists to set it) and on the last-resort fallback --
     # both are categorically single-step, see execute_chain()'s trigger.
     needs_followup: bool = False
+    # The real OpenAI-assigned tool_calls[].id, set only by _real_resolve's
+    # own parsing -- None on every deterministic/mock/last-resort/hand-
+    # built ResolvedToolCall, same convention as routed_via above. Exists
+    # so a chain step's native assistant/tool_call + tool message pair
+    # (_chain_step_messages) can echo the model's own id back to it,
+    # rather than inventing one.
+    tool_call_id: str | None = None
 
 
 class AssistantTurn(BaseModel):
@@ -935,13 +938,19 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
     fallback take it from there, once, in one place.
 
     `extra_messages`, when given, are appended after the normal system
-    prompt + few-shots + user message — used only by execute_with_retry()'s
-    bounded retry loop (ARCHITECTURE_2.md §9) to append a plain-text
-    description of why the previous attempt failed and ask for a corrected
-    call, without needing to reconstruct a matching assistant/tool
-    call-id pair (a second plain "user" turn is enough for the model to
-    respond to, and avoids any risk of malforming the real tool-call
-    message threading the OpenAI API expects).
+    prompt + few-shots + user message — used by two different callers,
+    each building their own shape:
+    execute_with_retry()'s bounded retry loop (ARCHITECTURE_2.md §9)
+    still appends a single plain-text "user" turn describing why the
+    previous attempt failed; a second plain turn is enough for the model
+    to respond to, and this path is unchanged from when it was first
+    built.
+    execute_chain()'s multi-step loop instead appends real
+    assistant/tool_calls + tool message pairs (_chain_step_messages),
+    using this response's own call.id below -- the actual OpenAI
+    multi-turn tool-calling shape, not an approximation of it. This
+    function doesn't care which shape it's handed; it only extends
+    `messages` with it.
     """
     try:
         client = _get_openai_client()
@@ -997,7 +1006,8 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
         # emitting "true" as a string, say) rather than trusting the shape.
         needs_followup = bool(arguments.pop("needs_followup", False))
         return AssistantTurn(tool_call=ResolvedToolCall(
-            name=call.function.name, arguments=arguments, needs_followup=needs_followup))
+            name=call.function.name, arguments=arguments, needs_followup=needs_followup,
+            tool_call_id=call.id))
     return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
 
 
@@ -1405,16 +1415,24 @@ def _serialize_step_result(result: Any) -> str:
     return json.dumps(result)
 
 
-def _step_feedback_message(step: int, tool_call: ResolvedToolCall, result: Any) -> dict:
-    return {
-        "role": "user",
-        "content": (
-            f"Step {step} result for {tool_call.name}({tool_call.arguments}): "
-            f"{_serialize_step_result(result)}. If this fully answers the original request, "
-            "reply in plain text and do not call a function. Otherwise, provide the next "
-            "function call, using this result to fill in its arguments."
-        ),
-    }
+def _chain_step_messages(tool_call: ResolvedToolCall, result: Any) -> list[dict]:
+    """The real assistant/tool_calls + tool message pair for one completed
+    chain step, echoing tool_call.tool_call_id on both -- native OpenAI
+    multi-turn tool-calling shape, not a plain-text description of what
+    happened. tool_call_id is guaranteed non-None here: this is only ever
+    called from execute_chain(), which is only ever entered with a
+    ResolvedToolCall that came from _real_resolve's own parsing (never a
+    deterministic or hand-built one), and _real_resolve sets it on every
+    call it returns.
+    """
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": tool_call.tool_call_id, "type": "function",
+            "function": {"name": tool_call.name, "arguments": json.dumps(tool_call.arguments)},
+        }]},
+        {"role": "tool", "tool_call_id": tool_call.tool_call_id,
+         "content": _serialize_step_result(result)},
+    ]
 
 
 def execute_chain(
@@ -1477,7 +1495,7 @@ def execute_chain(
         wants_more = attempt.needs_followup and step < MAX_CHAIN_STEPS
 
         if wants_more:
-            extra_messages.append(_step_feedback_message(step, attempt, result))
+            extra_messages.extend(_chain_step_messages(attempt, result))
             next_turn = _real_resolve(message, extra_messages=extra_messages)
             if next_turn is not None and next_turn.tool_call is not None:
                 next_turn.tool_call.routed_via = _llm_routed_via(next_turn.tool_call)
