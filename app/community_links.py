@@ -365,16 +365,27 @@ def reject_suggested_official_link(db: Session, caller: AuthenticatedUser, sugge
 # ---------------------------------------------------------------------------
 
 # role_label -> case-insensitive job_title substrings that count as a match.
-# security_compliance is deliberately allowed to match nothing: "if your org
-# has one" (per spec) means no employee's title contains any of these
-# keywords, in which case no suggestion is ever staged for it — the keyword
-# scan already degrades to silence for a role a company doesn't have, no
-# separate "does this org have X" flag needed.
+#
+# A role whose keywords match nobody simply never gets a suggestion staged —
+# the scan degrades to silence for a role a company doesn't have ("if your
+# org has one", per spec), with no separate "does this org have X" flag
+# needed. That is the intended behaviour for a genuinely absent role, but it
+# also means a keyword set that merely FAILS TO GUESS this directory's title
+# vocabulary is indistinguishable from one whose role doesn't exist: both
+# just produce nothing, silently. Every entry below is therefore checked
+# against real job_title values rather than assumed
+# (tests/test_community_links.py asserts each one still matches somebody, so
+# a future title rename can't quietly turn a role back into a dead path).
+#
+# "identity" is what catches the Identity & Access Analyst / Identity &
+# Endpoints Team Manager titles — the actual owners of access requests,
+# which is the specific need the spec names for this role. Matching only
+# "security"/"compliance" missed all ten of them.
 _TITLE_KEYWORD_ROLES: dict[str, tuple[str, ...]] = {
     "payroll": ("payroll",),
-    "facilities_admin": ("office manager", "office admin", "facilities"),
+    "facilities_admin": ("workplace", "office manager", "office admin", "facilities"),
     "benefits_admin": ("benefits", "leave admin", "leave administrator"),
-    "security_compliance": ("security", "compliance", "infosec", "information security"),
+    "security_compliance": ("security", "compliance", "infosec", "information security", "identity"),
 }
 
 

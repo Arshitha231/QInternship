@@ -482,3 +482,51 @@ async def test_auto_assign_mentors_skips_someone_with_an_already_expired_mentor_
 async def test_auto_assign_mentors_is_hr_only(client):
     resp = await client.post("/community_links/auto_assign_mentors", headers=auth_headers("manager", "mgr-1"))
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 9. The keyword table vs. the titles that actually exist.
+#
+# Every other test in this file builds its own fixture employees, which makes
+# them USELESS as a check on the keyword sets: the fixtures above were
+# written with titles picked to match the keywords ("Benefits Administrator",
+# "Office Manager"), so they passed while the real directory contained zero
+# employees matching either -- facilities_admin and benefits_admin were dead
+# paths that could never stage a suggestion, and no test noticed. A role
+# whose keywords match nobody is indistinguishable, at the API level, from a
+# role the company genuinely doesn't have: both just silently return nothing.
+#
+# So the guard has to be against a REAL source of titles rather than a
+# fixture. seed_workplace_roles.py is that source for the two roles that only
+# exist because it hires them -- its title constants and the keyword table
+# are a genuine coupling, and renaming either side without the other empties
+# the role again.
+# ---------------------------------------------------------------------------
+
+def test_keyword_table_matches_the_titles_the_seed_script_actually_creates():
+    import seed_workplace_roles
+
+    from app.community_links import _TITLE_KEYWORD_ROLES
+
+    def roles_matching(title: str) -> list[str]:
+        lowered = title.lower()
+        return sorted(
+            role for role, keywords in _TITLE_KEYWORD_ROLES.items()
+            if any(keyword in lowered for keyword in keywords)
+        )
+
+    assert "facilities_admin" in roles_matching(seed_workplace_roles.FACILITIES_TITLE)
+    assert "benefits_admin" in roles_matching(seed_workplace_roles.BENEFITS_TITLE)
+
+
+def test_access_request_titles_resolve_to_the_security_contact():
+    """The spec names access requests as the reason this role exists, and in
+    this directory those are owned by the Identity & Access titles -- not by
+    anything containing "security" or "compliance", which is all the first
+    version of the keyword set looked for (it missed all ten of them)."""
+    from app.community_links import _TITLE_KEYWORD_ROLES
+
+    keywords = _TITLE_KEYWORD_ROLES["security_compliance"]
+    for title in ("Identity & Access Analyst", "Identity & Endpoints Team Manager",
+                  "Senior Compliance Analyst"):
+        assert any(k in title.lower() for k in keywords), title
