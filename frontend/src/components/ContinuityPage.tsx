@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   findPeople, getContinuityOverview, getEmployeeContinuity, getEngagementExposure, getHrReviewQueue,
-  type ContinuityFilters,
+  type ContinuityFilters, type HrReviewQueueFilters,
 } from "../api";
 import type {
   ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, PersonSummary,
@@ -16,6 +16,11 @@ import type {
 type SubView = "overview" | "engagements" | "queue";
 
 const SEVERITY_LABEL: Record<string, string> = { high: "High", medium: "Medium", low: "Low", none: "None" };
+
+const AUTH_TYPE_LABEL: Record<string, string> = {
+  citizen: "Citizen", permanent_resident: "Permanent Resident", cpt: "CPT", opt: "OPT",
+  stem_opt: "STEM OPT", h1b: "H1B", l1: "L1", other: "Other",
+};
 
 function SeverityBadge({ exposure }: { exposure: string }) {
   return <span className={`pill continuity-pill-${exposure}`}>{SEVERITY_LABEL[exposure] ?? exposure}</span>;
@@ -194,6 +199,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
   const [loadingEngagements, setLoadingEngagements] = useState(false);
 
   const [queueWindowDays, setQueueWindowDays] = useState(90);
+  const [queueFilters, setQueueFilters] = useState<HrReviewQueueFilters>({});
   const [queue, setQueue] = useState<HrReviewQueueItem[] | null>(null);
   const [loadingQueue, setLoadingQueue] = useState(false);
 
@@ -236,7 +242,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     let cancelled = false;
     setLoadingQueue(true);
     setSelectedPerson(null);
-    getHrReviewQueue(identity, queueWindowDays).then((q) => {
+    getHrReviewQueue(identity, { ...queueFilters, window_days: queueWindowDays }).then((q) => {
       if (!cancelled) {
         setQueue(q);
         setLoadingQueue(false);
@@ -245,7 +251,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     return () => {
       cancelled = true;
     };
-  }, [identity, subView, queueWindowDays]);
+  }, [identity, subView, queueWindowDays, queueFilters]);
 
   useEffect(() => {
     if (!lookupQuery.trim()) {
@@ -365,6 +371,91 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
             />
           </div>
 
+          <div className="filter-bar">
+            <input
+              placeholder="Search a name directly"
+              value={lookupQuery}
+              onChange={(e) => {
+                setLookupQuery(e.target.value);
+                setSelectedPerson(null);
+              }}
+            />
+          </div>
+          {lookupResults.length > 0 && !selectedPerson && (
+            <ul className="reports-list">
+              {lookupResults.map((p) => (
+                <li key={p.id}>
+                  <button onClick={() => getEmployeeContinuity(identity, p.id).then(setSelectedPerson)}>
+                    {p.full_name}
+                    <span className="sub">{p.job_title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="filter-bar">
+            <select
+              value={queueFilters.authorization_type ?? ""}
+              onChange={(e) => setQueueFilters((f) => ({ ...f, authorization_type: e.target.value || undefined }))}
+            >
+              <option value="">Any current record</option>
+              {Object.entries(AUTH_TYPE_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={queueFilters.exposure ?? ""}
+              onChange={(e) => setQueueFilters((f) => ({ ...f, exposure: e.target.value || undefined }))}
+            >
+              <option value="">Any exposure</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+              <option value="none">None</option>
+            </select>
+            <label className="continuity-window-control">
+              Next review from
+              <input
+                type="date"
+                value={queueFilters.next_review_from ?? ""}
+                onChange={(e) => setQueueFilters((f) => ({ ...f, next_review_from: e.target.value || undefined }))}
+              />
+            </label>
+            <label className="continuity-window-control">
+              to
+              <input
+                type="date"
+                value={queueFilters.next_review_to ?? ""}
+                onChange={(e) => setQueueFilters((f) => ({ ...f, next_review_to: e.target.value || undefined }))}
+              />
+            </label>
+            <input
+              type="number"
+              min={0}
+              placeholder="Min engagements"
+              value={queueFilters.engagements_min ?? ""}
+              onChange={(e) =>
+                setQueueFilters((f) => ({
+                  ...f, engagements_min: e.target.value === "" ? undefined : Math.max(0, Number(e.target.value)),
+                }))
+              }
+            />
+            <input
+              type="number"
+              min={0}
+              placeholder="Max engagements"
+              value={queueFilters.engagements_max ?? ""}
+              onChange={(e) =>
+                setQueueFilters((f) => ({
+                  ...f, engagements_max: e.target.value === "" ? undefined : Math.max(0, Number(e.target.value)),
+                }))
+              }
+            />
+          </div>
+
           {loadingQueue || queue === null ? (
             <div className="skel skel-card" style={{ height: 160 }} />
           ) : queue.length === 0 ? (
@@ -402,29 +493,6 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
                 ))}
               </tbody>
             </table>
-          )}
-
-          <div className="filter-bar">
-            <input
-              placeholder="Or search a name directly"
-              value={lookupQuery}
-              onChange={(e) => {
-                setLookupQuery(e.target.value);
-                setSelectedPerson(null);
-              }}
-            />
-          </div>
-          {lookupResults.length > 0 && !selectedPerson && (
-            <ul className="reports-list">
-              {lookupResults.map((p) => (
-                <li key={p.id}>
-                  <button onClick={() => getEmployeeContinuity(identity, p.id).then(setSelectedPerson)}>
-                    {p.full_name}
-                    <span className="sub">{p.job_title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
           )}
 
           {selectedPerson && <EmployeeDrillDown detail={selectedPerson} />}

@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.auth import AuthenticatedUser
 from app.models import Employee, EmployeeProject, EmployeeSkill, Office, OrgUnit, Project, Skill
 from app.models.enums import AvailabilityStatus, ProjectClassification, SkillLevel
-from app.permissions import is_record_visible
+from app.permissions import can_see_confidential_project, is_record_visible
 
 MAX_DEPTH = 10  # generous bound -- deepest real chain in seed data is 7 hops
 MAX_MENTOR_RESULTS = 5  # independent of app.people.MAX_SEARCH_RESULTS on purpose
@@ -225,6 +225,51 @@ def filter_people_or(db: Session, caller: AuthenticatedUser, *, groups: list[dic
     for group in groups:
         result |= filter_people(db, caller, **group)
     return result
+
+
+def team_skill_availability(
+    db: Session, caller: AuthenticatedUser, *, manager_name: str, skill: str, available: bool = True,
+) -> set[str]:
+    """Ground truth for a genuinely 2-step-shaped question: resolve a
+    named manager's direct reports, THEN filter that specific set by
+    skill (and availability) -- the exact shape
+    app.tool_calling.execute_chain exists for ("who on X's team knows Y
+    and is free?" needs the team resolved before the second question can
+    even be asked). Composed from this module's own direct_reports() and
+    filter_people() -- both already independently correct, with their own
+    golden questions covering each step alone -- rather than a fresh
+    query, since what THESE questions grade is the chaining, not either
+    individual retrieval step.
+    """
+    team = direct_reports(db, caller, manager_name=manager_name)
+    if not team:
+        return set()
+    matching = filter_people(db, caller, skill=skill, available=available)
+    return team & matching
+
+
+def project_owners_manager(db: Session, caller: AuthenticatedUser, *, project_name: str) -> set[str]:
+    """Ground truth for the other 2-step shape: resolve a project's owner,
+    THEN who that person reports to. find_project_owner already has its
+    own golden questions (t1-07..t1-14) covering owner resolution alone;
+    this composes that with a manager lookup to grade the chaining
+    specifically, not re-derive owner resolution from scratch.
+    """
+    project = db.query(Project).filter(Project.name.ilike(project_name)).first()
+    if project is None:
+        return set()
+    if (project.classification == ProjectClassification.confidential
+            and not can_see_confidential_project(db, caller, project.id)):
+        return set()
+    owner = db.get(Employee, project.owner_id)
+    if owner is None or not owner.is_active or not is_record_visible(caller, owner):
+        return set()
+    if owner.manager_id is None:
+        return set()
+    manager = db.get(Employee, owner.manager_id)
+    if manager is None or not manager.is_active or not is_record_visible(caller, manager):
+        return set()
+    return {manager.id}
 
 
 def find_mentor(db: Session, caller: AuthenticatedUser, *, skill: str, caller_id: str) -> list[str]:

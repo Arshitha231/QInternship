@@ -27,8 +27,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from datetime import datetime
-from typing import get_args
+from typing import Any, get_args
 
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
@@ -75,6 +76,23 @@ OUT_OF_SCOPE_MESSAGE = "I can help with people, teams, skills and projects. For 
 # is about what the model is even offered, not a second enforcement layer.
 FILTERABLE_FIELDS = sorted(name for name, spec in REGISTRY.items() if spec.filterable)
 
+# One shared property, added to every tool below, that lets the model ask
+# for a bounded multi-step chain (execute_chain()) instead of stopping
+# after one call -- see that function's docstring for the full mechanism.
+# Same property/description on all 9 tools rather than one per tool: the
+# decision ("does this call alone answer the request") doesn't depend on
+# which tool was picked, and a single shared definition can't drift.
+NEEDS_FOLLOWUP_PROPERTY = {
+    "type": "boolean",
+    "description": (
+        "True ONLY if this single call cannot fully answer the request on its own and "
+        "you will need to make another call afterward, using this call's result to fill "
+        "in that call's arguments (e.g. resolving a person or team first, then filtering "
+        "by that). False (the default -- omit unless true) for any request this one call "
+        "already fully answers, which is most of them. You get at most 3 total calls."
+    ),
+}
+
 # ---------------------------------------------------------------------------
 # Tool schemas — the model's entire universe of possible actions.
 # ---------------------------------------------------------------------------
@@ -102,6 +120,7 @@ TOOLS = [
                 "office": {"type": "string"},
                 "language": {"type": "string"},
                 "available": {"type": "boolean"},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
             },
             "additionalProperties": False,
         },
@@ -116,7 +135,7 @@ TOOLS = [
         ),
         "parameters": {
             "type": "object",
-            "properties": {"person_id": {"type": "string"}},
+            "properties": {"person_id": {"type": "string"}, "needs_followup": NEEDS_FOLLOWUP_PROPERTY},
             "required": ["person_id"],
             "additionalProperties": False,
         },
@@ -147,6 +166,7 @@ TOOLS = [
                         "provide this — never leave it for the caller to guess."
                     ),
                 },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
             },
             "required": ["person", "direction", "depth"],
             "additionalProperties": False,
@@ -157,7 +177,7 @@ TOOLS = [
         "description": "Find who owns a named project, system, function, or policy.",
         "parameters": {
             "type": "object",
-            "properties": {"name": {"type": "string"}},
+            "properties": {"name": {"type": "string"}, "needs_followup": NEEDS_FOLLOWUP_PROPERTY},
             "required": ["name"],
             "additionalProperties": False,
         },
@@ -170,7 +190,7 @@ TOOLS = [
         ),
         "parameters": {
             "type": "object",
-            "properties": {"skill": {"type": "string"}},
+            "properties": {"skill": {"type": "string"}, "needs_followup": NEEDS_FOLLOWUP_PROPERTY},
             "required": ["skill"],
             "additionalProperties": False,
         },
@@ -180,7 +200,10 @@ TOOLS = [
         "description": "Check coverage for a specific list of required skills — how many people have each, at what level.",
         "parameters": {
             "type": "object",
-            "properties": {"required_skills": {"type": "array", "items": {"type": "string"}}},
+            "properties": {
+                "required_skills": {"type": "array", "items": {"type": "string"}},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
             "required": ["required_skills"],
             "additionalProperties": False,
         },
@@ -190,7 +213,7 @@ TOOLS = [
         "description": "Check how scarce one named skill is org-wide, or (no argument) list the scarcest skills company-wide.",
         "parameters": {
             "type": "object",
-            "properties": {"skill": {"type": "string"}},
+            "properties": {"skill": {"type": "string"}, "needs_followup": NEEDS_FOLLOWUP_PROPERTY},
             "additionalProperties": False,
         },
     }},
@@ -214,6 +237,7 @@ TOOLS = [
                     "type": "string",
                     "description": "The problem the caller described, in their own words.",
                 },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
             },
             "required": ["problem"],
             "additionalProperties": False,
@@ -294,6 +318,7 @@ TOOLS = [
                 },
                 "order_by": {"type": "string", "enum": sorted(ORDERABLE_FIELDS)},
                 "limit": {"type": "integer", "description": "Hint only, never widens the server-side cap."},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
             },
             "required": ["filters"],
             "additionalProperties": False,
@@ -329,6 +354,18 @@ come back. A request that names a concrete skill ("who knows Terraform") is find
 find_experts; a request to LEARN a named skill ("who can teach me Terraform") is find_mentor. \
 The distinction is whether the caller named the thing to search for (find_people/find_mentor) \
 or described a situation and left it to us to work out what's relevant (find_experts).
+
+Most requests are fully answered by ONE call — leave needs_followup false (the default) for \
+those, which is nearly everything. Set needs_followup to true ONLY when the request genuinely \
+needs a second call whose arguments depend on THIS call's result — e.g. "who on Priya's team \
+knows Terraform and is free next month" needs you to first resolve Priya's team (get_org_chain \
+or find_people), then filter that team by skill and availability; there is no single call that \
+expresses "Priya's team" without resolving it first. When you set needs_followup, you will be \
+shown this call's actual result and asked for the next call, using that result to fill in its \
+arguments — you do not need to guess ahead of time what the result will contain. You get at \
+most 3 calls total, so plan within that: if a request would genuinely need more, do the best \
+you can with what 3 calls can establish rather than declaring you need a 4th. Do not set \
+needs_followup just to double-check a result or to fetch something the caller didn't ask for.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -460,6 +497,39 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
      None, None),
 ]
 
+# Multi-step few-shots: a handful of full exchanges anchoring the
+# needs_followup pattern end to end -- not exhaustive coverage, same
+# "anchor the pattern" precedent search_people/find_experts were each
+# introduced with two few-shots for. Kept as a separate list rather than
+# widening FEW_SHOT_EXAMPLES's tuple shape: a single-step example is
+# (text, tool_name, arguments); these are (text, steps), a genuinely
+# different shape, not an optional extension of the same one.
+#
+# Every step but the last carries needs_followup=True in its arguments,
+# matching what the real model actually emits -- these are the literal
+# TOOLS-schema arguments each step calls with, not a paraphrase of them.
+ChainFewShot = tuple[str, list[tuple[str, dict]]]
+
+CHAIN_FEW_SHOT_EXAMPLES: list[ChainFewShot] = [
+    # get_org_chain's own result carries each report's real org_unit
+    # (OrgChainNode.org_unit) -- step 2's value below is what step 1
+    # would actually hand back, not a guessed or paraphrased team name
+    # ("Sarah White's team" is not a real org_unit value and would fail
+    # search_people's own filter).
+    ("who on Sarah White's team knows Terraform and is available right now", [
+        ("get_org_chain", {"person": "Sarah White", "direction": "down", "depth": 1, "needs_followup": True}),
+        ("search_people", {"filters": [
+            {"field": "org_unit", "op": "eq", "value": "Cloud Operations Team"},
+            {"field": "skills", "op": "contains", "value": "Terraform"},
+            {"field": "availability_status", "op": "eq", "value": "available"},
+        ]}),
+    ]),
+    ("who does the owner of the Billing API report to", [
+        ("find_project_owner", {"name": "Billing API", "needs_followup": True}),
+        ("find_people", {"name": "Diego Hernandez"}),
+    ]),
+]
+
 
 def _tool_call_message(tool_name: str, arguments: dict) -> dict:
     return {
@@ -483,6 +553,18 @@ def build_messages(user_message: str) -> list[dict]:
                 "role": "tool", "tool_call_id": f"example_{tool_name}",
                 "content": "(illustrative example — not a real result)",
             })
+    for example_text, steps in CHAIN_FEW_SHOT_EXAMPLES:
+        messages.append({"role": "user", "content": example_text})
+        # Same shape production actually sends (_chain_step_messages) --
+        # each step is just another assistant/tool_calls + tool pair, so
+        # a multi-step example needs nothing beyond what the single-step
+        # loop above already does, repeated per step.
+        for tool_name, arguments in steps:
+            messages.append(_tool_call_message(tool_name, arguments))
+            messages.append({
+                "role": "tool", "tool_call_id": f"example_{tool_name}",
+                "content": "(illustrative example — not a real result)",
+            })
     messages.append({"role": "user", "content": user_message})
     return messages
 
@@ -501,6 +583,21 @@ class ResolvedToolCall(BaseModel):
     # None on every ResolvedToolCall built anywhere else (unified_search.py's
     # direct-mode broadening constructs its own and sets "direct" itself).
     routed_via: str | None = None
+    # Lifted out of `arguments` (same TOOLS-schema-parameter shape every
+    # other model-suppliable value uses) immediately after parsing, same
+    # place routed_via is set -- never left inside `arguments`, where a
+    # tool's own **args dispatch would otherwise receive it as if it were
+    # one of that tool's real parameters. False on a deterministic match
+    # (no model output exists to set it) and on the last-resort fallback --
+    # both are categorically single-step, see execute_chain()'s trigger.
+    needs_followup: bool = False
+    # The real OpenAI-assigned tool_calls[].id, set only by _real_resolve's
+    # own parsing -- None on every deterministic/mock/last-resort/hand-
+    # built ResolvedToolCall, same convention as routed_via above. Exists
+    # so a chain step's native assistant/tool_call + tool message pair
+    # (_chain_step_messages) can echo the model's own id back to it,
+    # rather than inventing one.
+    tool_call_id: str | None = None
 
 
 class AssistantTurn(BaseModel):
@@ -841,13 +938,19 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
     fallback take it from there, once, in one place.
 
     `extra_messages`, when given, are appended after the normal system
-    prompt + few-shots + user message — used only by execute_with_retry()'s
-    bounded retry loop (ARCHITECTURE_2.md §9) to append a plain-text
-    description of why the previous attempt failed and ask for a corrected
-    call, without needing to reconstruct a matching assistant/tool
-    call-id pair (a second plain "user" turn is enough for the model to
-    respond to, and avoids any risk of malforming the real tool-call
-    message threading the OpenAI API expects).
+    prompt + few-shots + user message — used by two different callers,
+    each building their own shape:
+    execute_with_retry()'s bounded retry loop (ARCHITECTURE_2.md §9)
+    still appends a single plain-text "user" turn describing why the
+    previous attempt failed; a second plain turn is enough for the model
+    to respond to, and this path is unchanged from when it was first
+    built.
+    execute_chain()'s multi-step loop instead appends real
+    assistant/tool_calls + tool message pairs (_chain_step_messages),
+    using this response's own call.id below -- the actual OpenAI
+    multi-turn tool-calling shape, not an approximation of it. This
+    function doesn't care which shape it's handed; it only extends
+    `messages` with it.
     """
     try:
         client = _get_openai_client()
@@ -895,7 +998,16 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
             arguments = json.loads(call.function.arguments)
         except json.JSONDecodeError:
             return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
-        return AssistantTurn(tool_call=ResolvedToolCall(name=call.function.name, arguments=arguments))
+        # Lifted out of `arguments` here, at the point the model's own JSON
+        # is parsed -- not left for a downstream caller to extract, unlike
+        # routed_via (which needs to know WHICH path resolved the call,
+        # information this function doesn't have). bool(...) defensively
+        # coerces anything that isn't already a clean True/False (a model
+        # emitting "true" as a string, say) rather than trusting the shape.
+        needs_followup = bool(arguments.pop("needs_followup", False))
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name=call.function.name, arguments=arguments, needs_followup=needs_followup,
+            tool_call_id=call.id))
     return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
 
 
@@ -966,6 +1078,13 @@ def execute_tool_call(
     # caller_id is taken from the caller and the "self" sentinel is resolved
     # server-side below.
     args.pop("view_mode", None)
+    # needs_followup is consumed by resolve_intent()/execute_chain() before
+    # a tool_call ever reaches here (see ResolvedToolCall.needs_followup) --
+    # this is the same defensive drop `view_mode` gets just above, for the
+    # same reason: args come straight from model output, and a tool's own
+    # **args dispatch below must never receive an orchestration parameter
+    # as if it were one of that tool's real arguments.
+    args.pop("needs_followup", None)
 
     if name == "find_people":
         return find_people(db, caller, view_mode=view_mode, **args)
@@ -1048,47 +1167,38 @@ def execute_tool_call(
 
 def _write_audit(
     db: Session, caller: AuthenticatedUser, query_text: str, result_count: int,
-    routed_via: str | None = None,
+    routed_via: str | None = None, chain_id: str | None = None, chain_step: int | None = None,
 ) -> None:
     db.add(AuditLog(
         actor_id=caller.id, action="assistant", query_text=query_text, result_count=result_count,
-        fields_returned="[]", routed_via=routed_via, timestamp=datetime.now(),
+        fields_returned="[]", routed_via=routed_via, chain_id=chain_id, chain_step=chain_step,
+        timestamp=datetime.now(),
     ))
     db.commit()
 
 
-def execute_with_fallback(
-    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, source: str,
-    view_mode: ViewMode = "work",
+def _finish_with_broadening(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, result, source: str,
+    chain_id: str | None = None, chain_step: int | None = None,
 ) -> dict:
-    """Runs tool_call and applies the zero-extra-model-cost broadening
-    fallback when find_people(skill=...) or find_people(language=...) comes
-    back empty. `source` is only ever used for the audit_log's query_text,
-    so both call sites -- the model-routed path in answer() below, and the
-    unified /search endpoint's direct-mode skill-miss escalation, which
-    never touches the model at all -- share this one implementation instead
-    of the fallback behavior silently diverging between them.
-    """
-    try:
-        result = execute_tool_call(db, caller, tool_call, view_mode)
-    except (TypeError, ValueError, KeyError):
-        _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0, tool_call.routed_via)
-        return {
-            "message": "I found a matching action but couldn't complete it — try rephrasing.",
-            "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": None,
-        }
+    """The broadening decision + response-shaping + audit write, given a
+    result that's ALREADY been obtained -- factored out of
+    execute_with_fallback() (which calls this right after executing the
+    call itself) so execute_chain() can reuse the exact same broadening
+    logic for a chain's final step without a second, redundant execution
+    of a call it already ran once.
 
-    # A language or skill search with zero direct matches (unresolvable,
-    # like "Telugu" -- not seeded at all -- or resolvable but nobody has
-    # it) still says "nobody matched" plainly, but also offers a
-    # clearly-labeled next best thing instead of a bare empty result:
-    # speakers of a linguistically related language (curated family
-    # table), or people whose profile semantically matches the skill even
-    # without an exact skills-table entry (find_people's own existing
-    # hybrid/vector search, not a second model call). Never silently
-    # substituted in as if it answered the actual question -- that's the
-    # distinction from the semantic-neighbor failure mode this is
-    # deliberately not replicating.
+    A language or skill search with zero direct matches (unresolvable,
+    like "Telugu" -- not seeded at all -- or resolvable but nobody has it)
+    still says "nobody matched" plainly, but also offers a clearly-labeled
+    next best thing instead of a bare empty result: speakers of a
+    linguistically related language (curated family table), or people
+    whose profile semantically matches the skill even without an exact
+    skills-table entry (find_people's own existing hybrid/vector search,
+    not a second model call). Never silently substituted in as if it
+    answered the actual question -- that's the distinction from the
+    semantic-neighbor failure mode this is deliberately not replicating.
+    """
     if tool_call.name == "find_people" and not result:
         if tool_call.arguments.get("language"):
             requested = tool_call.arguments["language"]
@@ -1103,10 +1213,12 @@ def execute_with_fallback(
                 )
                 _write_audit(
                     db, caller, f"{source} -> find_people(language related to {requested})",
-                    len(related), tool_call.routed_via)
+                    len(related), tool_call.routed_via, chain_id, chain_step)
                 return {"message": text, "tool_call": tool_call.name,
                         "arguments": tool_call.arguments, "result": related}
-            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0, tool_call.routed_via)
+            _write_audit(
+                db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0,
+                tool_call.routed_via, chain_id, chain_step)
             return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
                     "arguments": tool_call.arguments, "result": result}
 
@@ -1122,17 +1234,45 @@ def execute_with_fallback(
                 )
                 _write_audit(
                     db, caller, f"{source} -> find_people(skill broadened from {requested})",
-                    len(similar), tool_call.routed_via)
+                    len(similar), tool_call.routed_via, chain_id, chain_step)
                 return {"message": text, "tool_call": tool_call.name,
                         "arguments": tool_call.arguments, "result": similar}
-            _write_audit(db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0, tool_call.routed_via)
+            _write_audit(
+                db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})", 0,
+                tool_call.routed_via, chain_id, chain_step)
             return {"message": f'Nobody matched "{requested}" directly.', "tool_call": tool_call.name,
                     "arguments": tool_call.arguments, "result": result}
 
     _write_audit(
         db, caller, f"{source} -> {tool_call.name}({tool_call.arguments})",
-        1 if result else 0, tool_call.routed_via)
+        1 if result else 0, tool_call.routed_via, chain_id, chain_step)
     return {"message": None, "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": result}
+
+
+def execute_with_fallback(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, source: str,
+    view_mode: ViewMode = "work",
+) -> dict:
+    """Runs tool_call and applies the zero-extra-model-cost broadening
+    fallback when find_people(skill=...) or find_people(language=...) comes
+    back empty. `source` is only ever used for the audit_log's query_text,
+    so both call sites -- the model-routed path in answer() below, and the
+    unified /search endpoint's direct-mode skill-miss escalation, which
+    never touches the model at all -- share this one implementation instead
+    of the fallback behavior silently diverging between them. Never part of
+    a chain (chain_id/chain_step always None here) -- execute_chain() calls
+    _finish_with_broadening() directly instead, see that function.
+    """
+    try:
+        result = execute_tool_call(db, caller, tool_call, view_mode)
+    except (TypeError, ValueError, KeyError):
+        _write_audit(db, caller, f"{source} -> {tool_call.name} (execution failed)", 0, tool_call.routed_via)
+        return {
+            "message": "I found a matching action but couldn't complete it — try rephrasing.",
+            "tool_call": tool_call.name, "arguments": tool_call.arguments, "result": None,
+        }
+
+    return _finish_with_broadening(db, caller, tool_call, result, source)
 
 
 # ---------------------------------------------------------------------------
@@ -1205,6 +1345,177 @@ def execute_with_retry(
     return execute_with_fallback(db, caller, attempt, message, view_mode)
 
 
+# ---------------------------------------------------------------------------
+# Bounded multi-step chain: a request where one call's output determines
+# the next call's input ("who on Priya's team knows Terraform and is free
+# next month?") is unanswerable in one call, no matter how the arguments
+# are extracted -- there is no single find_people/search_people call that
+# expresses "Priya's team" without first resolving who's on it. Only
+# entered when the MODEL's own first call sets needs_followup; an ordinary
+# single-call request never reaches any of this and costs exactly what it
+# costs today (see answer()'s branch point below).
+# ---------------------------------------------------------------------------
+
+MAX_CHAIN_STEPS = 3
+
+
+def _execute_chain_step(
+    db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall, message: str, view_mode: ViewMode,
+) -> tuple[Any, ResolvedToolCall] | None:
+    """One chain step, with its own bounded retry-on-failure -- same
+    MAX_ROUTING_RETRIES bound and _retry_after_execution_failure()
+    correction mechanism execute_with_retry() uses for a single call.
+
+    Deliberately NOT shared code with execute_with_retry()'s own loop,
+    even though the shape looks similar. execute_with_retry() re-runs its
+    final `attempt` a second time on purpose, so it can hand off to
+    execute_with_fallback() unchanged rather than duplicating its
+    broadening/audit logic -- documented and tested as a deliberate
+    tradeoff (test_execute_with_retry_succeeds_after_one_correction pins
+    the double execution explicitly). A chain step that may run up to
+    MAX_CHAIN_STEPS times has no equivalent case for paying that cost
+    every time, so this returns the result the successful call already
+    produced instead of re-running it.
+
+    Returns None if every retry is exhausted without a successful
+    execution -- the caller (execute_chain) treats that as this step's
+    failure, the same generic message a single-call failure gets, never a
+    partial answer built from a step that didn't actually complete.
+    """
+    attempt = tool_call
+    for _ in range(MAX_ROUTING_RETRIES):
+        try:
+            return execute_tool_call(db, caller, attempt, view_mode), attempt
+        except (TypeError, ValueError, KeyError) as exc:
+            corrected = _retry_after_execution_failure(message, attempt, str(exc))
+            if corrected is None:
+                return None
+            attempt = corrected
+    return None
+
+
+def _serialize_step_result(result: Any) -> str:
+    """The already-permission-filtered result object, as JSON -- never a
+    raw row, never a second, less-filtered read. This is what the model
+    sees to construct the next step's arguments, and it's the concrete
+    mechanism that bounds a chain's cumulative view to what the caller was
+    already entitled to see one step at a time: every result here already
+    passed through whichever service function produced it (enforce(),
+    is_record_visible, compute_visible_fields, ...) exactly once, the same
+    gate a standalone call would have gone through."""
+    if result is None:
+        return "null"
+    if isinstance(result, list):
+        return json.dumps([
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+            for item in result
+        ])
+    if isinstance(result, BaseModel):
+        return result.model_dump_json()
+    return json.dumps(result)
+
+
+def _chain_step_messages(tool_call: ResolvedToolCall, result: Any) -> list[dict]:
+    """The real assistant/tool_calls + tool message pair for one completed
+    chain step, echoing tool_call.tool_call_id on both -- native OpenAI
+    multi-turn tool-calling shape, not a plain-text description of what
+    happened. tool_call_id is guaranteed non-None here: this is only ever
+    called from execute_chain(), which is only ever entered with a
+    ResolvedToolCall that came from _real_resolve's own parsing (never a
+    deterministic or hand-built one), and _real_resolve sets it on every
+    call it returns.
+    """
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": tool_call.tool_call_id, "type": "function",
+            "function": {"name": tool_call.name, "arguments": json.dumps(tool_call.arguments)},
+        }]},
+        {"role": "tool", "tool_call_id": tool_call.tool_call_id,
+         "content": _serialize_step_result(result)},
+    ]
+
+
+def execute_chain(
+    db: Session, caller: AuthenticatedUser, first_call: ResolvedToolCall, message: str,
+    view_mode: ViewMode = "work",
+) -> dict:
+    """Bounded multi-step tool-calling, up to MAX_CHAIN_STEPS calls. Every
+    step dispatches through the exact same execute_tool_call() a
+    single-call request already uses -- same caller, same view_mode, same
+    enforce()/compile_query() gate at every step. This is orchestration
+    around the existing dispatcher, never a second one: nothing here
+    decides permissions differently because it's step two.
+
+    Response shape is identical to a single-call answer's --
+    {message, tool_call, arguments, result}, populated from the FINAL step
+    only, as if that step (with its already-resolved arguments) had been
+    the only call made. Full step-by-step traceability lives in the audit
+    log via chain_id/chain_step (one assistant-level row per step, plus
+    each step's own unchanged service-level row), not in this response --
+    deliberately, to avoid a breaking change to a contract callers already
+    consume.
+
+    SECURITY NOTE (composition), checked against app/policy.py directly,
+    not assumed: enforce() is a pure function of (plan, caller, view_mode)
+    with no memory across calls (app/policy.py:enforce), so a later step
+    is exactly as authorized as a fresh standalone request would be,
+    never more -- there is no accumulated trust a field or a caller could
+    earn by having appeared legitimately in an earlier step. What each
+    step feeds back to the model is the already-caller-filtered response
+    object that step produced (_serialize_step_result), so the model's
+    cumulative context across the whole chain never exceeds the union of
+    what MAX_CHAIN_STEPS individually-permitted answers would have shown.
+    That bound does NOT eliminate ARCHITECTURE_2.md §16's own named
+    "cross-query inference" limitation -- "a user can ask several
+    individually-permitted questions and assemble something restricted
+    from the combined answers... This system does not address it." A
+    chain automates exactly that pattern, at the cost of one prompt
+    instead of two manual /ask round trips. Naming that here rather than
+    letting this function imply it closes a gap the rest of the system
+    already says it doesn't.
+    """
+    chain_id = uuid.uuid4().hex
+    attempt = first_call
+    extra_messages: list[dict] = []
+    step = 0
+
+    while True:
+        step += 1
+        outcome = _execute_chain_step(db, caller, attempt, message, view_mode)
+        if outcome is None:
+            _write_audit(
+                db, caller, f"{message} -> {attempt.name} (execution failed, chain step {step})", 0,
+                attempt.routed_via, chain_id, step)
+            return {
+                "message": "I found a matching action but couldn't complete it — try rephrasing.",
+                "tool_call": attempt.name, "arguments": attempt.arguments, "result": None,
+            }
+
+        result, attempt = outcome
+        wants_more = attempt.needs_followup and step < MAX_CHAIN_STEPS
+
+        if wants_more:
+            extra_messages.extend(_chain_step_messages(attempt, result))
+            next_turn = _real_resolve(message, extra_messages=extra_messages)
+            if next_turn is not None and next_turn.tool_call is not None:
+                next_turn.tool_call.routed_via = _llm_routed_via(next_turn.tool_call)
+                # A real next step -- THIS step was intermediate, not
+                # final: a plain audit row (no broadening -- its result
+                # was for the model to read, not the caller to see), then
+                # loop for the next one.
+                _write_audit(
+                    db, caller, f"{message} -> {attempt.name}({attempt.arguments})",
+                    1 if result else 0, attempt.routed_via, chain_id, step)
+                attempt = next_turn.tool_call
+                continue
+            # Model is done (plain text, no function call) or degraded
+            # (None) -- either way, nothing more is coming. Fall through
+            # and finalize THIS step instead, without having double-
+            # audited it above.
+
+        return _finish_with_broadening(db, caller, attempt, result, message, chain_id, step)
+
+
 def answer(
     db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work"
 ) -> dict:
@@ -1213,11 +1524,24 @@ def answer(
     tool's own service function writes its own audit_log row (same as any
     other caller of it); execute_with_fallback writes one more, at the
     assistant level, so "what did someone ask the assistant" stays
-    queryable on its own."""
+    queryable on its own.
+
+    turn.tool_call.needs_followup only ever comes from the model's own
+    first output (see ResolvedToolCall.needs_followup / _real_resolve) --
+    never true on a deterministic match (no model output exists to carry
+    it) or the last-resort fallback (same reasoning). So this branch, not
+    a config flag, is the entire mechanism behind "single-call requests
+    keep their current cost": nothing here re-prompts speculatively after
+    an ordinary successful call, only when the model itself already asked
+    for more in its first response.
+    """
     turn = resolve_intent(message)
 
     if turn.tool_call is None:
         _write_audit(db, caller, message, 0)
         return {"message": turn.message or OUT_OF_SCOPE_MESSAGE, "tool_call": None, "arguments": None, "result": None}
+
+    if turn.tool_call.needs_followup:
+        return execute_chain(db, caller, turn.tool_call, message, view_mode)
 
     return execute_with_retry(db, caller, turn.tool_call, message, view_mode)

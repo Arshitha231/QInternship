@@ -3,15 +3,24 @@ promoted to primary, and the bounded failure/retry loop. Pure unit tests
 against app.tool_calling's internals — no live endpoint, no real Azure
 OpenAI call.
 """
+import json
+from types import SimpleNamespace
+
 import app.tool_calling as tool_calling
 from app.auth import AuthenticatedUser
+from app.models import AuditLog
 from app.tool_calling import (
+    MAX_CHAIN_STEPS,
     MAX_ROUTING_RETRIES,
     AssistantTurn,
     ResolvedToolCall,
+    _chain_step_messages,
     _deterministic_resolve,
     _llm_routed_via,
     _retry_after_execution_failure,
+    _serialize_step_result,
+    answer,
+    execute_chain,
     execute_tool_call,
     execute_with_retry,
     resolve_intent,
@@ -450,3 +459,265 @@ def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_ses
     # just something the model happened to try.
     assert "that request can't be answered as asked" in prompts_seen[0]
     assert "filter on restricted field" not in prompts_seen[0]
+
+
+# ---------------------------------------------------------------------------
+# needs_followup -- lifted out of the model's own JSON into
+# ResolvedToolCall's dedicated field, never left inside `arguments` where a
+# tool's own **args dispatch could receive it as if it were a real parameter.
+# ---------------------------------------------------------------------------
+
+def _fake_openai_response(tool_name: str, arguments: dict, call_id: str = "call_test123"):
+    call = SimpleNamespace(
+        id=call_id, function=SimpleNamespace(name=tool_name, arguments=json.dumps(arguments)))
+    message = SimpleNamespace(tool_calls=[call], content=None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def test_needs_followup_is_lifted_out_of_the_models_own_json(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kwargs: _fake_openai_response(
+            "find_people", {"name": "Priya Sharma", "needs_followup": True}),
+    )))
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: fake_client)
+
+    turn = tool_calling._real_resolve("who on Priya's team knows Terraform")
+    assert turn.tool_call.needs_followup is True
+    assert "needs_followup" not in turn.tool_call.arguments
+    assert turn.tool_call.tool_call_id == "call_test123"
+
+
+def test_needs_followup_defaults_false_when_the_model_omits_it(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kwargs: _fake_openai_response("find_people", {"name": "Priya Sharma"}),
+    )))
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: fake_client)
+
+    turn = tool_calling._real_resolve("who is Priya Sharma")
+    assert turn.tool_call.needs_followup is False
+
+
+def test_execute_tool_call_defensively_drops_needs_followup_before_dispatch(db_session):
+    # Same defensive pop view_mode already gets -- args come straight from
+    # model output, and a tool's own **args dispatch (find_people here)
+    # would TypeError on an unexpected keyword if this leaked through.
+    tool_call = ResolvedToolCall(
+        name="find_people", arguments={"name": "Riley Report", "needs_followup": True})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert result  # didn't raise -- needs_followup never reached find_people(**args)
+
+
+# ---------------------------------------------------------------------------
+# execute_chain() -- the bounded multi-step loop.
+# ---------------------------------------------------------------------------
+
+def test_deterministic_match_never_carries_needs_followup():
+    turn = _deterministic_resolve("who is my manager?")
+    assert turn is not None
+    assert turn.tool_call.needs_followup is False
+
+
+def test_deterministic_match_never_triggers_execute_chain(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "execute_chain",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("a deterministic match must never chain")))
+    monkeypatch.setattr(
+        tool_calling, "_real_resolve",
+        lambda message, extra_messages=None: (_ for _ in ()).throw(
+            AssertionError("a confident deterministic match must never call the real model")))
+
+    result = answer(db_session, CALLER, "who is my manager?")
+    assert result is not None  # got here without either assertion firing
+
+
+def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    execute_count = {"n": 0}
+    resolve_count = {"n": 0}
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        execute_count["n"] += 1
+        return []
+
+    def fake_real_resolve(message, extra_messages=None):
+        resolve_count["n"] += 1
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": f"step {resolve_count['n']}"}, needs_followup=True))
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "start"}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    assert execute_count["n"] == MAX_CHAIN_STEPS  # never exceeds the hard cap...
+    assert resolve_count["n"] == MAX_CHAIN_STEPS - 1  # ...and never even ASKS for a step beyond it
+    assert result["result"] == []  # step 3's result, returned as final regardless of needs_followup
+
+
+def test_execute_chain_stops_when_the_model_says_it_is_done(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        return ["team resolved"] if tool_call.name == "get_org_chain" else ["filtered result"]
+
+    def fake_real_resolve(message, extra_messages=None):
+        # The model has what it needs after step 1 -- answers in plain
+        # text, no further function call.
+        return AssistantTurn(message="Nobody on that team matches.")
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Priya", "direction": "down", "depth": 1},
+        needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on Priya's team knows Terraform")
+    # Stops after step 1's result, not the model's own plain-text answer --
+    # this module never lets the model write the final user-facing prose.
+    assert result["result"] == ["team resolved"]
+    assert result["message"] is None
+
+
+def test_chain_failure_returns_the_generic_message_not_an_earlier_steps_result(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def flaky_execute(db, caller, tool_call, view_mode="work"):
+        if tool_call.name == "search_people":
+            raise ValueError("bad filter, always fails")
+        return ["step one result"]
+
+    def fake_real_resolve(message, extra_messages=None):
+        if not extra_messages:
+            return None
+        first = extra_messages[0]
+        if first.get("role") == "assistant":
+            # Chain asking for the next step, after step 1 succeeded --
+            # native assistant/tool_calls message, the shape
+            # _chain_step_messages builds.
+            return AssistantTurn(tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}))
+        if first.get("content", "").startswith("That call failed"):
+            # Retry-after-failure ask, inside step 2's own bounded retry --
+            # offers the same doomed call again so retries exhaust.
+            return AssistantTurn(tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}))
+        return None
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", flaky_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "X"}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+    assert result["result"] is None
+    assert "couldn't complete it" in result["message"]
+
+
+def test_chain_writes_one_audit_row_per_step_sharing_one_chain_id(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        return ["result"]
+
+    call_count = {"n": 0}
+
+    def fake_real_resolve(message, extra_messages=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Asked after step 1 -- offer a genuine second step.
+            return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
+        # Asked after step 2 -- done.
+        return AssistantTurn(message="done")
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "X"}, needs_followup=True)
+    execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    # The most recent 2 rows for this caller -- robust against whatever
+    # other chain-tagged rows earlier tests in this run may have left in
+    # the shared db_session, unlike filtering on "any non-null chain_id".
+    rows = list(reversed(
+        db_session.query(AuditLog)
+        .filter(AuditLog.actor_id == CALLER.id)
+        .order_by(AuditLog.id.desc())
+        .limit(2)
+        .all()
+    ))
+    assert [r.chain_step for r in rows] == [1, 2]
+    assert len({r.chain_id for r in rows}) == 1  # both steps share one chain_id
+
+
+def test_chain_step_messages_builds_the_native_assistant_tool_pair():
+    tool_call = ResolvedToolCall(
+        name="find_people", arguments={"name": "Sarah White"}, tool_call_id="call_abc123")
+    messages = _chain_step_messages(tool_call, ["a result"])
+
+    assert len(messages) == 2
+    assistant_msg, tool_msg = messages
+
+    assert assistant_msg["role"] == "assistant"
+    assert assistant_msg["content"] is None
+    assert len(assistant_msg["tool_calls"]) == 1
+    call = assistant_msg["tool_calls"][0]
+    assert call["id"] == "call_abc123"
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "find_people"
+    assert json.loads(call["function"]["arguments"]) == {"name": "Sarah White"}
+
+    assert tool_msg["role"] == "tool"
+    assert tool_msg["tool_call_id"] == "call_abc123"  # echoes the same id -- what the API requires
+    assert tool_msg["content"] == _serialize_step_result(["a result"])
+
+
+def test_single_call_request_still_gets_chain_id_none(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": ["ok"])
+
+    tool_call = ResolvedToolCall(name="find_people", arguments={"name": "X"})  # needs_followup=False
+    execute_with_retry(db_session, CALLER, tool_call, "who is X")
+
+    row = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.actor_id == CALLER.id)
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    assert row.chain_id is None
+    assert row.chain_step is None
+
+
+# ---------------------------------------------------------------------------
+# Composition security: what a step feeds back to the model must never
+# exceed what the caller was already permitted to see in that step's own
+# result -- checked against a real restricted (ABAC) field, not asserted.
+# ---------------------------------------------------------------------------
+
+def test_serialize_step_result_never_includes_more_than_the_objects_own_fields():
+    from app.schemas import PersonSummary
+
+    summary = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    serialized = _serialize_step_result([summary])
+    assert json.loads(serialized) == [summary.model_dump(mode="json")]
+
+
+def test_chain_feedback_never_leaks_a_field_the_caller_could_not_see(db_session):
+    # Riley Report (report-1) has a real personal_mobile on file
+    # (+1-555-0001, tests/conftest.py) -- visible only to Riley themself or
+    # their manager chain (ABAC). Sam Stranger (stranger-1) is neither.
+    unrelated_employee = AuthenticatedUser(id="stranger-1", role="employee")
+    tool_call = ResolvedToolCall(name="get_person", arguments={"person_id": "report-1"})
+
+    result = execute_tool_call(db_session, unrelated_employee, tool_call)
+    assert result.personal_mobile is None, "sanity check: ABAC must already be redacting this for this caller"
+
+    feedback = _serialize_step_result(result)
+    assert "+1-555-0001" not in feedback, (
+        "a real, restricted phone number reached the text handed to the model -- "
+        "the feedback mechanism must never carry more than the already-filtered response object"
+    )

@@ -419,6 +419,38 @@ TIER3 = [
     dict(id="t3-13", tier=3, category="confidential_visibility", caller=MANAGER_DIEGO_HERNANDEZ,
          text="show me Priya Kelly's project history",
          kind="ids", extractor="has_nightingale", ground_truth=set()),
+    # --- bounded multi-step chain (app.tool_calling.execute_chain) -------
+    # Structurally unanswerable in one call, no matter how arguments are
+    # extracted: there is no single find_people/search_people call that
+    # expresses "Sarah White's team" without first resolving who's on it.
+    # Ground truth composes two independently-correct pieces
+    # (direct_reports + filter_people) rather than re-deriving either --
+    # see independent_truth.team_skill_availability. Real fixture data:
+    # Sarah White manages "Cloud Operations Team" (7 direct reports, all
+    # in that one org_unit), of whom exactly 5 (not all 7) know Terraform
+    # -- a genuinely discriminating answer, not "the whole team happens to
+    # match." (Note: "Aoife Wang" was the first candidate tried here and
+    # rejected -- the fixture has two active employees with that exact
+    # name, so it's not a usable golden-question subject; verified via
+    # direct query, not assumed.)
+    dict(id="t3-14", tier=3, category="chained_team_skill", caller=HR,
+         text="who on Sarah White's team knows Terraform and is available right now",
+         kind="ids", extractor="find_people",
+         ground_truth=("independent", "team_skill_availability",
+                       {"manager_name": "Sarah White", "skill": "Terraform", "available": True})),
+    # Same shape, different tool pairing (find_project_owner -> find_people)
+    # -- step 2's argument (the owner's name) literally cannot be known
+    # until step 1 resolves who owns the Billing API. Reuses t1-08's own
+    # verified owner fact (Diego Hernandez) and t1-01's own verified
+    # manager fact (Layla Larsen) composed together, not re-derived.
+    dict(id="t3-15", tier=3, category="chained_owner_manager", caller=HR,
+         text="who does the owner of the Billing API report to",
+         # The final step (find_people(name="Diego Hernandez")) returns
+         # the OWNER's own enriched record, whose .manager field carries
+         # the actual answer -- same nested-field shape t1-01/t1-02/t1-21
+         # already grade via person_manager_id, not a top-level id list.
+         kind="scalar", extractor="person_manager_id",
+         ground_truth=("independent", "project_owners_manager", {"project_name": "Billing API"})),
 ]
 
 # ---------------------------------------------------------------------------

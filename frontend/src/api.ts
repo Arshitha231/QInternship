@@ -192,9 +192,25 @@ export async function getEmployeeContinuity(
   }
 }
 
-export function getHrReviewQueue(identity: Identity, windowDays?: number): Promise<HrReviewQueueItem[]> {
-  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
-  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs}`, identity);
+export interface HrReviewQueueFilters {
+  authorization_type?: string;
+  exposure?: string;
+  next_review_from?: string;
+  next_review_to?: string;
+  engagements_min?: number;
+  engagements_max?: number;
+  window_days?: number;
+}
+
+export function getHrReviewQueue(
+  identity: Identity, filters: HrReviewQueueFilters = {},
+): Promise<HrReviewQueueItem[]> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== "") params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs ? `?${qs}` : ""}`, identity);
 }
 
 // --- AI-assisted doc upload for IT — IT-only, work mode only. Every call
