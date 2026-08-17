@@ -95,6 +95,9 @@ export const Sun = ({ size = 17, className }: IconProps) => (
 export const Moon = ({ size = 17, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" /></svg>
 );
+export const Volume = ({ size = 15, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M11 5 6 9H3v6h3l5 4V5Z" /><path d="M16 8.5a5 5 0 0 1 0 7M19 5.5a9 9 0 0 1 0 13" /></svg>
+);
 export const Home = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="m3 11 9-8 9 8" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg>
 );

@@ -102,6 +102,7 @@ export interface PersonDetail {
   id: string;
   full_name: string;
   preferred_name?: string;
+  name_pronunciation?: string;
   job_title?: string;
   org_unit?: string;
   work_email?: string;

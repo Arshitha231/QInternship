@@ -122,6 +122,7 @@ REGISTRY: dict[str, FieldSpec] = {
     # already had job_title as filterable, unused, waiting for this side to
     # catch up (search_index_schema.json).
     "preferred_name": _f("preferred_name", "str", {"eq", "contains"}, Sensitivity.INTERNAL),
+    "name_pronunciation": _f("name_pronunciation", "str", set(), Sensitivity.INTERNAL, filterable=False),
     "job_title": _f("job_title", "str", {"contains"}, Sensitivity.INTERNAL),
     "org_unit": _f("org_unit", "str", {"eq", "in"}, Sensitivity.INTERNAL, derived_from=("org_unit_id",)),
     "work_email": _f("work_email", "str", {"eq"}, Sensitivity.INTERNAL),

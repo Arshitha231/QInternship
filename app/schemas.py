@@ -110,6 +110,7 @@ class PersonDetail(BaseModel):
     id: str
     full_name: str
     preferred_name: str | None = None
+    name_pronunciation: str | None = None
     job_title: str | None = None
     org_unit: str | None = None
     work_email: str | None = None
@@ -296,6 +297,13 @@ class RecordCourseStatusRequest(BaseModel):
 
 class UpdateBioRequest(BaseModel):
     bio: str = Field(max_length=2000)
+
+
+class UpdateNamePronunciationRequest(BaseModel):
+    # Free-text phonetic respelling ("nuh-VAY-uh"), not IPA. Same shape as
+    # UpdateBioRequest: a full-replace PATCH, so an empty string is how the
+    # owner clears a respelling they no longer want on file.
+    name_pronunciation: str = Field(max_length=200)
 
 
 class UpdateEmployeeRequest(BaseModel):

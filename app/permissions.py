@@ -61,7 +61,7 @@ BASE_FIELDS: set[str] = {
     "slack_handle", "office", "effective_timezone", "employment_type", "photo_url",
     "manager", "delegate", "availability_status", "away_until_month",
     "skills", "languages", "bio", "project_history", "tenure_band",
-    "linkedin_profile",
+    "linkedin_profile", "name_pronunciation",
 }
 
 # Internal HR information. Granted to exactly one (role, view_mode) pair —
