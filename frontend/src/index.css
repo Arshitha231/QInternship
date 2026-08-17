@@ -828,3 +828,80 @@ button { font: inherit; }
 .community-add-fab { align-self: flex-start; }
 .community-add-empty { align-self: center; }
 .community-add-form { max-width: 420px; }
+
+/* --- Help: the "?" menu, guided tour, and click-to-learn ---------------- */
+/* Every colour is a theme token, so the overlay follows light/dark with the
+   rest of the app. The shade is a hard rgba rather than a token because it
+   must darken BOTH themes -- a token that flips light in dark mode would
+   brighten the page instead of dimming it. */
+
+.help-menu { position: relative; display: flex; }
+
+.help-trigger {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  cursor: pointer; padding: 0;
+}
+.help-trigger:hover { background: var(--page); color: var(--ink); }
+.help-trigger.active { background: var(--purple); border-color: var(--purple); color: #fff; }
+
+.help-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  width: 274px; background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+  padding: 6px; display: flex; flex-direction: column; gap: 2px;
+}
+.help-pop-item {
+  text-align: left; background: none; border: none; cursor: pointer;
+  padding: 9px 10px; border-radius: var(--radius); font: inherit; color: var(--ink);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.help-pop-item:hover { background: var(--purple-100); }
+.help-pop-title { font-size: 13px; font-weight: 600; }
+.help-pop-sub { font-size: 12px; color: var(--muted); line-height: 1.35; }
+
+/* The overlay itself. pointer-events:none on the layer so the four shade
+   panels decide what is clickable -- in inspect mode the page underneath
+   must stay reachable, which a single full-screen blocker would prevent. */
+.help-layer { position: fixed; inset: 0; z-index: 80; pointer-events: none; }
+
+.help-shade { position: fixed; background: rgba(12, 12, 16, .55); pointer-events: auto; }
+.help-shade-full { inset: 0; }
+
+.help-ring {
+  position: fixed; border-radius: var(--radius); pointer-events: none;
+  border: 2px solid var(--purple); box-shadow: 0 0 0 3px rgba(91, 75, 196, .28);
+}
+
+.help-card {
+  position: fixed; z-index: 81; pointer-events: auto;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); box-shadow: 0 16px 40px rgba(0, 0, 0, .22);
+  padding: 14px 15px 12px;
+}
+.help-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.help-kicker {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--purple); font-weight: 600;
+}
+.help-close {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  padding: 3px; border-radius: 6px; display: flex;
+}
+.help-close:hover { background: var(--page); color: var(--ink); }
+.help-title { margin: 0 0 6px; font-size: 15px; font-weight: 650; color: var(--ink); }
+.help-body { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+.help-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.help-btn {
+  font: inherit; font-size: 13px; padding: 6px 13px; border-radius: var(--radius);
+  cursor: pointer; border: 1px solid var(--border); background: var(--white); color: var(--ink);
+}
+.help-btn.primary { background: var(--purple); border-color: var(--purple); color: #fff; }
+.help-btn.primary:hover { background: var(--purple-hover); border-color: var(--purple-hover); }
+.help-btn.ghost:hover:not(:disabled) { background: var(--page); }
+.help-btn:disabled { opacity: .45; cursor: default; }
+
+/* Inspect mode: signal that a click will explain rather than activate. */
+body.help-inspecting, body.help-inspecting * { cursor: help !important; }
