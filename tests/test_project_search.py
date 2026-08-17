@@ -169,6 +169,66 @@ def test_confidential_project_is_unreachable_by_keyword(db_session):
     assert secret.id not in ids
 
 
+# --- relevance excerpt: selection, never generation ------------------------
+
+def test_split_sentences_handles_single_and_multi_sentence_text():
+    from app.project_search import _split_sentences
+
+    assert _split_sentences("") == []
+    assert _split_sentences("One sentence only.") == ["One sentence only."]
+    assert _split_sentences("First one. Second one. Third one!") == [
+        "First one.", "Second one.", "Third one!",
+    ]
+
+
+def test_best_keyword_sentence_picks_the_sentence_with_the_most_hits():
+    from app.project_search import _best_keyword_sentence
+
+    sentences = [
+        "The onboarding flow was rebuilt last quarter.",
+        "It involved a Fabric migration from an on-prem warehouse.",
+        "Rollout is complete.",
+    ]
+    picked = _best_keyword_sentence(sentences, ["fabric", "migration", "warehouse"])
+    assert picked == "It involved a Fabric migration from an on-prem warehouse."
+
+
+def test_best_keyword_sentence_returns_none_when_nothing_matches():
+    from app.project_search import _best_keyword_sentence
+
+    assert _best_keyword_sentence(["Nothing relevant here."], ["kubernetes"]) is None
+
+
+def test_project_excerpts_fall_back_to_keyword_terms_without_embeddings(db_session):
+    # No embedding creds in the test environment -> embed_texts() returns
+    # None -> _project_excerpts degrades to the keyword-arm pick, same
+    # contract as every other embedding use in this module.
+    from app.project_search import _project_excerpts
+
+    atlas = db_session.query(Project).filter(Project.name == "Project Atlas").one()
+    excerpts = _project_excerpts(db_session, "migration of the billing ledger", [atlas])
+    assert excerpts[atlas.id] == atlas.description
+
+
+def test_project_excerpts_is_none_for_a_project_with_no_description(db_session):
+    from app.project_search import _project_excerpts
+
+    atlas = db_session.query(Project).filter(Project.name == "Project Atlas").one()
+    blank = Project(
+        name="Blank Description Project", type=ProjectType.project, description=None,
+        owning_unit_id=atlas.owning_unit_id, owner_id=atlas.owner_id,
+        classification=ProjectClassification.internal,
+    )
+    db_session.add(blank)
+    db_session.commit()
+    try:
+        excerpts = _project_excerpts(db_session, "migration of the billing ledger", [blank])
+        assert excerpts[blank.id] is None
+    finally:
+        db_session.delete(blank)
+        db_session.commit()
+
+
 # --- the hop --------------------------------------------------------------
 
 def test_assignment_rank_prefers_current_then_lead_then_recent():
@@ -180,12 +240,33 @@ def test_assignment_rank_prefers_current_then_lead_then_recent():
 
     ranked = sorted(
         [past_lead, current_contributor, old_lead, current_lead],
-        key=lambda a: _assignment_rank(a, today),
+        key=lambda a: _assignment_rank(a, today, is_owner=False),
     )
     assert ranked[0] is current_lead        # current + lead wins
     assert ranked[1] is current_contributor  # current beats any past role
     assert ranked[2] is past_lead            # among past, more recent first
     assert ranked[3] is old_lead
+
+
+def test_owner_id_outranks_a_lead_role_string_even_when_its_own_role_string_does_not_match():
+    # Regression: _LEAD_ROLES used to be the only "who's driving this"
+    # signal, matched against EmployeeProject.role -- unconstrained free
+    # text. A genuine owner (Project.owner_id) whose role string reads
+    # "Backend Engineer" (not in _LEAD_ROLES at all) got no ranking credit
+    # for owning the project, and could be outranked by a non-owner whose
+    # role string happened to say "Tech Lead".
+    today = date(2026, 1, 1)
+    owner_engineer = EmployeeProject(role="Backend Engineer", start_date=date(2021, 1, 1), end_date=None)
+    non_owner_lead = EmployeeProject(role="Tech Lead", start_date=date(2021, 1, 1), end_date=None)
+
+    ranked = sorted(
+        [non_owner_lead, owner_engineer],
+        key=lambda a: _assignment_rank(a, today, is_owner=(a is owner_engineer)),
+    )
+    assert ranked[0] is owner_engineer, (
+        "Project.owner_id must outrank a free-text _LEAD_ROLES match, even when the owner's "
+        "own role string ('Backend Engineer') isn't one of _LEAD_ROLES's recognized strings"
+    )
 
 
 def test_project_relevance_outranks_individual_involvement(db_session, monkeypatch):
@@ -242,6 +323,21 @@ def test_find_experts_reason_states_only_what_the_record_shows(db_session):
     for r in results:
         assert "best" not in r.reason.lower()
         assert r.role in r.reason or r.reason.endswith("a team member")
+
+
+def test_find_experts_excerpt_is_a_verbatim_substring_of_the_description(db_session):
+    # The core guarantee: the excerpt is a SELECTION, never a rewording.
+    # No embedding creds in the test environment (see module docstring),
+    # so this exercises the keyword-arm fallback path in _project_excerpts.
+    results = find_experts(db_session, HR, "migration of the billing ledger")
+    assert results
+    top = results[0]
+    project = db_session.query(Project).filter(Project.id == top.project_id).one()
+    assert top.excerpt
+    assert top.excerpt in project.description, (
+        "excerpt must appear verbatim in the project's own description -- "
+        "any deviation means something reworded it instead of selecting it"
+    )
 
 
 def test_empty_problem_returns_nothing(db_session):

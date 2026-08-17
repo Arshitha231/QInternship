@@ -35,7 +35,7 @@ from app.auth import AuthenticatedUser
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
-    MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
 )
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
@@ -340,6 +340,13 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         return f"{n} {'person' if n == 1 else 'people'} {label} in the reporting chain."
 
     if tool_name == "find_project_owner":
+        if isinstance(result, AmbiguousProjectMatch):
+            # Says which ones, rather than picking. "Migration" matches 16
+            # projects in this directory; the old code answered with
+            # whichever sorted first and gave no hint the others existed.
+            shown = ", ".join(result.matches)
+            return (f'"{result.query}" matches several projects — {shown}. '
+                    f"Which one did you mean?")
         if result is None:
             return "Couldn't find an owner for that."
         return f"{result.owner_name} owns {result.project_name} ({result.project_type})."
@@ -361,7 +368,14 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         # is never phrased as if it were a semantic match.
         qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
         others = f", and {len(experts) - 1} other{'s' if len(experts) > 2 else ''}" if len(experts) > 1 else ""
-        return f"{top.full_name} {top.reason}{others}{qualifier}."
+        sentence = f"{top.full_name} {top.reason}{others}{qualifier}."
+        # top.excerpt, when present, is lifted verbatim from the project's
+        # own description (app/project_search.py's _project_excerpts) --
+        # appended, never blended into the sentence above, so it stays
+        # visibly a quotation rather than something this function composed.
+        if top.excerpt:
+            sentence += f' Relevant: "{top.excerpt}"'
+        return sentence
 
     if tool_name == "skill_gap":
         items = result or []

@@ -132,6 +132,8 @@ REGISTRY: dict[str, FieldSpec] = {
         "effective_timezone", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("timezone",)),
     "employment_type": _f("employment_type", "str", set(), Sensitivity.INTERNAL, filterable=False),
     "photo_url": _f("photo_url", "str", set(), Sensitivity.INTERNAL, filterable=False),
+    "linkedin_profile": _f(
+        "linkedin_profile", "str", set(), Sensitivity.INTERNAL, filterable=False),
     "manager": _f("manager", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("manager_id",)),
     "delegate": _f("delegate", "str", set(), Sensitivity.INTERNAL, filterable=False, derived_from=("delegate_id",)),
     "availability_status": _f("availability_status", "str", {"eq", "ne", "in"}, Sensitivity.INTERNAL),

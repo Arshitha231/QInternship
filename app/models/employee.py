@@ -98,6 +98,12 @@ class Employee(Base):
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Public professional profile URL. INTERNAL sensitivity (see
+    # app/registry.py): a LinkedIn page is already public, so this is no
+    # more disclosive than the person's name -- unlike personal_mobile,
+    # which is ABAC-gated.
+    linkedin_profile: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Soft delete only. Records are never hard-deleted.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
