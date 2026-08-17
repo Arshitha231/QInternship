@@ -41,6 +41,9 @@ export const Slack = ({ size = 16, className }: IconProps) => (
 export const LinkIcon = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
 );
+export const HelpCircle = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
+);
 export const Phone = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92Z" /></svg>
 );
@@ -94,4 +97,16 @@ export const Sun = ({ size = 17, className }: IconProps) => (
 );
 export const Moon = ({ size = 17, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" /></svg>
+);
+export const Volume = ({ size = 15, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M11 5 6 9H3v6h3l5 4V5Z" /><path d="M16 8.5a5 5 0 0 1 0 7M19 5.5a9 9 0 0 1 0 13" /></svg>
+);
+export const Home = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m3 11 9-8 9 8" /><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" /></svg>
+);
+export const Minus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M5 12h14" /></svg>
+);
+export const Plus = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M12 5v14M5 12h14" /></svg>
 );

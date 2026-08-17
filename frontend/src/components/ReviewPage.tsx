@@ -51,7 +51,7 @@ function errorMessage(e: unknown, fallback: string): string {
 // every other search surface in this app uses.
 // ---------------------------------------------------------------------------
 
-function EmployeeSearchPicker({
+export function EmployeeSearchPicker({
   identity, viewMode, onSelect, placeholder,
 }: { identity: Identity; viewMode: ViewMode; onSelect: (p: PersonSummary) => void; placeholder: string }) {
   const [query, setQuery] = useState("");

@@ -110,6 +110,7 @@ class PersonDetail(BaseModel):
     id: str
     full_name: str
     preferred_name: str | None = None
+    name_pronunciation: str | None = None
     job_title: str | None = None
     org_unit: str | None = None
     work_email: str | None = None
@@ -296,6 +297,13 @@ class RecordCourseStatusRequest(BaseModel):
 
 class UpdateBioRequest(BaseModel):
     bio: str = Field(max_length=2000)
+
+
+class UpdateNamePronunciationRequest(BaseModel):
+    # Free-text phonetic respelling ("nuh-VAY-uh"), not IPA. Same shape as
+    # UpdateBioRequest: a full-replace PATCH, so an empty string is how the
+    # owner clears a respelling they no longer want on file.
+    name_pronunciation: str = Field(max_length=200)
 
 
 class UpdateEmployeeRequest(BaseModel):
@@ -535,6 +543,58 @@ class HrReviewQueueItem(BaseModel):
     days_until_hr_review: int
     engagements_affected: int
     highest_exposure: Literal["none", "low", "medium", "high"]
+
+
+# --- Community Graph (app/community_links.py) — private per-employee -----
+# "who to contact for what" list. Every response here is scoped to the
+# caller's own graph; there is no shape anywhere in this section that takes
+# another employee's id as the subject of a query.
+
+class CommunityLinkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    owner_employee_id: str
+    contact_employee_id: str
+    role_label: str
+    reason: str | None = None
+    source: str
+    office_id: int | None = None
+    department_id: int | None = None
+    is_mentor_link: bool
+    created_at: datetime
+
+
+class CreateCommunityLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contact_employee_id: str
+    role_label: str = Field(max_length=200)
+    reason: str = Field(max_length=500)
+
+
+class UpdateCommunityLinkRequest(BaseModel):
+    """PATCH semantics — only supplied keys are touched, same convention as
+    UpdateEmployeeRequest. Personal links only; enforced in
+    app/community_links.py, not here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role_label: str | None = Field(default=None, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class SuggestedOfficialLinkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    office_id: int
+    role_label: str
+    candidate_employee_id: str
+    status: str
+    created_at: datetime
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
 
 
 class EmployeeContinuityDetail(BaseModel):

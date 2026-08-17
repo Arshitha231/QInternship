@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { GraphCanvas, type GraphEdge, type GraphNode } from "../GraphCanvas";
 import { ApiError, findPeople, getPerson } from "../../api";
 import type { Identity, ViewMode } from "../../types";
+import { useZoomPan, ZoomPanFrame } from "../ZoomPanFrame";
 
 interface Props {
   identity: Identity;
@@ -74,6 +75,8 @@ export function SkillsGraph({ identity, viewMode, focusId, focusName, focusRole,
     };
   }, [identity, focusId, focusName, focusRole]);
 
+  const zoomPan = useZoomPan();
+
   if (error) {
     return <div className="state-block error" style={{ padding: "50px 20px" }}><strong>Couldn't load skills</strong><p>{error}</p></div>;
   }
@@ -81,10 +84,14 @@ export function SkillsGraph({ identity, viewMode, focusId, focusName, focusRole,
     return <div className="skel skel-card" style={{ height: 480 }} />;
   }
   return (
-    <GraphCanvas
-      nodes={nodes}
-      edges={edges}
-      onNodeClick={(n) => n.id !== focusId && onNavigate(n.id)}
-    />
+    <ZoomPanFrame height={480} {...zoomPan}>
+      <GraphCanvas
+        bare
+        height={480}
+        nodes={nodes}
+        edges={edges}
+        onNodeClick={(n) => n.id !== focusId && onNavigate(n.id)}
+      />
+    </ZoomPanFrame>
   );
 }

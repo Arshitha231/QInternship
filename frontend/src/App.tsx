@@ -6,6 +6,9 @@ import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { ContinuityPage } from "./components/ContinuityPage";
 import { ReviewPage } from "./components/ReviewPage";
+import { HelpMenu } from "./components/HelpMenu";
+import { HelpOverlay } from "./components/HelpOverlay";
+import type { HelpState } from "./components/HelpOverlay";
 import { useDebouncedValue } from "./hooks";
 import { ApiError, unifiedSearch, type SearchFilters } from "./api";
 import { DEV_IDENTITIES } from "./identities";
@@ -33,6 +36,7 @@ export default function App() {
   // app opens showing what these roles saw before view modes existed.
   const [viewMode, setViewMode] = useState<ViewMode>("work");
   const [mode, setMode] = useState<Mode>("profile");
+  const [help, setHelp] = useState<HelpState>("off");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [profileStack, setProfileStack] = useState<ProfileStackEntry[]>(() => {
@@ -190,9 +194,16 @@ export default function App() {
           setMode("profile");
           setQuery("");
         }}
+        helpSlot={
+          <HelpMenu
+            state={help}
+            onStart={(next) => setHelp(next)}
+            onExit={() => setHelp("off")}
+          />
+        }
       />
 
-      <div className="tabs" role="tablist" aria-label="Section">
+      <div className="tabs" role="tablist" aria-label="Section" data-help="tabs">
         <button
           role="tab"
           aria-selected={mode === "profile"}
@@ -248,7 +259,10 @@ export default function App() {
       <main className="content">
         {hasQuery ? (
           <>
-            <Filters filters={filters} onChange={setFilters} />
+            <div data-help="filters">
+              <Filters filters={filters} onChange={setFilters} />
+            </div>
+            <div data-help="results">
             <UnifiedResults
               loading={loading}
               error={error}
@@ -265,8 +279,10 @@ export default function App() {
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
             />
+            </div>
           </>
         ) : mode === "profile" ? (
+          <div data-help="profile">
           <ProfilePage
             personId={profileId}
             identity={identity}
@@ -277,7 +293,9 @@ export default function App() {
             onBreadcrumb={jumpToProfileIndex}
             onBackToSearch={savedSearch ? backToSearch : undefined}
           />
+          </div>
         ) : mode === "graphs" ? (
+          <div data-help="graphs">
           <GraphPage
             identity={identity}
             viewMode={viewMode}
@@ -288,12 +306,37 @@ export default function App() {
               setMode("profile");
             }}
           />
+          </div>
         ) : mode === "continuity" && identity.role === "hr" ? (
-          <ContinuityPage identity={identity} viewMode={viewMode} />
+          <div data-help="continuity"><ContinuityPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
-          <ReviewPage identity={identity} viewMode={viewMode} />
+          <div data-help="review"><ReviewPage identity={identity} viewMode={viewMode} /></div>
         ) : null}
       </main>
+
+      <HelpOverlay
+        state={help}
+        // Mirrors the tab bar's own render conditions above -- if a tab
+        // isn't there, the tour must not walk to it.
+        availableModes={[
+          "profile",
+          "graphs",
+          ...(identity.role === "hr" ? (["continuity"] as const) : []),
+          ...(identity.role === "it" && viewMode === "work" ? (["review"] as const) : []),
+        ]}
+        onExit={() => setHelp("off")}
+        onRequestMode={(m) => {
+          // Clearing the query matters as much as setting the mode: the
+          // content area renders SEARCH RESULTS whenever hasQuery is true,
+          // whatever `mode` says (see the ternary above). Setting mode
+          // alone left the tour narrating the Graphs tabs while the page
+          // still showed a result list, and the step's target never
+          // existed. The real tab buttons clear the query for the same
+          // reason -- this just does what clicking them does.
+          setMode(m as Mode);
+          setQuery("");
+        }}
+      />
     </div>
   );
 }
