@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Moon, SearchIcon, Sun, X } from "../icons";
+import type { ReactNode } from "react";
 import type { Identity, ViewMode } from "../types";
 import { WORK_MODE_ROLES } from "../types";
 import { DEV_IDENTITIES } from "../identities";
@@ -14,10 +15,12 @@ interface Props {
   onOpenPerson: (id: string, name: string) => void;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  /** The "?" control, injected so TopBar stays unaware of help state. */
+  helpSlot?: ReactNode;
 }
 
 export function TopBar({
-  query, onQueryChange, identity, onIdentityChange, onOpenPerson, viewMode, onViewModeChange,
+  query, onQueryChange, identity, onIdentityChange, onOpenPerson, viewMode, onViewModeChange, helpSlot,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -51,7 +54,7 @@ export function TopBar({
         <span className="brand-name">OrgHub</span>
       </div>
 
-      <div className="search">
+      <div className="search" data-help="search">
         <SearchIcon className="search-icon" />
         <label className="sr-only" htmlFor="q" style={{ position: "absolute", left: -9999 }}>Search the directory</label>
         <input
@@ -74,6 +77,7 @@ export function TopBar({
           server pins it. See resolve_view_mode in app/permissions.py. */}
       {WORK_MODE_ROLES.includes(identity.role) && (
         <div
+          data-help="viewmode"
           className="viewmode"
           role="group"
           aria-label={`View mode (available to ${WORK_MODE_ROLES.join(" and ")})`}
@@ -95,6 +99,8 @@ export function TopBar({
         </div>
       )}
 
+      {helpSlot}
+
       <button
         type="button"
         className="theme-toggle"
@@ -105,9 +111,11 @@ export function TopBar({
         {theme === "dark" ? <Sun /> : <Moon />}
       </button>
 
-      <NotificationBell identity={identity} onOpenPerson={onOpenPerson} />
+      <span data-help="notifications" style={{ display: "flex" }}>
+        <NotificationBell identity={identity} onOpenPerson={onOpenPerson} />
+      </span>
 
-      <div className="account" ref={menuRef}>
+      <div className="account" ref={menuRef} data-help="identity">
         <button
           className="account-btn"
           aria-expanded={menuOpen}

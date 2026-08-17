@@ -59,7 +59,17 @@ export function GraphPage({
 
       <div className="tabs" role="tablist" aria-label="Graph view" style={{ borderRadius: "var(--radius-card)", border: "1px solid var(--border)", padding: "0 8px" }}>
         {(["department", "team", "skills", "community"] as GraphKind[]).map((k) => (
-          <button key={k} role="tab" aria-selected={kind === k} className={`tab ${kind === k ? "active" : ""}`} onClick={() => setKind(k)}>
+          <button
+            key={k}
+            role="tab"
+            // Each view has its own help topic keyed to its own tab, so the
+            // tour can walk the four without needing to drive `kind` from
+            // outside, and click-to-learn explains whichever tab you click.
+            data-help={`graph-${k}`}
+            aria-selected={kind === k}
+            className={`tab ${kind === k ? "active" : ""}`}
+            onClick={() => setKind(k)}
+          >
             {k === "department" ? "Department" : k === "team" ? "Team" : k === "skills" ? "Skills" : "Community"}
           </button>
         ))}
