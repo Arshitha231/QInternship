@@ -1,8 +1,8 @@
 import type {
-  BulkResultRow, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
+  BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
   EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode, PersonDetail,
-  PersonSummary, ProposedChangeGroup, UnifiedSearchResponse, UpdateEmployeeChanges,
-  UploadDocResult, ViewMode,
+  PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
+  UpdateEmployeeChanges, UploadDocResult, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -294,3 +294,73 @@ export const bulkAcceptProposedChanges = (identity: Identity, viewMode: ViewMode
 
 export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode, selector: BulkSelector) =>
   bulkProposedChangeAction(identity, "bulk_reject", viewMode, selector);
+
+// --- Community Graph — every call here is implicitly scoped to `identity`'s
+// own graph; there is no person-id parameter anywhere below that could ask
+// for someone else's (see app/community_links.py's visibility guarantee).
+
+export function listCommunityLinks(identity: Identity): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>("/community_links", identity);
+}
+
+export function createCommunityLink(
+  identity: Identity, body: { contact_employee_id: string; role_label: string; reason: string },
+): Promise<CommunityLinkOut> {
+  return request<CommunityLinkOut>("/community_links", identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateCommunityLink(
+  identity: Identity, linkId: number, changes: { role_label?: string; reason?: string },
+): Promise<CommunityLinkOut> {
+  return request<CommunityLinkOut>(`/community_links/${linkId}`, identity, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function deleteCommunityLink(identity: Identity, linkId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/community_links/${linkId}`, {
+    method: "DELETE",
+    headers: headers(identity),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  }
+}
+
+// --- HR review queue for bootstrapped official-link suggestions. Every
+// call here 403s for a non-"hr" identity; CommunityPage never renders the
+// review section at all outside that role, same non-visibility guarantee
+// Continuity's HR-only calls carry.
+
+export function listSuggestedOfficialLinks(
+  identity: Identity, officeId?: number,
+): Promise<SuggestedOfficialLinkOut[]> {
+  const qs = officeId !== undefined ? `?office_id=${officeId}` : "";
+  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links${qs}`, identity);
+}
+
+export function generateSuggestedOfficialLinks(identity: Identity): Promise<SuggestedOfficialLinkOut[]> {
+  return request<SuggestedOfficialLinkOut[]>("/suggested_official_links/generate", identity, { method: "POST" });
+}
+
+export function confirmSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/confirm`, identity, { method: "POST" });
+}
+
+export function rejectSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/reject`, identity, { method: "POST" });
+}
+
+// Mentor auto-assignment sweep for new hires -- unlike the office/role
+// suggestions above, this creates the official mentor link directly (no
+// confirm step); see app/community_links.py's auto_assign_mentors for why.
+// HR-only, same gate as the rest of this section.
+export function autoAssignMentors(identity: Identity): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>("/community_links/auto_assign_mentors", identity, { method: "POST" });
+}

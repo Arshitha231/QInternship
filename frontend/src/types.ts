@@ -332,3 +332,38 @@ export interface BulkResultRow {
   status?: string;
   error?: string;
 }
+
+// Community Graph (app/community_links.py) — a private per-employee "who to
+// contact for what" list. GET /community_links returns only the caller's
+// own graph, whatever their role — there is no id parameter anywhere in
+// this section that could ask for someone else's.
+
+export interface CommunityLinkOut {
+  id: number;
+  owner_employee_id: string;
+  contact_employee_id: string;
+  role_label: string;
+  reason: string | null;
+  source: "official" | "personal";
+  office_id: number | null;
+  department_id: number | null;
+  // Marks the subset of official links whose expiration is computed
+  // server-side at read time — never something the frontend calculates.
+  is_mentor_link: boolean;
+  created_at: string;
+}
+
+// HR's review queue for office/role -> candidate mappings bootstrapped from
+// existing office/job-title data (GET /suggested_official_links, HR-only —
+// see App.tsx's tab gating, same non-visibility guarantee Continuity and
+// Review already carry).
+export interface SuggestedOfficialLinkOut {
+  id: number;
+  office_id: number;
+  role_label: string;
+  candidate_employee_id: string;
+  status: "pending" | "confirmed" | "rejected";
+  created_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+}

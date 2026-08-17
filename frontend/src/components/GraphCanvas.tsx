@@ -68,11 +68,17 @@ export function GraphCanvas({
   edges,
   onNodeClick,
   height = 620,
+  bare = false,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
   onNodeClick?: (node: GraphNode) => void;
   height?: number;
+  // Skips the outer .graph-canvas card div -- for a caller (SkillsGraph,
+  // via ZoomPanFrame) that already renders that same bordered/clipped frame
+  // around this component, so the two don't nest into a visible
+  // double-bordered box.
+  bare?: boolean;
 }) {
   const width = 900;
 
@@ -99,52 +105,52 @@ export function GraphCanvas({
   const vbW = bounds.maxX - bounds.minX;
   const vbH = bounds.maxY - bounds.minY;
 
-  return (
-    <div className="graph-canvas">
-      <svg viewBox={`${bounds.minX} ${bounds.minY} ${vbW} ${vbH}`} width="100%" height={height} role="img" aria-label="Relationship graph">
-        <g className="graph-edges">
-          {edges.map((e, i) => {
-            const s = byId.get(e.source);
-            const t = byId.get(e.target);
-            if (!s || !t) return null;
-            return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} className="graph-edge" />;
-          })}
-        </g>
-        <g className="graph-nodes">
-          {positioned.map((n) => {
-            const r = KIND_RADIUS[n.kind];
-            const clickable = !!onNodeClick && (n.kind === "person" || n.kind === "focus");
-            return (
-              <g
-                key={n.id}
-                transform={`translate(${n.x},${n.y})`}
-                className={`graph-node ${clickable ? "clickable" : ""}`}
-                onClick={() => clickable && onNodeClick?.(n)}
-                tabIndex={clickable ? 0 : undefined}
-                role={clickable ? "button" : undefined}
-                onKeyDown={(e) => {
-                  if (clickable && (e.key === "Enter" || e.key === " ")) onNodeClick?.(n);
-                }}
-              >
-                <circle r={r} fill={KIND_FILL[n.kind]} stroke={KIND_STROKE[n.kind]} strokeWidth={n.kind === "focus" ? 2.5 : 1.5} />
-                <text textAnchor="middle" dominantBaseline="central" fontSize={n.kind === "skill" ? 10 : 11} fontWeight={600} fill={KIND_TEXT[n.kind]}>
-                  {initialsOrShort(n.label, n.kind)}
+  const svg = (
+    <svg viewBox={`${bounds.minX} ${bounds.minY} ${vbW} ${vbH}`} width={width} height={height} role="img" aria-label="Relationship graph">
+      <g className="graph-edges">
+        {edges.map((e, i) => {
+          const s = byId.get(e.source);
+          const t = byId.get(e.target);
+          if (!s || !t) return null;
+          return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y} className="graph-edge" />;
+        })}
+      </g>
+      <g className="graph-nodes">
+        {positioned.map((n) => {
+          const r = KIND_RADIUS[n.kind];
+          const clickable = !!onNodeClick && (n.kind === "person" || n.kind === "focus");
+          return (
+            <g
+              key={n.id}
+              transform={`translate(${n.x},${n.y})`}
+              className={`graph-node ${clickable ? "clickable" : ""}`}
+              onClick={() => clickable && onNodeClick?.(n)}
+              tabIndex={clickable ? 0 : undefined}
+              role={clickable ? "button" : undefined}
+              onKeyDown={(e) => {
+                if (clickable && (e.key === "Enter" || e.key === " ")) onNodeClick?.(n);
+              }}
+            >
+              <circle r={r} fill={KIND_FILL[n.kind]} stroke={KIND_STROKE[n.kind]} strokeWidth={n.kind === "focus" ? 2.5 : 1.5} />
+              <text textAnchor="middle" dominantBaseline="central" fontSize={n.kind === "skill" ? 10 : 11} fontWeight={600} fill={KIND_TEXT[n.kind]}>
+                {initialsOrShort(n.label, n.kind)}
+              </text>
+              <text textAnchor="middle" y={r + 17} fontSize={12} fill="var(--ink)" fontWeight={n.kind === "focus" ? 700 : 600}>
+                {truncate(n.label, 24)}
+              </text>
+              {n.sublabel && (
+                <text textAnchor="middle" y={r + 32} fontSize={10.5} fill="var(--muted)">
+                  {truncate(n.sublabel, 30)}
                 </text>
-                <text textAnchor="middle" y={r + 17} fontSize={12} fill="var(--ink)" fontWeight={n.kind === "focus" ? 700 : 600}>
-                  {truncate(n.label, 24)}
-                </text>
-                {n.sublabel && (
-                  <text textAnchor="middle" y={r + 32} fontSize={10.5} fill="var(--muted)">
-                    {truncate(n.sublabel, 30)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </g>
-      </svg>
-    </div>
+              )}
+            </g>
+          );
+        })}
+      </g>
+    </svg>
   );
+
+  return bare ? svg : <div className="graph-canvas">{svg}</div>;
 }
 
 function initialsOrShort(label: string, kind: NodeKind): string {
