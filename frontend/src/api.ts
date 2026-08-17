@@ -85,6 +85,14 @@ export function updateOwnBio(identity: Identity, bio: string): Promise<PersonDet
   });
 }
 
+export function updateOwnNamePronunciation(identity: Identity, namePronunciation: string): Promise<PersonDetail> {
+  return request<PersonDetail>(`/people/${identity.id}/pronunciation`, identity, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name_pronunciation: namePronunciation }),
+  });
+}
+
 // HR, work mode, any employee but themselves — see app/writes.py's
 // update_employee for the actual enforcement; this call succeeding or not
 // is the server's decision, not something checked here. `changes` should

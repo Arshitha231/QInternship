@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, getOrgChart, getPerson, updateEmployee, updateOwnBio } from "../api";
+import { ApiError, getOrgChart, getPerson, updateEmployee, updateOwnBio, updateOwnNamePronunciation } from "../api";
 import type { Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
-  LinkIcon, MapPin, Phone, Slack, UserReports, Users,
+  LinkIcon, MapPin, Phone, Slack, UserReports, Users, Volume,
 } from "../icons";
 
 export interface ProfileStackEntry {
@@ -25,6 +25,18 @@ interface Props {
 
 function initials(name: string): string {
   return name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+}
+
+// Speaks the phonetic respelling, not the name itself -- "nuh-VAY-uh" said
+// aloud by TTS lands much closer to the real pronunciation than a screen
+// reader guessing at "Navaya" would. No fallback UI for browsers without
+// SpeechSynthesis (Web Speech API has near-universal support); the button
+// simply no-ops if it's missing, same as any other progressive-enhancement
+// affordance on this page.
+function speakPronunciation(text: string) {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 }
 
 const LEVEL_ORDER = ["Expert", "Working", "Learning"] as const;
@@ -175,6 +187,11 @@ export function ProfilePage({
   const [savingBio, setSavingBio] = useState(false);
   const [bioError, setBioError] = useState<string | null>(null);
 
+  const [editingPronunciation, setEditingPronunciation] = useState(false);
+  const [pronunciationDraft, setPronunciationDraft] = useState("");
+  const [savingPronunciation, setSavingPronunciation] = useState(false);
+  const [pronunciationError, setPronunciationError] = useState<string | null>(null);
+
   const [editingEmployee, setEditingEmployee] = useState(false);
   const [employeeForm, setEmployeeForm] = useState<EmployeeFormState | null>(null);
   const [employeeInitial, setEmployeeInitial] = useState<EmployeeFormState | null>(null);
@@ -196,6 +213,8 @@ export function ProfilePage({
     setError(null);
     setEditingBio(false);
     setBioError(null);
+    setEditingPronunciation(false);
+    setPronunciationError(null);
     // Closes any open edit form on a profile/identity/mode change, so a
     // draft never lingers pointed at the wrong person — same reasoning as
     // the bio-edit reset just above.
@@ -258,6 +277,26 @@ export function ProfilePage({
       setBioError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
     } finally {
       setSavingBio(false);
+    }
+  }
+
+  function startEditingPronunciation() {
+    setPronunciationDraft(detail!.name_pronunciation ?? "");
+    setPronunciationError(null);
+    setEditingPronunciation(true);
+  }
+
+  async function savePronunciation() {
+    setSavingPronunciation(true);
+    setPronunciationError(null);
+    try {
+      const updated = await updateOwnNamePronunciation(identity, pronunciationDraft.trim());
+      setDetail((prev) => (prev ? { ...prev, name_pronunciation: updated.name_pronunciation } : prev));
+      setEditingPronunciation(false);
+    } catch (e) {
+      setPronunciationError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+    } finally {
+      setSavingPronunciation(false);
     }
   }
 
@@ -330,7 +369,43 @@ export function ProfilePage({
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="p-name-line">
             <h2 className="p-name">{detail.preferred_name || detail.full_name}</h2>
+            {!editingPronunciation && detail.name_pronunciation && (
+              <button
+                type="button"
+                className="pronunciation-btn"
+                onClick={() => speakPronunciation(detail.name_pronunciation!)}
+                title="Hear pronunciation"
+                aria-label={`Hear pronunciation: ${detail.name_pronunciation}`}
+              >
+                <Volume size={13} /> {detail.name_pronunciation}
+              </button>
+            )}
+            {isOwnProfile && !editingPronunciation && (
+              <button className="link-btn" style={{ fontSize: 12.5 }} onClick={startEditingPronunciation}>
+                {detail.name_pronunciation ? "Edit pronunciation" : "Add pronunciation"}
+              </button>
+            )}
           </div>
+          {editingPronunciation && (
+            <div className="pronunciation-edit">
+              <input
+                className="edit-input"
+                style={{ maxWidth: 220 }}
+                value={pronunciationDraft}
+                onChange={(e) => setPronunciationDraft(e.target.value)}
+                maxLength={200}
+                autoFocus
+                placeholder="e.g. nuh-VAY-uh"
+              />
+              <button className="btn" onClick={() => setEditingPronunciation(false)} disabled={savingPronunciation}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={savePronunciation} disabled={savingPronunciation}>
+                {savingPronunciation ? "Saving…" : "Save"}
+              </button>
+              {pronunciationError && <p className="bio-error" style={{ width: "100%" }}>{pronunciationError}</p>}
+            </div>
+          )}
           {detail.job_title && <p className="p-role">{detail.job_title}</p>}
 
           <ul className="p-facts">

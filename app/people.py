@@ -682,6 +682,28 @@ def update_own_bio(db: Session, caller: AuthenticatedUser, person_id: str, bio: 
     return result
 
 
+# ---------------------------------------------------------------------------
+# update_own_name_pronunciation(person_id, name_pronunciation) — self-service
+# only, same shape as update_own_bio above. Not reindexed: unlike bio,
+# name_pronunciation doesn't feed build_profile_text -- it's a "how do I say
+# this" aid, not searchable profile content.
+# ---------------------------------------------------------------------------
+
+def update_own_name_pronunciation(
+    db: Session, caller: AuthenticatedUser, person_id: str, name_pronunciation: str,
+) -> PersonDetail | None:
+    target = db.get(Employee, person_id)
+    if target is None or not target.is_active:
+        return None
+    target.name_pronunciation = name_pronunciation
+    db.commit()
+    db.refresh(target)
+    fields = compute_visible_fields(db, caller, target)
+    result = _build_detail(db, caller, target, fields)
+    _write_audit(db, caller, "update_own_name_pronunciation", f"person_id={person_id}", 1, fields)
+    return result
+
+
 def _build_detail(
     db: Session, caller: AuthenticatedUser, target: Employee, fields: set[str], view_mode: ViewMode = "work",
 ) -> PersonDetail:
@@ -692,6 +714,8 @@ def _build_detail(
 
     if "preferred_name" in fields:
         kwargs["preferred_name"] = target.preferred_name
+    if "name_pronunciation" in fields:
+        kwargs["name_pronunciation"] = target.name_pronunciation
     if "job_title" in fields:
         kwargs["job_title"] = target.job_title
     if "org_unit" in fields:

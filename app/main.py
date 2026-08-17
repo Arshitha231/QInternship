@@ -35,6 +35,7 @@ from app.org_chart import get_org_chain as get_org_chain_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
+from app.people import update_own_name_pronunciation as update_own_name_pronunciation_service
 from app.permissions import resolve_view_mode
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
@@ -77,6 +78,7 @@ from app.schemas import (
     UpdateBioRequest,
     UpdateCommunityLinkRequest,
     UpdateEmployeeRequest,
+    UpdateNamePronunciationRequest,
 )
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
@@ -238,6 +240,24 @@ def update_bio_route(
     if person_id != user.id:
         raise HTTPException(status_code=403, detail="You can only edit your own profile")
     result = update_own_bio_service(db, user, person_id, body.bio.strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.patch("/people/{person_id}/pronunciation", response_model=PersonDetail, response_model_exclude_unset=True)
+def update_name_pronunciation_route(
+    person_id: str,
+    body: UpdateNamePronunciationRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    # Self-service only, same reasoning as /people/{person_id}/bio above:
+    # how your own name sounds isn't something anyone else edits on your
+    # behalf, not even HR.
+    if person_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own profile")
+    result = update_own_name_pronunciation_service(db, user, person_id, body.name_pronunciation.strip())
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result

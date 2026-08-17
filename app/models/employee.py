@@ -39,6 +39,15 @@ class Employee(Base):
 
     full_name: Mapped[str] = mapped_column(String(200), nullable=False)
     preferred_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Self-reported phonetic respelling, e.g. "nuh-VAY-uh" for Navaya --
+    # free text, not IPA, so it stays typeable and readable by a colleague
+    # who has never seen phonetic notation. Self-service only (see
+    # update_own_name_pronunciation in app/people.py, same shape as bio):
+    # the record's own subject is the authority on how their name sounds,
+    # unlike linkedin_profile which HR edits on anyone's behalf.
+    name_pronunciation: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     job_title: Mapped[str] = mapped_column(String(200), nullable=False)
 
     org_unit_id: Mapped[int] = mapped_column(ForeignKey("org_units.id"), nullable=False)
