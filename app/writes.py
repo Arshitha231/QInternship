@@ -33,6 +33,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
@@ -592,6 +593,39 @@ DEACTIVATED_FIELDS = frozenset({
 })
 
 
+def deactivated_employees_query():
+    """The SELECT behind list_deactivated_employees, split out so it can be
+    compiled against a dialect without a database to run it on.
+
+    Exists because this query's one production failure was invisible to the
+    test suite: it ran fine on SQLite and 500'd on Azure SQL. Handing the
+    statement back lets a test compile it for mssql and assert on the SQL —
+    see test_deactivated_ordering_compiles_for_sql_server.
+    """
+    return (
+        select(Employee, OrgUnit)
+        .outerjoin(OrgUnit, Employee.org_unit_id == OrgUnit.id)
+        .where(Employee.is_active == False)  # noqa: E712
+        # NULLs last without relying on dialect-specific NULLS LAST, which
+        # SQLite accepts and older SQL Server does not: sort on a computed
+        # "is it null" flag first, then the date itself.
+        #
+        # The flag has to be a CASE, not the bare `deactivated_at.is_(None)`
+        # this used to be. SQLAlchemy renders that predicate verbatim as
+        # `ORDER BY deactivated_at IS NULL`, which SQLite evaluates as 0/1
+        # but T-SQL rejects outright — SQL Server has no boolean type, so a
+        # predicate is not a sortable expression there. Same family as the
+        # `== True` / `.is_(True)` note on the filter above: the local
+        # SQLite suite cannot catch it, because the difference only exists
+        # in the dialect.
+        .order_by(
+            case((Employee.deactivated_at.is_(None), 1), else_=0).asc(),
+            Employee.deactivated_at.desc(),
+        )
+        .limit(MAX_DEACTIVATED_RESULTS)
+    )
+
+
 def list_deactivated_employees(
     db: Session, caller: AuthenticatedUser, view_mode: ViewMode,
 ) -> list[dict]:
@@ -614,17 +648,7 @@ def list_deactivated_employees(
     """
     _authorize(caller.role, view_mode, {"deactivate_employee"})
 
-    rows = (
-        db.query(Employee, OrgUnit)
-        .outerjoin(OrgUnit, Employee.org_unit_id == OrgUnit.id)
-        .filter(Employee.is_active == False)  # noqa: E712
-        # NULLs last without relying on dialect-specific NULLS LAST, which
-        # SQLite accepts and older SQL Server does not: sort on a computed
-        # "is it null" flag first, then the date itself.
-        .order_by((Employee.deactivated_at.is_(None)).asc(), Employee.deactivated_at.desc())
-        .limit(MAX_DEACTIVATED_RESULTS)
-        .all()
-    )
+    rows = db.execute(deactivated_employees_query()).all()
 
     out = [
         {

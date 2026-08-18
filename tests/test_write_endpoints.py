@@ -1218,6 +1218,30 @@ async def test_deactivated_list_sorts_newest_first_nulls_last(client, db_session
     assert ids.index(older.id) < ids.index(nulled.id)
 
 
+def test_deactivated_ordering_compiles_for_sql_server():
+    """The ordering above has to survive the dialect it actually ships on.
+
+    This suite runs on SQLite and the app deploys to Azure SQL, so a query
+    can pass every behavioural test here and still 500 in production — which
+    is exactly what `ORDER BY deactivated_at IS NULL` did. SQLite evaluates a
+    predicate as 0/1 and sorts by it happily; T-SQL has no boolean type, so a
+    predicate is not a sortable expression and SQL Server rejects the
+    statement outright.
+
+    Compiling against the mssql dialect catches that class of bug without a
+    SQL Server to run against: the NULLs-last flag must be a CASE, and the
+    ORDER BY must not carry a bare predicate.
+    """
+    from sqlalchemy.dialects import mssql
+
+    from app.writes import deactivated_employees_query
+
+    sql = str(deactivated_employees_query().compile(dialect=mssql.dialect()))
+    order_by = sql[sql.index("ORDER BY"):]
+    assert "CASE WHEN" in order_by
+    assert "IS NULL ASC" not in order_by
+
+
 async def test_deactivated_list_omits_salary_and_dob(client, db_session):
     """Narrow by construction — identity and placement, nothing else. Not
     because HR/work couldn't read those elsewhere, but because this
