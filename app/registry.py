@@ -170,8 +170,13 @@ REGISTRY: dict[str, FieldSpec] = {
 # Real `employees` table columns with no registry entry, on purpose — FK
 # columns that surface under a derived name instead, and internal columns
 # never API-facing at all. Every entry needs a one-line reason, carried as
-# the dict value itself (read by app/registry_view.py's HR-facing screen,
-# not just a comment for a reader of this file) — growing this set means
+# the dict value itself rather than a comment — but this is the ENGINEER-
+# facing wording; app/registry_view.py's HR screen shows
+# app.registry_view.IGNORED_COLUMN_DISPLAY instead, a second dict keyed
+# identically to this one. Add/remove a column here and the matching entry
+# there needs the same treatment — a coverage test catches a key going
+# missing, but a *reason* changing on one side and not the other is only
+# ever caught by a human touching both. Growing this set at all means
 # touching test_registry.py's exact-contents test on purpose, not a silent
 # side effect of adding a column.
 IGNORED_COLUMNS: dict[str, str] = {

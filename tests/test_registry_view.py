@@ -13,7 +13,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog
 from app.permissions import SELF_ONLY_FIELDS
 from app.registry import IGNORED_COLUMNS, REGISTRY, Sensitivity, is_visible
-from app.registry_view import RegistryViewForbidden, get_registry_view
+from app.registry_view import IGNORED_COLUMN_DISPLAY, RegistryViewForbidden, get_registry_view
 
 HR = AuthenticatedUser(id="registry-view-hr", role="hr", name="HR Caller")
 EMPLOYEE = AuthenticatedUser(id="registry-view-employee", role="employee", name="Employee Caller")
@@ -135,16 +135,27 @@ def test_derived_hr_note_reflects_the_empty_tier(db_session):
 
 
 # ---------------------------------------------------------------------------
-# IGNORED_COLUMNS: reasons as data
+# IGNORED_COLUMNS: reasons as data, shown in their HR-plain-language form
 # ---------------------------------------------------------------------------
 
-def test_ignored_columns_rendered_with_reasons(db_session):
+def test_ignored_columns_rendered_with_plain_language_reasons(db_session):
+    # Equivalence against IGNORED_COLUMN_DISPLAY, not IGNORED_COLUMNS -- the
+    # screen shows the HR wording, never the engineer-facing one, per
+    # get_registry_view's IGNORED_COLUMN_DISPLAY.get(name, reason) fallback.
     view = get_registry_view(db_session, HR)
     by_name = {c.name: c.reason for c in view.ignored_columns}
-    assert by_name == IGNORED_COLUMNS
+    assert by_name == IGNORED_COLUMN_DISPLAY
     assert len(by_name) == len(IGNORED_COLUMNS)
     for reason in by_name.values():
         assert reason.strip()
+
+
+def test_ignored_column_display_covers_every_ignored_column():
+    # Structural drift guard only -- catches a column added/removed from one
+    # dict and not the other. A reason changing on one side without the
+    # other is not something this (or anything) can catch mechanically; see
+    # app/registry_view.py's module docstring.
+    assert set(IGNORED_COLUMN_DISPLAY) == set(IGNORED_COLUMNS)
 
 
 # ---------------------------------------------------------------------------

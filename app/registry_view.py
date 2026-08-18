@@ -7,7 +7,7 @@ nothing in this module writes anything or mutates the registry. Same shape
 as app/continuity.py: one HR-gate, one AuditLog row per call, typed
 Pydantic return.
 
-Two things worth knowing before touching this file:
+Three things worth knowing before touching this file:
 
 `personal_mobile` and `salary`/`salary_currency`/`date_of_birth` each carry
 an ABAC grant on top of (or instead of) their static REGISTRY sensitivity —
@@ -15,14 +15,26 @@ app.permissions.abac_extra_fields, entirely outside this registry. Read on
 its own, is_visible() makes personal_mobile look unreachable by anyone
 (sensitivity=None denies every role) and understates who sees the other
 three (their real audience is "hr, OR the record's own subject" — REGISTRY
-only knows about "hr"). The two note constants below are this module's one
-hand-maintained exception to "never re-describe what's already enforced
+only knows about "hr"). `_MANAGER_GRANT_NOTE`/`_SELF_ONLY_NOTE` below are
+hand-maintained exceptions to "never re-describe what's already enforced
 elsewhere": three of the four fields they're attached to are matched via
 app.permissions.SELF_ONLY_FIELDS, a real import, not a retyped list;
 personal_mobile's manager-grant has no importable symbol of its own (it's a
 literal string inside abac_extra_fields's body), so it's the one bare
 literal here — flagged explicitly so a future change to abac_extra_fields is
 the obvious place to notice this needs revisiting.
+
+`IGNORED_COLUMN_DISPLAY` is the same kind of exception, wider: HR asked for
+plain-language reasons ("Internal link; the org unit itself is governed
+above") rather than app.registry.IGNORED_COLUMNS's engineer-facing ones
+("FK; surfaces under the derived registry name..."). Deliberately a SECOND
+dict, not a rewrite of IGNORED_COLUMNS itself — that one is read by
+engineers debugging the registry and stays in their vocabulary.
+test_ignored_column_display_covers_every_ignored_column (tests/test_registry_view.py)
+only catches STRUCTURAL drift (a column added or removed from one dict and
+not the other) — it can't catch a reason changing on one side and not the
+other, which is why IGNORED_COLUMNS's own comment (app/registry.py) points
+back here: a human touching either is the actual safeguard for that half.
 
 The column set is NEVER hardcoded — it's whatever calling is_visible()
 across all 8 (role, view_mode) pairs actually produces, per role, once a
@@ -81,6 +93,26 @@ _SELF_ONLY_NOTE = (
     "The grid above is the RBAC floor only — app.permissions.abac_extra_fields "
     "additionally grants this to the record's own subject regardless of role."
 )
+
+# Plain-language stand-ins for app.registry.IGNORED_COLUMNS's own reasons —
+# see the module docstring's third paragraph for why this is a second dict
+# rather than a rewrite of IGNORED_COLUMNS, and what does/doesn't guard it
+# from drifting out of sync with that one. Keyed identically to
+# IGNORED_COLUMNS on purpose, checked by
+# test_ignored_column_display_covers_every_ignored_column.
+IGNORED_COLUMN_DISPLAY: dict[str, str] = {
+    "directory_object_id": "Internal ID used to link with Microsoft accounts — never shown.",
+    "is_active": "Marks a departed employee; already removed from results before anyone sees them.",
+    "deactivated_at": "Records when someone was deactivated; internal only.",
+    "created_at": "When the record was created — internal only.",
+    "updated_at": "When the record was last changed — internal only.",
+    "timezone": 'Replaced by "effective timezone" above, which fills in a default from the office if this isn\'t set.',
+    "away_until": 'Replaced by "away until month" above, which shows month only.',
+    "org_unit_id": "Internal link; the org unit itself is governed above.",
+    "office_id": "Internal link; the office itself is governed above.",
+    "manager_id": "Internal link; the manager itself is governed above.",
+    "delegate_id": "Internal link; the delegate itself is governed above.",
+}
 
 
 class RegistryViewForbidden(Exception):
@@ -184,8 +216,12 @@ def get_registry_view(db: Session, caller: AuthenticatedUser) -> RegistryView:
         for name, spec in REGISTRY.items()
     ]
 
+    # Falls back to the engineering reason if a column is ever missing from
+    # IGNORED_COLUMN_DISPLAY -- ugly-but-correct text beats a broken screen,
+    # and it's an obvious prompt to add the missing entry.
     ignored_columns = [
-        IgnoredColumnView(name=name, reason=reason) for name, reason in IGNORED_COLUMNS.items()
+        IgnoredColumnView(name=name, reason=IGNORED_COLUMN_DISPLAY.get(name, reason))
+        for name, reason in IGNORED_COLUMNS.items()
     ]
 
     view = RegistryView(
