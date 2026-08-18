@@ -77,6 +77,18 @@ curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami
 pytest   # runs against a throwaway temp SQLite db, never directory.db
 ```
 
+**Free-text search returns nothing locally, and that's expected.** The
+project has one Azure AI Search index and it belongs to the deployed app.
+`seed.py` generates the same synthetic people every run but fresh UUIDs, so
+your local database shares names with the indexed data and shares no ids —
+ranked hits resolve to nobody, and `find_people` degrades to its SQL keyword
+path (name/`preferred_name` substring). Structured filters (`?skill=`,
+`?org_unit=`, `?office=`) are pure SQL and work locally exactly as deployed;
+so do exact-name lookups, which short-circuit before Search is consulted.
+Semantic and misspelling-tolerant matching need the deployed backend
+(`npm run dev:live`). Do **not** rebuild the index from local data — it
+breaks search for everyone using the deployed app.
+
 `.python-version` pins 3.14.6 — Azure App Service's newest Linux runtime
 (`PYTHON|3.14`, confirmed via `az webapp list-runtimes`).
 
