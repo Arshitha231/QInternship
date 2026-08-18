@@ -116,6 +116,13 @@ class Employee(Base):
     # Soft delete only. Records are never hard-deleted.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # Set by app.writes.deactivate_employee, cleared by reactivate_employee.
+    # Exists because is_active alone can't answer "when" -- and once
+    # is_active is False, GET /people/{id} returns None for every caller,
+    # including HR (app.people.get_person's own retrieval gate), so there is
+    # no other read path left that could recover the timing after the fact.
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.now, onupdate=datetime.now

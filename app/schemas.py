@@ -16,6 +16,19 @@ class OfficeOut(BaseModel):
     country: str
 
 
+class OrgUnitOut(BaseModel):
+    """GET /org_units — a flat list, not a tree; the caller (today, the
+    create-employee picker) already has to show every unit regardless of
+    depth, and unit_type/parent_id are enough to label each one
+    ("Platform Engineering — department") without the frontend re-deriving
+    the hierarchy itself."""
+
+    id: int
+    name: str
+    unit_type: str
+    parent_id: int | None
+
+
 class SkillOut(BaseModel):
     name: str
     category: str
@@ -343,6 +356,44 @@ class UpdateEmployeeRequest(BaseModel):
     cost_centre: str | None = Field(default=None, max_length=50)
     employment_type: Literal["fte", "contractor", "intern"] | None = None
     linkedin_profile: str | None = Field(default=None, max_length=500)
+    # "restricted" is how a profile becomes invisible to everyone but HR
+    # (app.permissions.is_record_visible) — the enforcement already existed;
+    # this is what lets HR actually flip it. Not a general-purpose status
+    # editor: the other two values (available/away) are here too, since one
+    # field can't be write-only in one direction without genuinely being a
+    # separate action (see app/writes.py's own note on why this stayed a
+    # plain field rather than a dedicated restrict/unrestrict endpoint).
+    availability_status: Literal["available", "away", "restricted"] | None = None
+    # Reassigning someone's manager — needed before HR can deactivate a
+    # manager who still has active direct reports (see
+    # app.writes.deactivate_employee's block-until-reassigned rule).
+    manager_id: str | None = None
+
+
+class CreateEmployeeRequest(BaseModel):
+    """POST /employees — HR, work mode. Deliberately a small required set;
+    see app.writes.create_employee's docstring for why the rest (salary,
+    date_of_birth, cost_centre, ...) is a follow-up PATCH /employees/{id}
+    instead of a bigger form here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(max_length=200)
+    job_title: str = Field(max_length=200)
+    org_unit_id: int
+    work_email: str = Field(max_length=320)
+    employment_type: Literal["fte", "contractor", "intern"]
+    preferred_name: str | None = Field(default=None, max_length=200)
+    office_id: int | None = None
+    manager_id: str | None = None
+    work_phone: str | None = Field(default=None, max_length=50)
+    hire_date: date | None = None
+
+
+class RejectActionRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class ProjectDescriptionRequest(BaseModel):

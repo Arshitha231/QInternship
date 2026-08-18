@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, getOrgChart, getPerson, updateEmployee, updateOwnBio, updateOwnNamePronunciation } from "../api";
-import type { Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode } from "../types";
+import {
+  ApiError, getOrgChart, getPerson, requestDeactivation, requestRestriction, updateEmployee,
+  updateOwnBio, updateOwnNamePronunciation,
+} from "../api";
+import type { ActionRequestResult, ActiveDirectReport } from "../api";
+import type {
+  Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode,
+} from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
   LinkIcon, MapPin, Phone, Slack, UserReports, Users, Volume,
 } from "../icons";
+import { EmployeeSearchPicker } from "./ReviewPage";
 
 export interface ProfileStackEntry {
   id: string;
@@ -164,7 +171,7 @@ function diffEmployeeForm(initial: EmployeeFormState, current: EmployeeFormState
   return changes as UpdateEmployeeChanges;
 }
 
-function EditField({ label, badge, children }: { label: string; badge?: string; children: ReactNode }) {
+export function EditField({ label, badge, children }: { label: string; badge?: string; children: ReactNode }) {
   return (
     <label className="edit-field">
       <span className="edit-label">
@@ -198,6 +205,21 @@ export function ProfilePage({
   const [savingEmployee, setSavingEmployee] = useState(false);
   const [employeeError, setEmployeeError] = useState<string | null>(null);
 
+  const [restrictBusy, setRestrictBusy] = useState(false);
+  const [restrictError, setRestrictError] = useState<string | null>(null);
+  // Set once a restrict request has been staged this session — restricting
+  // is maker-checker now (see app.writes.request_restriction), so this is
+  // never the applied state, only "waiting on approver_name."
+  const [restrictRequest, setRestrictRequest] = useState<ActionRequestResult | null>(null);
+
+  const [deactivateBusy, setDeactivateBusy] = useState(false);
+  const [deactivateError, setDeactivateError] = useState<string | null>(null);
+  // Set only on a 409 whose body names who's blocking it — the inline
+  // reassignment panel renders from this, not from a second fetch.
+  const [blockedReports, setBlockedReports] = useState<ActiveDirectReport[] | null>(null);
+  // Same "staged, not applied" shape as restrictRequest above.
+  const [deactivateRequest, setDeactivateRequest] = useState<ActionRequestResult | null>(null);
+
   const isOwnProfile = personId === identity.id;
   // Presentation only — mirrors app/writes.py's real gate (EDITABLE table +
   // the person_id == caller.id self-block), which is what actually decides
@@ -222,6 +244,11 @@ export function ProfilePage({
     setEmployeeError(null);
     setEmployeeForm(null);
     setEmployeeInitial(null);
+    setRestrictError(null);
+    setRestrictRequest(null);
+    setDeactivateError(null);
+    setBlockedReports(null);
+    setDeactivateRequest(null);
     Promise.all([getPerson(identity, personId, viewMode), getOrgChart(identity, personId, "down", 1)])
       .then(([person, chain]) => {
         if (cancelled) return;
@@ -332,6 +359,74 @@ export function ProfilePage({
     } finally {
       setSavingEmployee(false);
     }
+  }
+
+  // Unrestricting stays single-actor and immediate — the maker-checker
+  // requirement is specifically about the transition INTO restricted (see
+  // requestRestriction below), not out of it.
+  async function handleUnrestrict() {
+    if (!window.confirm(
+      `Unrestrict ${detail!.full_name}'s profile? It becomes visible to everyone again, same as before it was restricted.`,
+    )) return;
+    setRestrictBusy(true);
+    setRestrictError(null);
+    try {
+      const updated = await updateEmployee(identity, personId, { availability_status: "available" }, viewMode);
+      setDetail(updated);
+    } catch (e) {
+      setRestrictError(e instanceof ApiError ? e.message : "Couldn't unrestrict — try again.");
+    } finally {
+      setRestrictBusy(false);
+    }
+  }
+
+  // Stages a request — does not restrict anything itself. See
+  // app.writes.request_restriction: the requester's OWN manager (escalating
+  // up the chain, delegate-first, if they're away) has to approve first.
+  async function handleRequestRestrict() {
+    if (!window.confirm(
+      `Request restriction of ${detail!.full_name}'s profile? It won't take effect until your manager approves it. Once approved, it becomes invisible everywhere — search, org charts, their own manager — to everyone except HR.`,
+    )) return;
+    setRestrictBusy(true);
+    setRestrictError(null);
+    try {
+      const result = await requestRestriction(identity, personId, viewMode);
+      setRestrictRequest(result);
+    } catch (e) {
+      setRestrictError(e instanceof ApiError ? e.message : "Couldn't request restriction — try again.");
+    } finally {
+      setRestrictBusy(false);
+    }
+  }
+
+  // Stages a request — does not deactivate anyone itself. Still blocked
+  // (409) up front while the target manages anyone active; see
+  // app.writes.request_deactivation.
+  async function handleRequestDeactivate() {
+    if (!window.confirm(
+      `Request deactivation of ${detail!.full_name}? This won't take effect until your manager approves it.`,
+    )) return;
+
+    setDeactivateBusy(true);
+    setDeactivateError(null);
+    setBlockedReports(null);
+    try {
+      const result = await requestDeactivation(identity, personId, viewMode);
+      setDeactivateRequest(result);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.detail && typeof e.detail === "object"
+          && "active_direct_reports" in e.detail) {
+        setBlockedReports((e.detail as { active_direct_reports: ActiveDirectReport[] }).active_direct_reports);
+      }
+      setDeactivateError(e instanceof ApiError ? e.message : "Couldn't request deactivation — try again.");
+    } finally {
+      setDeactivateBusy(false);
+    }
+  }
+
+  async function reassignBlockedReport(reportId: string, newManagerId: string) {
+    await updateEmployee(identity, reportId, { manager_id: newManagerId }, viewMode);
+    setBlockedReports((prev) => (prev ? prev.filter((r) => r.id !== reportId) : prev));
   }
 
   return (
@@ -446,14 +541,76 @@ export function ProfilePage({
           </ul>
         </div>
         {canEditEmployee && !editingEmployee && (
-          <button
-            className="btn" style={{ alignSelf: "flex-start", flexShrink: 0 }}
-            onClick={startEditingEmployee}
-          >
-            Edit profile
-          </button>
+          <div className="profile-hr-actions" style={{ alignSelf: "flex-start", flexShrink: 0 }}>
+            <button className="btn" onClick={startEditingEmployee}>
+              Edit profile
+            </button>
+            {detail.availability_status === "restricted" ? (
+              <button className="btn" disabled={restrictBusy} onClick={handleUnrestrict}>
+                {restrictBusy ? "Working…" : "Unrestrict profile"}
+              </button>
+            ) : (
+              <button
+                className="btn btn-danger-outline" disabled={restrictBusy || !!restrictRequest}
+                onClick={handleRequestRestrict}
+              >
+                {restrictBusy ? "Working…" : restrictRequest ? "Restriction requested" : "Restrict profile"}
+              </button>
+            )}
+            <button
+              className="btn btn-danger-outline" disabled={deactivateBusy || !!deactivateRequest}
+              onClick={handleRequestDeactivate}
+            >
+              {deactivateBusy ? "Working…" : deactivateRequest ? "Deactivation requested" : "Deactivate employee"}
+            </button>
+          </div>
         )}
       </div>
+      {restrictError && (
+        <p className="bio-error" style={{ marginTop: -12 }}>{restrictError}</p>
+      )}
+      {restrictRequest && (
+        <p className="continuity-meta" style={{ marginTop: -12 }}>
+          Restriction requested — pending approval from {restrictRequest.approver_name ?? "your manager"}.
+        </p>
+      )}
+      {deactivateError && !blockedReports && (
+        <p className="bio-error" style={{ marginTop: -12 }}>{deactivateError}</p>
+      )}
+      {deactivateRequest && (
+        <p className="continuity-meta" style={{ marginTop: -12 }}>
+          Deactivation requested — pending approval from {deactivateRequest.approver_name ?? "your manager"}.
+        </p>
+      )}
+
+      {blockedReports && blockedReports.length > 0 && (
+        <section className="card">
+          <div className="card-head">
+            <h2>Reassign direct reports first</h2>
+          </div>
+          <p className="continuity-meta">
+            {detail.full_name} can't be deactivated while they still manage {blockedReports.length}{" "}
+            active {blockedReports.length === 1 ? "person" : "people"}. Pick a new manager for each, then
+            request deactivation again.
+          </p>
+          <ul className="review-decided-list" style={{ marginTop: 12 }}>
+            {blockedReports.map((report) => (
+              <li key={report.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ minWidth: 160 }}>{report.full_name}</span>
+                <EmployeeSearchPicker
+                  identity={identity} viewMode={viewMode} placeholder="New manager…"
+                  onSelect={(p) => reassignBlockedReport(report.id, p.id)}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {blockedReports && blockedReports.length === 0 && (
+        <p className="continuity-meta" style={{ marginTop: -12 }}>
+          Everyone's reassigned — click Deactivate employee again to finish.
+        </p>
+      )}
 
       {editingEmployee && employeeForm && (
         <section className="card edit-employee-card">

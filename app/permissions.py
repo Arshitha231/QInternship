@@ -148,11 +148,20 @@ EDITABLE: dict[tuple[str, str], set[str]] = {
     ("employee", "work"): set(),
     ("manager", "work"): set(),
 
-    # HR edits internal information on any employee.
+    # HR edits internal information on any employee. availability_status is
+    # how a profile gets marked "restricted" (see is_record_visible below —
+    # that enforcement has always existed; this is what was missing to
+    # actually set it). manager_id and the two synthetic capability names
+    # ("deactivate_employee", "create_employee") aren't literal fields a
+    # generic PATCH touches directly the way the others are — same pattern
+    # ("it", "work")'s "skills"/"contribution"/"project_entry" already uses
+    # below, a capability this table gates without it being a raw column
+    # name on the model.
     ("hr", "work"): {
         "full_name", "preferred_name", "job_title", "work_email", "work_phone",
         "salary", "salary_currency", "date_of_birth", "hire_date", "cost_centre",
-        "employment_type", "linkedin_profile",
+        "employment_type", "linkedin_profile", "availability_status", "manager_id",
+        "deactivate_employee", "create_employee", "restrict_employee",
     },
     # IT's write surface: project descriptions (PUT/DELETE
     # /projects/{id}/description) plus, as of the doc-review pipeline, the

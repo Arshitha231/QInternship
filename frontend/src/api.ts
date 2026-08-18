@@ -1,7 +1,7 @@
 import type {
   BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
-  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode, PersonDetail,
-  PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
+  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OfficeOut, OrgChainNode, OrgUnitOut,
+  PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
   UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
 } from "./types";
 
@@ -13,9 +13,16 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000"
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  // The raw, still-structured response body's "detail" key -- most routes
+  // send a plain string there and `message` alone is enough, but a few (see
+  // deactivateEmployee's 409) send a structured object so the caller can
+  // act on it (e.g. render the list of direct reports blocking it) instead
+  // of re-parsing a stringified message.
+  detail?: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -107,6 +114,165 @@ export function updateEmployee(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
+  });
+}
+
+// The plain summary app/main.py's _employee_action_result returns —
+// deliberately not PersonDetail, since get_person returns nothing for an
+// inactive record (the very state deactivate/reactivate transition
+// through), for every caller including HR.
+export interface EmployeeActionResult {
+  id: string;
+  full_name: string;
+  job_title: string;
+  is_active: boolean;
+  availability_status: string;
+  deactivated_at: string | null;
+}
+
+export interface ActiveDirectReport {
+  id: string;
+  full_name: string;
+}
+
+export interface CreateEmployeeFields {
+  full_name: string;
+  job_title: string;
+  org_unit_id: number;
+  work_email: string;
+  employment_type: "fte" | "contractor" | "intern";
+  preferred_name?: string;
+  office_id?: number;
+  manager_id?: string;
+  work_phone?: string;
+  hire_date?: string;
+}
+
+export function listOrgUnits(identity: Identity): Promise<OrgUnitOut[]> {
+  return request<OrgUnitOut[]>("/org_units", identity);
+}
+
+export function listOffices(identity: Identity): Promise<OfficeOut[]> {
+  return request<OfficeOut[]>("/offices", identity);
+}
+
+export function createEmployee(
+  identity: Identity, fields: CreateEmployeeFields, viewMode: ViewMode,
+): Promise<EmployeeActionResult> {
+  return request<EmployeeActionResult>(`/employees?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+}
+
+// Bespoke fetch, not the generic request<T> helper — a blocked deactivation
+// (409) sends a structured body ({message, active_direct_reports}), and the
+// generic helper's ApiError only ever carries a plain string built from the
+// status line, discarding the parsed JSON entirely. The caller (ProfilePage)
+// needs the actual list to render an inline reassignment picker, not just
+// the fact that it was blocked.
+// The shape app/main.py's _action_request_result returns for restrict/
+// deactivate — a staged request, not an applied change. Nothing here takes
+// effect until the resolved approver (approver_id/approver_name) acts on
+// it — see approveActionRequest/rejectActionRequest below.
+export interface ActionRequestResult {
+  request_id: number;
+  action_type: "restrict" | "deactivate";
+  status: "pending" | "approved" | "rejected";
+  target_id: string;
+  target_name: string;
+  approver_id: string | null;
+  approver_name: string | null;
+  requested_by: string;
+  created_at: string;
+  resolved_at: string | null;
+  rejection_reason: string | null;
+}
+
+// Bespoke fetch, not the generic request<T> helper — a blocked request
+// (409, active direct reports still assigned) sends a structured body
+// ({message, active_direct_reports}), and the generic helper's ApiError
+// only ever carries a plain string built from the status line, discarding
+// the parsed JSON entirely. The caller (ProfilePage) needs the actual list
+// to render an inline reassignment picker, not just the fact it was blocked.
+async function requestEmployeeAction(
+  identity: Identity, path: string, viewMode: ViewMode,
+): Promise<ActionRequestResult> {
+  const res = await fetch(`${API_BASE}${path}?view_mode=${viewMode}`, {
+    method: "POST",
+    headers: headers(identity),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail;
+    const message = typeof detail === "string" ? detail : (detail?.message ?? `${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, message, detail);
+  }
+  return res.json() as Promise<ActionRequestResult>;
+}
+
+// Stages a restrict request — the profile is NOT restricted by this call.
+// Only approveActionRequest, called by the resolved approver, applies it.
+export const requestRestriction = (identity: Identity, personId: string, viewMode: ViewMode) =>
+  requestEmployeeAction(identity, `/employees/${personId}/restrict`, viewMode);
+
+// Stages a deactivate request — the employee is NOT deactivated by this
+// call. Still blocked (409) up front while they manage anyone active.
+export const requestDeactivation = (identity: Identity, personId: string, viewMode: ViewMode) =>
+  requestEmployeeAction(identity, `/employees/${personId}/deactivate`, viewMode);
+
+export function approveActionRequest(
+  identity: Identity, requestId: number, viewMode: ViewMode,
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employee_action_requests/${requestId}/approve?view_mode=${viewMode}`, identity, {
+    method: "POST",
+  });
+}
+
+export function rejectActionRequest(
+  identity: Identity, requestId: number, viewMode: ViewMode, reason?: string,
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employee_action_requests/${requestId}/reject?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+// No view_mode — identity-scoped, not role-scoped (see
+// app.writes.list_my_pending_approvals: whoever the requester's reporting
+// chain names as approver sees these, whatever role header they're using).
+export function listPendingApprovals(identity: Identity): Promise<{ requests: ActionRequestResult[] }> {
+  return request(`/employee_action_requests`, identity);
+}
+
+// Narrow by design — see app.writes.DEACTIVATED_FIELDS. Identity and
+// placement only; this is the one carve-out that sees is_active=false
+// records at all, so it stays as small as it can.
+export interface DeactivatedEmployee {
+  id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string | null;
+  work_email: string;
+  deactivated_at: string | null;
+}
+
+// The only call that surfaces deactivated employees. Every other read in
+// this app treats them as nonexistent, which is what made reactivate
+// unreachable from the UI without knowing an id by heart.
+export function listDeactivatedEmployees(
+  identity: Identity, viewMode: ViewMode,
+): Promise<{ employees: DeactivatedEmployee[] }> {
+  return request(`/employees/deactivated?view_mode=${viewMode}`, identity);
+}
+
+export function reactivateEmployee(
+  identity: Identity, personId: string, viewMode: ViewMode,
+): Promise<EmployeeActionResult> {
+  return request<EmployeeActionResult>(`/employees/${personId}/reactivate?view_mode=${viewMode}`, identity, {
+    method: "POST",
   });
 }
 

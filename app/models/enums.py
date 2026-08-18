@@ -216,6 +216,28 @@ class NotificationKind(str, enum.Enum):
     manager_course_report = "manager_course_report"
     birthday_reminder = "birthday_reminder"
     work_anniversary_reminder = "work_anniversary_reminder"
+    # app.writes' restrict/deactivate approval flow — a maker-checker
+    # control, not a course or date trigger, but the same "the row is the
+    # delivery" reasoning applies, so it shares this table rather than a
+    # second one.
+    action_approval_requested = "action_approval_requested"
+    action_approved = "action_approved"
+    action_rejected = "action_rejected"
+
+
+class EmployeeActionType(str, enum.Enum):
+    """What app.writes' maker-checker flow is being asked to do.
+    Deliberately just these two — create_employee and reactivate_employee
+    are the lower-risk, additive/undo directions and stay single-actor."""
+
+    restrict = "restrict"
+    deactivate = "deactivate"
+
+
+class EmployeeActionStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
 
 
 # Years of service worth telling HR about: the first one, then every fifth.
