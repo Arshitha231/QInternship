@@ -51,6 +51,35 @@ def _auth_mode() -> str:
     return "dev"
 
 
+def assert_dev_auth_is_intentional() -> None:
+    """Fail loudly at startup if dev auth mode was reached by omission.
+
+    _auth_mode() falls back to "dev" whenever ENTRA_TENANT_ID/ENTRA_CLIENT_ID
+    are simply unset — the right default for a laptop with zero Azure setup,
+    and the wrong one for a deploy where those two env vars were forgotten.
+    In dev mode, role and identity come straight from a client-supplied
+    X-Dev-Role header with no credential check at all, so "forgotten" there
+    means total auth bypass, not a broken feature.
+
+    Same shape as assert_registry_covers_schema: a real deploy must say what
+    it means. Set ALLOW_DEV_AUTH=1 for local/CI use; setting AUTH_MODE=dev
+    explicitly counts too, since that's a deliberate choice rather than a
+    fallback nobody noticed.
+    """
+    if _auth_mode() != "dev":
+        return
+    if os.environ.get("AUTH_MODE") == "dev":
+        return
+    if os.environ.get("ALLOW_DEV_AUTH") == "1":
+        return
+    raise RuntimeError(
+        "AUTH_MODE resolved to 'dev' by default (ENTRA_TENANT_ID/ENTRA_CLIENT_ID are "
+        "unset) — this trusts a client-supplied X-Dev-Role header with no credential "
+        "check. If this is local dev or CI, set ALLOW_DEV_AUTH=1. If this is a real "
+        "deploy, set ENTRA_TENANT_ID and ENTRA_CLIENT_ID instead."
+    )
+
+
 # --- Dev mode: role comes from a header, for local testing only -----------
 
 async def _authenticate_dev(request: Request) -> AuthenticatedUser:
@@ -117,7 +146,11 @@ async def _authenticate_entra(request: Request) -> AuthenticatedUser:
         if key is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown signing key")
         claims = jwt.decode(
-            token, key, algorithms=[key.get("alg", "RS256")],
+            # Pinned, not read from the token's own header/JWK — trusting an
+            # attacker-influenced "alg" field to pick the verification
+            # algorithm is the textbook JWT "alg confusion" footgun. Entra
+            # issues RS256 today; nothing here should ever accept another.
+            token, key, algorithms=["RS256"],
             audience=client_id,
             issuer=f"https://login.microsoftonline.com/{tenant_id}/v2.0",
         )

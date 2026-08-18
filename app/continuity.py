@@ -44,7 +44,9 @@ from app.config import continuity_thresholds_path
 from app.models import (
     AuditLog, Employee, EmployeeProject, EmployeeSkill, Project, ProjectSkillRequirement, WorkAuthorizationRecord,
 )
-from app.models.enums import AvailabilityStatus, SkillCategory, SkillLevel, VerificationStatus
+from app.models.enums import (
+    AvailabilityStatus, SkillCategory, SkillLevel, VerificationStatus, WorkAuthorizationType,
+)
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.skill import Skill
@@ -63,6 +65,22 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 class ContinuityForbidden(Exception):
     """Raised by every public function in this module for a non-hr caller."""
+
+
+class AuthorizationRecordNotFound(Exception):
+    pass
+
+
+class AuthorizationRecordNotActionable(Exception):
+    """The record isn't in the state this action requires.
+
+    Two unrelated callers share this exception rather than each minting
+    their own: confirm/reject need pending_verification (already verified,
+    superseded, rejected, or expired all raise it), and
+    acknowledge_hr_review needs is_current AND verified (a superseded or
+    still-pending row raises it too) -- both are "wrong state for this
+    action," just different states, and the route layer already maps this
+    one exception to 409 for both."""
 
 
 def _require_hr(caller: AuthenticatedUser) -> None:
@@ -143,6 +161,17 @@ def _get_current_authorization_record(db: Session, employee_id: str) -> WorkAuth
     )
 
 
+def _load_pending_record(db: Session, record_id: int) -> WorkAuthorizationRecord:
+    record = db.get(WorkAuthorizationRecord, record_id)
+    if record is None:
+        raise AuthorizationRecordNotFound(str(record_id))
+    if record.verification_status is not VerificationStatus.pending_verification:
+        raise AuthorizationRecordNotActionable(
+            f"authorization record {record_id} is already {record.verification_status.value}"
+        )
+    return record
+
+
 def _to_record_out(record: WorkAuthorizationRecord) -> AuthorizationRecordOut:
     return AuthorizationRecordOut(
         id=record.id, authorization_type=record.authorization_type.value,
@@ -150,7 +179,47 @@ def _to_record_out(record: WorkAuthorizationRecord) -> AuthorizationRecordOut:
         next_hr_review_date=record.next_hr_review_date,
         verification_status=record.verification_status.value,
         is_current=record.is_current, verified_at=record.verified_at,
+        hr_review_acknowledged_at=record.hr_review_acknowledged_at,
+        hr_review_acknowledged_by=record.hr_review_acknowledged_by,
     )
+
+
+# --- Reminder acknowledgement ---------------------------------------------
+# Deliberately lighter than the submit/confirm/reject cycle above: that
+# workflow is the actual compliance re-verification (a new authorization
+# record, HR-confirmed) and can reasonably take days to complete. This is
+# just "I've seen the reminder, I'm on it, stop pinging me about THIS due
+# date" -- it never touches next_hr_review_date, verification_status, or
+# is_current, and it never creates a row. It only ever silences
+# app/notifications.py's sweep (see hr_review_acknowledged_at's column
+# docstring in app/models/work_authorization_record.py); GET
+# /continuity/review-queue keeps listing the record for as long as it's
+# actually due, acknowledged or not -- HR still has to close it out for
+# real via confirm_authorization_record eventually.
+
+def acknowledge_hr_review(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    _require_hr(caller)
+    record = db.get(WorkAuthorizationRecord, record_id)
+    if record is None:
+        raise AuthorizationRecordNotFound(str(record_id))
+    if not record.is_current or record.verification_status is not VerificationStatus.verified:
+        raise AuthorizationRecordNotActionable(
+            f"authorization record {record_id} is not the employee's current, verified record"
+        )
+
+    # Re-acknowledging just moves the timestamp -- unlike confirm/reject,
+    # nothing else changes, so there's no "already done" state worth
+    # rejecting; HR clicking it twice is harmless.
+    record.hr_review_acknowledged_at = datetime.now()
+    record.hr_review_acknowledged_by = caller.id
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.hr_review_acknowledged", record.employee_id, 1,
+        {"hr_review_acknowledged_at", "hr_review_acknowledged_by"},
+    )
+    return _to_record_out(record)
 
 
 # --- Engagement intersection ---------------------------------------------
@@ -620,12 +689,22 @@ def _list_engagement_exposures(
 # this is the complementary view that does, because HR still needs to
 # track and verify that record regardless of its delivery consequence.
 
-def _list_review_queue_items(
+def _due_review_records(
     db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None, *,
-    authorization_type: str | None = None, exposure: str | None = None,
+    authorization_type: str | None = None,
     next_review_from: date | None = None, next_review_to: date | None = None,
-    engagements_min: int | None = None, engagements_max: int | None = None,
-) -> list[HrReviewQueueItem]:
+    unacknowledged_only: bool = False,
+) -> list[tuple[WorkAuthorizationRecord, Employee, int]]:
+    """Every (record, employee, days_until_hr_review) triple for a current,
+    HR-verified record whose review falls within the window -- the one
+    "who's due" definition both the review queue and
+    app/notifications.py's notify_upcoming_hr_reviews build on, so
+    "delivery, not analysis" is actually true: one due-soon query, not two
+    that could drift apart. unacknowledged_only is the one extra condition
+    the notify sweep needs and the queue never does -- the queue always
+    shows a due record regardless of acknowledgement (see
+    acknowledge_hr_review's docstring), the sweep must not re-nag about one.
+    """
     effective_window = window_days if window_days is not None else cfg.lookahead_days
 
     query = (
@@ -638,24 +717,39 @@ def _list_review_queue_items(
             Employee.is_active == True,  # noqa: E712
         )
     )
-    # authorization_type and the review-date range are real WorkAuthorizationRecord
-    # columns, filtered in SQL like the rest of this query. exposure/engagements_*
-    # only exist after _compute_employee_engagement_entries runs below, so those
-    # stay a post-computation filter, same split _list_engagement_exposures uses
-    # for its own computed-vs-column filters.
     if authorization_type:
         query = query.filter(WorkAuthorizationRecord.authorization_type == authorization_type)
     if next_review_from:
         query = query.filter(WorkAuthorizationRecord.next_hr_review_date >= next_review_from)
     if next_review_to:
         query = query.filter(WorkAuthorizationRecord.next_hr_review_date <= next_review_to)
-    rows = query.all()
+    if unacknowledged_only:
+        query = query.filter(WorkAuthorizationRecord.hr_review_acknowledged_at.is_(None))
+
+    due: list[tuple[WorkAuthorizationRecord, Employee, int]] = []
+    for record, employee in query.all():
+        days_until = (record.next_hr_review_date - today).days
+        if days_until <= effective_window:
+            due.append((record, employee, days_until))
+    return due
+
+
+def _list_review_queue_items(
+    db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None, *,
+    authorization_type: str | None = None, exposure: str | None = None,
+    next_review_from: date | None = None, next_review_to: date | None = None,
+    engagements_min: int | None = None, engagements_max: int | None = None,
+) -> list[HrReviewQueueItem]:
+    # exposure/engagements_* only exist after _compute_employee_engagement_entries
+    # runs below, so those stay a post-computation filter, same split
+    # _list_engagement_exposures uses for its own computed-vs-column filters.
+    due = _due_review_records(
+        db, cfg, today, window_days,
+        authorization_type=authorization_type, next_review_from=next_review_from, next_review_to=next_review_to,
+    )
 
     items: list[HrReviewQueueItem] = []
-    for record, employee in rows:
-        days_until = (record.next_hr_review_date - today).days
-        if days_until > effective_window:
-            continue
+    for record, employee, days_until in due:
         entries = _compute_employee_engagement_entries(db, employee, record, cfg, today)
         intersecting = [e for e in entries if e.exposure != "none"]
         highest = max(
@@ -797,3 +891,131 @@ def get_employee_continuity(db: Session, caller: AuthenticatedUser, employee_id:
             1 if result else 0,
             {"employee", "current_record", "history", "engagements"} if result else set(),
         )
+
+
+# --- Write path: submit / confirm / reject --------------------------------
+# Phase 4 shipped the history model and the read-side discipline (is_current
+# AND verified, nothing else) but deliberately no way to write one. Two
+# rules from the design doc govern everything below and neither is
+# optional:
+#
+#   Superseding, not overwriting -- a record that replaces another sets
+#   supersedes_record_id and flips the old one's is_current/status, so
+#   "what's current" and "what changed" stay separately answerable.
+#
+#   The verification gate (§7) -- a new record enters pending_verification
+#   and _get_current_authorization_record keeps returning the last
+#   VERIFIED record until someone confirms it. Concretely, that means the
+#   supersede itself cannot happen at submit time: submit only ever
+#   inserts an inert row with is_current=False, and the old row keeps
+#   is_current=True until confirm_authorization_record runs. If submit
+#   flipped the old row off immediately, the read path would return
+#   nothing during the pending window instead of the last verified
+#   record, which is exactly the smuggling-in §7 forbids.
+
+def submit_authorization_record(
+    db: Session, caller: AuthenticatedUser, employee_id: str, *,
+    authorization_type: WorkAuthorizationType | str, effective_from: date,
+    effective_until: date | None = None, next_hr_review_date: date | None = None,
+    source_document_type: str | None = None, internal_notes: str | None = None,
+) -> AuthorizationRecordOut:
+    """Enters a new record as pending_verification. Never touches
+    is_current or any other row for this employee -- see this section's
+    docstring. supersedes_record_id is deliberately left unset here rather
+    than captured now: it's computed fresh in confirm_authorization_record
+    from whatever is ACTUALLY current at confirm time, not whatever was
+    current at submission time, so a second pending submission for the
+    same employee getting confirmed first can't leave this one pointing at
+    a record that's no longer current."""
+    _require_hr(caller)
+    employee = db.get(Employee, employee_id)
+    if employee is None or not employee.is_active:
+        raise AuthorizationRecordNotFound(employee_id)
+
+    record = WorkAuthorizationRecord(
+        employee_id=employee_id,
+        authorization_type=WorkAuthorizationType(authorization_type),
+        effective_from=effective_from, effective_until=effective_until,
+        next_hr_review_date=next_hr_review_date,
+        verification_status=VerificationStatus.pending_verification,
+        is_current=False,
+        source_document_type=source_document_type, internal_notes=internal_notes,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_submitted", employee_id, 1,
+        {"authorization_type", "effective_from", "effective_until", "next_hr_review_date"},
+    )
+    return _to_record_out(record)
+
+
+def confirm_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    """The verification gate closing: this is the only place a
+    WorkAuthorizationRecord's is_current is ever set to True, and it does
+    so atomically with retiring whichever record was current before it.
+
+    The filtered unique index (ix_work_authorization_records_employee_current)
+    allows at most one is_current=True row per employee, checked
+    per-statement on both SQLite (dev) and Azure SQL (prod) -- neither
+    supports deferring that check to commit the way a Postgres DEFERRABLE
+    constraint could, and a partial index created via CREATE UNIQUE INDEX
+    isn't eligible for that even on Postgres. So the old row's is_current
+    is flipped off and flushed FIRST, as its own statement, before the new
+    row's is_current is set to True -- two flush() calls, not one shared
+    flush left to the unit of work's own ordering, which is not a
+    documented guarantee. At every point the database actually sees, at
+    most one row for this employee has is_current=True.
+
+    previous is re-fetched here (not read off record.supersedes_record_id,
+    which submit leaves unset) so this always supersedes whatever is
+    actually current right now, even if another pending record for the
+    same employee was confirmed in between submit and this call.
+    """
+    _require_hr(caller)
+    record = _load_pending_record(db, record_id)
+
+    previous = _get_current_authorization_record(db, record.employee_id)
+    if previous is not None:
+        previous.is_current = False
+        previous.verification_status = VerificationStatus.superseded
+        db.flush()
+
+    record.supersedes_record_id = previous.id if previous is not None else None
+    record.verification_status = VerificationStatus.verified
+    record.verified_at = datetime.now()
+    record.verified_by = caller.id
+    record.is_current = True
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_confirmed", record.employee_id, 1,
+        {"verification_status", "is_current", "supersedes_record_id", "verified_at", "verified_by"},
+    )
+    return _to_record_out(record)
+
+
+def reject_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    """Rejected rows are kept, not deleted -- same reasoning as
+    ProposedChangeStatus.rejected and SuggestedLinkStatus.rejected
+    elsewhere in this codebase: a rejected submission is itself useful
+    signal (what HR keeps having to correct) later. Never touches
+    is_current (a pending row never held it) or verified_at/verified_by --
+    those specifically mean "confirmed accurate", which a rejected row
+    never was. Who rejected it and when lives in the audit row, the same
+    system of record AuditLog already is for actor/timestamp everywhere
+    else in this module."""
+    _require_hr(caller)
+    record = _load_pending_record(db, record_id)
+
+    record.verification_status = VerificationStatus.rejected
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_rejected", record.employee_id, 1, {"verification_status"},
+    )
+    return _to_record_out(record)

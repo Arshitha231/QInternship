@@ -37,6 +37,11 @@ function saveSeen(identityId: string, topId: number): void {
 function presentation(n: NotificationOut): { tone: string; icon: React.ReactNode } {
   if (n.kind === "birthday_reminder") return { tone: "celebrate", icon: <Cake /> };
   if (n.kind === "work_anniversary_reminder") return { tone: "celebrate", icon: <Award /> };
+  // Explicit rather than relying on the warn/AlertCircle fallback below —
+  // this is HR-only content (see App.tsx's tab gating), worth keeping
+  // distinguishable from the course-status warn tone even though today
+  // they render identically.
+  if (n.kind === "hr_review_reminder") return { tone: "warn", icon: <AlertCircle /> };
   if (n.display_status === "completed") return { tone: "ok", icon: <Check /> };
   return { tone: "warn", icon: <AlertCircle /> };
 }

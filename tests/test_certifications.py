@@ -11,7 +11,8 @@ import sys
 
 import pytest
 
-from app.certifications import SyntheticCertProvider, get_provider, record_course_status
+from app.auth import AuthenticatedUser
+from app.certifications import RecordCourseStatusDenied, SyntheticCertProvider, get_provider, record_course_status
 from app.certifications.base import CertProviderUnavailable, CertStatus
 from app.models import (
     CourseRequirement,
@@ -28,6 +29,12 @@ from tests.conftest import auth_headers
 SUBJECT = "chain-1"
 DIRECT_MANAGER = "chain-2"
 SKIP_MANAGER = "chain-3"
+
+# record_course_status enforces (role == "hr") itself now, same as
+# update_employee/proposals — direct-call tests below stand in for the
+# route, so they pass a caller the same way the route's own auth dependency
+# would.
+_HR_CALLER = AuthenticatedUser(id="hr-caller-test", role="hr")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -97,7 +104,7 @@ def test_display_status_derivation(status, expected):
 def test_underlying_status_survives_a_round_trip(db_session):
     """The label collapses; the stored value must not — the reminder wording
     depends on it."""
-    record_course_status(db_session, employee=_subject(db_session),
+    record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                          course_code="T-ALL", status=CourseStatus.failed)
     row = db_session.query(EmployeeCourseStatus).filter_by(employee_id=SUBJECT).one()
     assert row.status is CourseStatus.failed
@@ -166,7 +173,7 @@ async def test_training_status_visibility(client, role, caller_id, expected_pres
 
 
 async def test_profile_shows_expected_courses_and_flags_the_rest(client, db_session):
-    record_course_status(db_session, employee=_subject(db_session),
+    record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                          course_code="T-FIN", status=CourseStatus.completed)
 
     resp = await client.get(f"/people/{SUBJECT}", headers=auth_headers("employee", SUBJECT))
@@ -182,7 +189,7 @@ async def test_profile_shows_expected_courses_and_flags_the_rest(client, db_sess
 
 async def test_profile_never_exposes_the_underlying_status(client, db_session):
     """failed and not_started must be indistinguishable in the payload."""
-    record_course_status(db_session, employee=_subject(db_session),
+    record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                          course_code="T-ALL", status=CourseStatus.failed)
 
     resp = await client.get(f"/people/{SUBJECT}", headers=auth_headers("hr", "hr-1"))
@@ -217,7 +224,7 @@ async def test_unavailable_provider_omits_the_section_rather_than_guessing(clien
 # ---------------------------------------------------------------------------
 
 def test_failed_notifies_employee_first_then_the_whole_chain(db_session):
-    _row, notes = record_course_status(db_session, employee=_subject(db_session),
+    _row, notes = record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                                        course_code="T-ALL", status=CourseStatus.failed)
 
     assert [n.recipient_id for n in notes] == [SUBJECT, DIRECT_MANAGER, SKIP_MANAGER]
@@ -239,7 +246,7 @@ def test_failed_notifies_employee_first_then_the_whole_chain(db_session):
 
 def test_not_started_tells_the_employee_and_nobody_else(db_session):
     """No attempt, no resolution — the chain has nothing to hear about."""
-    _row, notes = record_course_status(db_session, employee=_subject(db_session),
+    _row, notes = record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                                        course_code="T-ALL", status=CourseStatus.not_started)
 
     assert len(notes) == 1
@@ -248,7 +255,7 @@ def test_not_started_tells_the_employee_and_nobody_else(db_session):
 
 
 def test_completed_notifies_the_chain_but_not_the_employee(db_session):
-    _row, notes = record_course_status(db_session, employee=_subject(db_session),
+    _row, notes = record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                                        course_code="T-ALL", status=CourseStatus.completed)
 
     assert [n.recipient_id for n in notes] == [DIRECT_MANAGER, SKIP_MANAGER]
@@ -259,9 +266,9 @@ def test_completed_notifies_the_chain_but_not_the_employee(db_session):
 
 def test_message_wording_differs_by_underlying_status(db_session):
     subject = _subject(db_session)
-    _row, first = record_course_status(db_session, employee=subject,
+    _row, first = record_course_status(db_session, caller=_HR_CALLER, employee=subject,
                                        course_code="T-ALL", status=CourseStatus.not_started)
-    _row, second = record_course_status(db_session, employee=subject,
+    _row, second = record_course_status(db_session, caller=_HR_CALLER, employee=subject,
                                         course_code="T-ALL", status=CourseStatus.failed)
 
     assert first[0].display_status == second[0].display_status == "not_completed"
@@ -270,9 +277,9 @@ def test_message_wording_differs_by_underlying_status(db_session):
 
 def test_an_unchanged_status_notifies_nobody(db_session):
     subject = _subject(db_session)
-    record_course_status(db_session, employee=subject, course_code="T-ALL",
+    record_course_status(db_session, caller=_HR_CALLER, employee=subject, course_code="T-ALL",
                          status=CourseStatus.in_progress)
-    _row, again = record_course_status(db_session, employee=subject, course_code="T-ALL",
+    _row, again = record_course_status(db_session, caller=_HR_CALLER, employee=subject, course_code="T-ALL",
                                        status=CourseStatus.in_progress)
     assert again == []
 
@@ -281,16 +288,27 @@ def test_chain_depth_is_configurable(db_session, monkeypatch):
     """Full chain is what we want today, but it's a setting — turning it down
     must not need an edit to notification logic."""
     monkeypatch.setenv("NOTIFY_LEVELS_UP", "1")
-    _row, notes = record_course_status(db_session, employee=_subject(db_session),
+    _row, notes = record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                                        course_code="T-ALL", status=CourseStatus.completed)
     assert [n.recipient_id for n in notes] == [DIRECT_MANAGER]
 
 
 def test_chain_depth_zero_leaves_the_employee_trigger_running(db_session, monkeypatch):
     monkeypatch.setenv("NOTIFY_LEVELS_UP", "0")
-    _row, notes = record_course_status(db_session, employee=_subject(db_session),
+    _row, notes = record_course_status(db_session, caller=_HR_CALLER, employee=_subject(db_session),
                                        course_code="T-ALL", status=CourseStatus.failed)
     assert [n.recipient_id for n in notes] == [SUBJECT]
+
+
+def test_service_denies_a_non_hr_caller_even_without_a_route(db_session):
+    """The route already blocks this, but the service must too — a future
+    caller that skips the route (a batch import, a webhook handler) gets the
+    same refusal, not an unauthenticated write."""
+    non_hr = AuthenticatedUser(id="manager-caller-test", role="manager")
+    with pytest.raises(RecordCourseStatusDenied):
+        record_course_status(db_session, caller=non_hr, employee=_subject(db_session),
+                             course_code="T-ALL", status=CourseStatus.failed)
+    assert db_session.query(EmployeeCourseStatus).filter_by(employee_id=SUBJECT).one_or_none() is None
 
 
 # ---------------------------------------------------------------------------

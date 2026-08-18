@@ -67,7 +67,8 @@ export interface NotificationOut {
     | "employee_course_reminder"
     | "manager_course_report"
     | "birthday_reminder"
-    | "work_anniversary_reminder";
+    | "work_anniversary_reminder"
+    | "hr_review_reminder";
   subject_person: PersonRef;
   course_name: string;
   display_status: string;
@@ -250,6 +251,11 @@ export interface AuthorizationRecordOut {
   verification_status: string;
   is_current: boolean;
   verified_at: string | null;
+  // Silences the upcoming-review reminder sweep for this due date only —
+  // does not mean the review itself is done. See POST
+  // /continuity/review-queue/{id}/acknowledge.
+  hr_review_acknowledged_at: string | null;
+  hr_review_acknowledged_by: string | null;
 }
 
 export interface EmployeeContinuityDetail {
