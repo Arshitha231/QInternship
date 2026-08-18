@@ -44,7 +44,9 @@ from app.config import continuity_thresholds_path
 from app.models import (
     AuditLog, Employee, EmployeeProject, EmployeeSkill, Project, ProjectSkillRequirement, WorkAuthorizationRecord,
 )
-from app.models.enums import AvailabilityStatus, SkillCategory, SkillLevel, VerificationStatus
+from app.models.enums import (
+    AvailabilityStatus, SkillCategory, SkillLevel, VerificationStatus, WorkAuthorizationType,
+)
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.skill import Skill
@@ -63,6 +65,16 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 class ContinuityForbidden(Exception):
     """Raised by every public function in this module for a non-hr caller."""
+
+
+class AuthorizationRecordNotFound(Exception):
+    pass
+
+
+class AuthorizationRecordNotActionable(Exception):
+    """The record isn't pending_verification -- already verified, already
+    superseded, already rejected, or already expired. confirm/reject only
+    ever act on a still-pending submission."""
 
 
 def _require_hr(caller: AuthenticatedUser) -> None:
@@ -141,6 +153,17 @@ def _get_current_authorization_record(db: Session, employee_id: str) -> WorkAuth
         )
         .first()
     )
+
+
+def _load_pending_record(db: Session, record_id: int) -> WorkAuthorizationRecord:
+    record = db.get(WorkAuthorizationRecord, record_id)
+    if record is None:
+        raise AuthorizationRecordNotFound(str(record_id))
+    if record.verification_status is not VerificationStatus.pending_verification:
+        raise AuthorizationRecordNotActionable(
+            f"authorization record {record_id} is already {record.verification_status.value}"
+        )
+    return record
 
 
 def _to_record_out(record: WorkAuthorizationRecord) -> AuthorizationRecordOut:
@@ -797,3 +820,131 @@ def get_employee_continuity(db: Session, caller: AuthenticatedUser, employee_id:
             1 if result else 0,
             {"employee", "current_record", "history", "engagements"} if result else set(),
         )
+
+
+# --- Write path: submit / confirm / reject --------------------------------
+# Phase 4 shipped the history model and the read-side discipline (is_current
+# AND verified, nothing else) but deliberately no way to write one. Two
+# rules from the design doc govern everything below and neither is
+# optional:
+#
+#   Superseding, not overwriting -- a record that replaces another sets
+#   supersedes_record_id and flips the old one's is_current/status, so
+#   "what's current" and "what changed" stay separately answerable.
+#
+#   The verification gate (§7) -- a new record enters pending_verification
+#   and _get_current_authorization_record keeps returning the last
+#   VERIFIED record until someone confirms it. Concretely, that means the
+#   supersede itself cannot happen at submit time: submit only ever
+#   inserts an inert row with is_current=False, and the old row keeps
+#   is_current=True until confirm_authorization_record runs. If submit
+#   flipped the old row off immediately, the read path would return
+#   nothing during the pending window instead of the last verified
+#   record, which is exactly the smuggling-in §7 forbids.
+
+def submit_authorization_record(
+    db: Session, caller: AuthenticatedUser, employee_id: str, *,
+    authorization_type: WorkAuthorizationType | str, effective_from: date,
+    effective_until: date | None = None, next_hr_review_date: date | None = None,
+    source_document_type: str | None = None, internal_notes: str | None = None,
+) -> AuthorizationRecordOut:
+    """Enters a new record as pending_verification. Never touches
+    is_current or any other row for this employee -- see this section's
+    docstring. supersedes_record_id is deliberately left unset here rather
+    than captured now: it's computed fresh in confirm_authorization_record
+    from whatever is ACTUALLY current at confirm time, not whatever was
+    current at submission time, so a second pending submission for the
+    same employee getting confirmed first can't leave this one pointing at
+    a record that's no longer current."""
+    _require_hr(caller)
+    employee = db.get(Employee, employee_id)
+    if employee is None or not employee.is_active:
+        raise AuthorizationRecordNotFound(employee_id)
+
+    record = WorkAuthorizationRecord(
+        employee_id=employee_id,
+        authorization_type=WorkAuthorizationType(authorization_type),
+        effective_from=effective_from, effective_until=effective_until,
+        next_hr_review_date=next_hr_review_date,
+        verification_status=VerificationStatus.pending_verification,
+        is_current=False,
+        source_document_type=source_document_type, internal_notes=internal_notes,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_submitted", employee_id, 1,
+        {"authorization_type", "effective_from", "effective_until", "next_hr_review_date"},
+    )
+    return _to_record_out(record)
+
+
+def confirm_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    """The verification gate closing: this is the only place a
+    WorkAuthorizationRecord's is_current is ever set to True, and it does
+    so atomically with retiring whichever record was current before it.
+
+    The filtered unique index (ix_work_authorization_records_employee_current)
+    allows at most one is_current=True row per employee, checked
+    per-statement on both SQLite (dev) and Azure SQL (prod) -- neither
+    supports deferring that check to commit the way a Postgres DEFERRABLE
+    constraint could, and a partial index created via CREATE UNIQUE INDEX
+    isn't eligible for that even on Postgres. So the old row's is_current
+    is flipped off and flushed FIRST, as its own statement, before the new
+    row's is_current is set to True -- two flush() calls, not one shared
+    flush left to the unit of work's own ordering, which is not a
+    documented guarantee. At every point the database actually sees, at
+    most one row for this employee has is_current=True.
+
+    previous is re-fetched here (not read off record.supersedes_record_id,
+    which submit leaves unset) so this always supersedes whatever is
+    actually current right now, even if another pending record for the
+    same employee was confirmed in between submit and this call.
+    """
+    _require_hr(caller)
+    record = _load_pending_record(db, record_id)
+
+    previous = _get_current_authorization_record(db, record.employee_id)
+    if previous is not None:
+        previous.is_current = False
+        previous.verification_status = VerificationStatus.superseded
+        db.flush()
+
+    record.supersedes_record_id = previous.id if previous is not None else None
+    record.verification_status = VerificationStatus.verified
+    record.verified_at = datetime.now()
+    record.verified_by = caller.id
+    record.is_current = True
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_confirmed", record.employee_id, 1,
+        {"verification_status", "is_current", "supersedes_record_id", "verified_at", "verified_by"},
+    )
+    return _to_record_out(record)
+
+
+def reject_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    """Rejected rows are kept, not deleted -- same reasoning as
+    ProposedChangeStatus.rejected and SuggestedLinkStatus.rejected
+    elsewhere in this codebase: a rejected submission is itself useful
+    signal (what HR keeps having to correct) later. Never touches
+    is_current (a pending row never held it) or verified_at/verified_by --
+    those specifically mean "confirmed accurate", which a rejected row
+    never was. Who rejected it and when lives in the audit row, the same
+    system of record AuditLog already is for actor/timestamp everywhere
+    else in this module."""
+    _require_hr(caller)
+    record = _load_pending_record(db, record_id)
+
+    record.verification_status = VerificationStatus.rejected
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.authorization_rejected", record.employee_id, 1, {"verification_status"},
+    )
+    return _to_record_out(record)

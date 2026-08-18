@@ -22,10 +22,14 @@ from app.community_links import list_community_links as list_community_links_ser
 from app.community_links import list_suggested_official_links as list_suggested_official_links_service
 from app.community_links import reject_suggested_official_link as reject_suggested_official_link_service
 from app.community_links import update_personal_link as update_personal_link_service
+from app.continuity import AuthorizationRecordNotActionable, AuthorizationRecordNotFound
+from app.continuity import confirm_authorization_record as confirm_authorization_record_service
 from app.continuity import get_employee_continuity as get_employee_continuity_service
 from app.continuity import get_engagement_exposure as get_engagement_exposure_service
 from app.continuity import get_hr_review_queue as get_hr_review_queue_service
 from app.continuity import get_org_exposure as get_org_exposure_service
+from app.continuity import reject_authorization_record as reject_authorization_record_service
+from app.continuity import submit_authorization_record as submit_authorization_record_service
 from app.db import engine, get_db
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
 from app.models import DocSubjectMatch, Employee, TrainingCourse
@@ -54,6 +58,7 @@ from app.proposals import resolve_subject
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
+    AuthorizationRecordOut,
     BulkProposalRequest,
     CommunityLinkOut,
     ContinuityOverview,
@@ -74,6 +79,7 @@ from app.schemas import (
     ReassignProposalRequest,
     RecordCourseStatusRequest,
     ResolveSubjectRequest,
+    SubmitAuthorizationRecordRequest,
     SuggestedOfficialLinkOut,
     UpdateBioRequest,
     UpdateCommunityLinkRequest,
@@ -591,6 +597,73 @@ def continuity_employee_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
+
+
+@app.post(
+    "/continuity/employees/{employee_id}/authorization-records", status_code=201,
+    response_model=AuthorizationRecordOut,
+)
+def submit_authorization_record_route(
+    employee_id: str,
+    body: SubmitAuthorizationRecordRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """Enter a new work-authorization record as pending_verification. It has
+    no effect on continuity analysis or the HR review queue until POST
+    .../confirm verifies it — see app/continuity.py's write-path section.
+    HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    try:
+        return submit_authorization_record_service(
+            db, user, employee_id, authorization_type=body.authorization_type,
+            effective_from=body.effective_from, effective_until=body.effective_until,
+            next_hr_review_date=body.next_hr_review_date,
+            source_document_type=body.source_document_type, internal_notes=body.internal_notes,
+        )
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Person not found") from exc
+
+
+@app.post(
+    "/continuity/authorization-records/{record_id}/confirm", response_model=AuthorizationRecordOut,
+)
+def confirm_authorization_record_route(
+    record_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """The verification gate: makes a pending record current, superseding
+    whichever record was current before it. HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    try:
+        return confirm_authorization_record_service(db, user, record_id)
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Authorization record not found") from exc
+    except AuthorizationRecordNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/continuity/authorization-records/{record_id}/reject", response_model=AuthorizationRecordOut,
+)
+def reject_authorization_record_route(
+    record_id: int,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """Reject a pending submission. Kept, not deleted — see
+    app.continuity.reject_authorization_record. HR-only."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    try:
+        return reject_authorization_record_service(db, user, record_id)
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Authorization record not found") from exc
+    except AuthorizationRecordNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

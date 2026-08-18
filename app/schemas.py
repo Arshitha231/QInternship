@@ -534,6 +534,23 @@ class AuthorizationRecordOut(BaseModel):
     verified_at: datetime | None
 
 
+class SubmitAuthorizationRecordRequest(BaseModel):
+    """Body of POST /continuity/employees/{id}/authorization-records. Enters
+    a new record as pending_verification — it never becomes current on its
+    own; see POST .../confirm."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    authorization_type: Literal[
+        "citizen", "permanent_resident", "cpt", "opt", "stem_opt", "h1b", "l1", "other",
+    ]
+    effective_from: date
+    effective_until: date | None = None
+    next_hr_review_date: date | None = None
+    source_document_type: str | None = None
+    internal_notes: str | None = None
+
+
 class HrReviewQueueItem(BaseModel):
     """GET /continuity/review-queue — one row: an employee with a current,
     HR-verified work-authorization record and a scheduled

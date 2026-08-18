@@ -60,12 +60,20 @@ class VerificationStatus(str, enum.Enum):
     """Lifecycle of a single WorkAuthorizationRecord row. The continuity
     engine only ever reads a record that is both is_current=True AND
     verified here -- a pending_verification row (e.g. employee-submitted,
-    not yet HR-confirmed) must never affect organizational analysis."""
+    not yet HR-confirmed) must never affect organizational analysis.
+
+    `rejected` is distinct from `expired_record` on purpose: expired means
+    a record WAS accurate and its window lapsed, a temporal fact; rejected
+    means HR reviewed a pending submission and it was never accurate.
+    Conflating them would corrupt any future review-queue logic that
+    surfaces expired_record rows for renewal follow-up. Rejected rows are
+    kept, not deleted -- same reasoning as ProposedChangeStatus.rejected."""
 
     pending_verification = "pending_verification"
     verified = "verified"
     superseded = "superseded"
     expired_record = "expired_record"
+    rejected = "rejected"
 
 
 class ProjectClassification(str, enum.Enum):

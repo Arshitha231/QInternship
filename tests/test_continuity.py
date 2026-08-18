@@ -19,9 +19,12 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import AuthenticatedUser
 from app.continuity import (
+    AuthorizationRecordNotActionable,
+    AuthorizationRecordNotFound,
     ContinuityForbidden,
     ThresholdConfig,
     _build_engagement_exposure_entry,
@@ -37,10 +40,13 @@ from app.continuity import (
     _review_intersects_assignment,
     _severity_for_dependency,
     _severity_for_redundancy,
+    confirm_authorization_record,
     get_employee_continuity,
     get_engagement_exposure,
     get_hr_review_queue,
     get_org_exposure,
+    reject_authorization_record,
+    submit_authorization_record,
 )
 from app.models import (
     AuditLog, Employee, EmployeeProject, EmployeeSkill, OrgUnit, Office, Project, ProjectSkillRequirement,
@@ -836,3 +842,251 @@ def test_get_hr_review_queue_audit_never_leaks_authorization_type_or_dates_even_
     # The fact that a filter WAS applied is still recorded -- just not its value.
     assert "authorization_type_filtered=true" in row.query_text.lower()
     assert "next_review_range_filtered=true" in row.query_text.lower()
+
+
+# --- Write path: submit / confirm / reject ----------------------------------
+# fx.high already carries a current, verified record from the fixture --
+# exactly the scenario the verification gate exists for: submitting a
+# replacement must not disturb it until someone confirms.
+
+def test_submit_creates_inert_pending_row(fx, db_session):
+    out = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="opt",
+        effective_from=TODAY, next_hr_review_date=TODAY + timedelta(days=400),
+    )
+    assert out.verification_status == "pending_verification"
+    assert out.is_current is False
+
+    row = db_session.get(WorkAuthorizationRecord, out.id)
+    assert row.supersedes_record_id is None  # computed at confirm time, not submit time
+
+
+def test_submit_does_not_disturb_the_existing_current_record(fx, db_session):
+    before = _get_current_authorization_record(db_session, fx.high.id)
+    submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="opt", effective_from=TODAY,
+    )
+    after = _get_current_authorization_record(db_session, fx.high.id)
+    assert after is not None
+    assert after.id == before.id
+    assert after.is_current is True
+    assert after.verification_status == VerificationStatus.verified
+
+
+def test_submit_unknown_employee_raises_not_found(fx, db_session):
+    with pytest.raises(AuthorizationRecordNotFound):
+        submit_authorization_record(
+            db_session, HR, "cont-fixture-does-not-exist", authorization_type="opt", effective_from=TODAY,
+        )
+
+
+@pytest.mark.parametrize("caller", [EMPLOYEE_CALLER, MANAGER_CALLER])
+def test_submit_forbidden_for_non_hr(fx, db_session, caller):
+    with pytest.raises(ContinuityForbidden):
+        submit_authorization_record(db_session, caller, fx.high.id, authorization_type="opt", effective_from=TODAY)
+
+
+def test_submit_writes_audit_row_without_leaking_authorization_type(fx, db_session):
+    before = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    submit_authorization_record(db_session, HR, fx.high.id, authorization_type="h1b", effective_from=TODAY)
+    after = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    assert after == before + 1
+
+    row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
+    assert row.action == "continuity.authorization_submitted"
+    assert row.query_text == fx.high.id
+    assert "h1b" not in row.query_text.lower()
+
+
+def test_confirm_supersedes_the_prior_current_record(fx, db_session):
+    previous = _get_current_authorization_record(db_session, fx.high.id)
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+
+    confirmed = confirm_authorization_record(db_session, HR, pending.id)
+
+    assert confirmed.is_current is True
+    assert confirmed.verification_status == "verified"
+    confirmed_row = db_session.get(WorkAuthorizationRecord, confirmed.id)
+    assert confirmed_row.supersedes_record_id == previous.id
+    assert confirmed_row.verified_by == HR.id
+    assert confirmed_row.verified_at is not None
+
+    old_row = db_session.get(WorkAuthorizationRecord, previous.id)
+    assert old_row.is_current is False
+    assert old_row.verification_status == VerificationStatus.superseded
+
+
+def test_confirm_read_path_now_returns_the_newly_confirmed_record(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    confirm_authorization_record(db_session, HR, pending.id)
+
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    assert current.id == pending.id
+
+
+def test_confirm_first_ever_record_has_no_supersedes(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.no_record.id, authorization_type="citizen", effective_from=TODAY,
+    )
+    confirmed = confirm_authorization_record(db_session, HR, pending.id)
+    assert confirmed.is_current is True
+    row = db_session.get(WorkAuthorizationRecord, confirmed.id)
+    assert row.supersedes_record_id is None
+
+
+def test_confirm_never_leaves_two_current_rows_for_one_employee(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    confirm_authorization_record(db_session, HR, pending.id)
+
+    current_count = (
+        db_session.query(WorkAuthorizationRecord)
+        .filter(WorkAuthorizationRecord.employee_id == fx.high.id, WorkAuthorizationRecord.is_current == True)  # noqa: E712
+        .count()
+    )
+    assert current_count == 1
+
+
+def test_partial_unique_index_rejects_two_current_rows_directly(fx, db_session):
+    """Not exercising confirm_authorization_record at all -- proves the DB
+    constraint confirm's flush ordering depends on is actually live. If
+    this test ever stops raising, the ordering in confirm_authorization_record
+    stops being a safety net for anything."""
+    db_session.add(WorkAuthorizationRecord(
+        employee_id=fx.high.id, authorization_type=WorkAuthorizationType.opt,
+        effective_from=TODAY, verification_status=VerificationStatus.verified,
+        is_current=True,
+    ))
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_confirm_stale_pending_record_supersedes_whatever_is_actually_current(fx, db_session):
+    """Two pending submissions for the same employee, confirmed out of
+    order. pending_b is confirmed first and becomes current; pending_a,
+    confirmed second, must supersede pending_b -- not the original record
+    that was current when pending_a was submitted -- because
+    supersedes_record_id is computed fresh at confirm time."""
+    original = _get_current_authorization_record(db_session, fx.high.id)
+    pending_a = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    pending_b = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="h1b", effective_from=TODAY,
+    )
+
+    confirmed_b = confirm_authorization_record(db_session, HR, pending_b.id)
+    confirmed_a = confirm_authorization_record(db_session, HR, pending_a.id)
+
+    assert db_session.get(WorkAuthorizationRecord, confirmed_b.id).supersedes_record_id == original.id
+    assert db_session.get(WorkAuthorizationRecord, confirmed_a.id).supersedes_record_id == confirmed_b.id
+    assert _get_current_authorization_record(db_session, fx.high.id).id == confirmed_a.id
+
+
+def test_confirm_unknown_record_raises_not_found(fx, db_session):
+    with pytest.raises(AuthorizationRecordNotFound):
+        confirm_authorization_record(db_session, HR, 999999999)
+
+
+def test_confirm_already_verified_record_raises_not_actionable(fx, db_session):
+    already_verified = _get_current_authorization_record(db_session, fx.history_emp.id)
+    with pytest.raises(AuthorizationRecordNotActionable):
+        confirm_authorization_record(db_session, HR, already_verified.id)
+
+
+def test_double_confirm_raises_not_actionable(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    confirm_authorization_record(db_session, HR, pending.id)
+    with pytest.raises(AuthorizationRecordNotActionable):
+        confirm_authorization_record(db_session, HR, pending.id)
+
+
+@pytest.mark.parametrize("caller", [EMPLOYEE_CALLER, MANAGER_CALLER])
+def test_confirm_forbidden_for_non_hr(fx, db_session, caller):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    with pytest.raises(ContinuityForbidden):
+        confirm_authorization_record(db_session, caller, pending.id)
+
+
+def test_confirm_writes_audit_row(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    before = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    confirm_authorization_record(db_session, HR, pending.id)
+    after = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    assert after == before + 1
+
+    row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
+    assert row.action == "continuity.authorization_confirmed"
+
+
+def test_reject_marks_rejected_and_keeps_the_row(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    rejected = reject_authorization_record(db_session, HR, pending.id)
+
+    assert rejected.verification_status == "rejected"
+    row = db_session.get(WorkAuthorizationRecord, rejected.id)
+    assert row is not None  # kept, not deleted
+    assert row.is_current is False
+    assert row.verified_by is None
+    assert row.verified_at is None
+
+
+def test_reject_does_not_disturb_the_existing_current_record(fx, db_session):
+    before = _get_current_authorization_record(db_session, fx.high.id)
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    reject_authorization_record(db_session, HR, pending.id)
+
+    after = _get_current_authorization_record(db_session, fx.high.id)
+    assert after.id == before.id
+
+
+def test_confirm_after_reject_raises_not_actionable(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    reject_authorization_record(db_session, HR, pending.id)
+    with pytest.raises(AuthorizationRecordNotActionable):
+        confirm_authorization_record(db_session, HR, pending.id)
+
+
+def test_reject_unknown_record_raises_not_found(fx, db_session):
+    with pytest.raises(AuthorizationRecordNotFound):
+        reject_authorization_record(db_session, HR, 999999999)
+
+
+@pytest.mark.parametrize("caller", [EMPLOYEE_CALLER, MANAGER_CALLER])
+def test_reject_forbidden_for_non_hr(fx, db_session, caller):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    with pytest.raises(ContinuityForbidden):
+        reject_authorization_record(db_session, caller, pending.id)
+
+
+def test_reject_writes_audit_row(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    before = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    reject_authorization_record(db_session, HR, pending.id)
+    after = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    assert after == before + 1
+
+    row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
+    assert row.action == "continuity.authorization_rejected"
