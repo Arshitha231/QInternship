@@ -116,12 +116,12 @@ Employee lifecycle — all hr-only, work mode. See **HR employee lifecycle** bel
 | Route | Purpose |
 |---|---|
 | `PATCH /employees/{id}` | hr-only internal-field edit (salary, title, `manager_id`, …). Refuses `availability_status: restricted` — that one transition is maker-checker, see below |
-| `POST /employees` | create an employee. Small required set (name, title, org unit, work email, employment type); everything else is a follow-up PATCH |
+| `POST /employees` | **stages** a request to add an employee; creates nobody. Returns 202 with a pending request, not 201 with a person. Small required set (name, title, org unit, work email, employment type) plus an optional mentor; everything else is a follow-up PATCH |
 | `POST /employees/{id}/restrict` | **stages** a request to hide a profile; restricts nothing until approved |
 | `POST /employees/{id}/deactivate` | **stages** a request to soft-delete; 409s up front while the target still manages anyone active |
 | `POST /employees/{id}/reactivate` | reverses a deactivation. Single-actor and immediate — the control is on the destructive direction, not the undo |
 | `GET /employees/deactivated` | the only read path that surfaces `is_active=false` records at all; every other one treats them as nonexistent |
-| `GET /employee_action_requests` | pending restrict/deactivate requests **this caller is the approver for**. Identity-scoped, not role-scoped |
+| `GET /employee_action_requests` | pending restrict/deactivate/create requests **this caller is the approver for**. Identity-scoped, not role-scoped |
 | `POST /employee_action_requests/{id}/approve` \| `/reject` | only the request's own resolved approver may call these — 403 for anyone else, whatever role they hold |
 | `GET /org_units`, `GET /offices` | flat lookups behind the create-employee pickers. Any authenticated caller: both are already `BASE_FIELDS` on every profile |
 
@@ -656,13 +656,18 @@ from a broken sweep.
     documents are scrubbed but keep their row, rejected proposals are kept.
     Every table here is referenced by id from somewhere that has to outlive
     it — audit rows, past project membership, notifications.
-11. The two irreversible people-actions take two people. Restricting a
-    profile and deactivating an employee stage an `EmployeeActionRequest`
-    for the **requester's own** manager to approve; the requester cannot
-    approve their own. Approval is gated by identity (`caller.id ==
-    approver_id`), never by role — see HR employee lifecycle. The reversals
-    (unrestrict, reactivate) stay single-actor: the control belongs on the
-    destructive direction.
+11. Changing who exists takes two people. Restricting a profile,
+    deactivating an employee and **adding** one all stage an
+    `EmployeeActionRequest` for the **requester's own** manager to approve;
+    the requester cannot approve their own. Approval is gated by identity
+    (`caller.id == approver_id`), never by role — see HR employee lifecycle.
+    The reversals (unrestrict, reactivate) stay single-actor: the control
+    belongs on the direction that changes the roster, and a reactivation can
+    only restore somebody this same control already approved removing.
+12. A staged request is text, never a half-built row. A pending create keeps
+    its proposed employee in `employee_action_requests.payload` as JSON
+    rather than an `employees` row with `is_active=false`, so no query that
+    forgets to exclude it can surface a person nobody approved.
 
 ## Roles and view modes
 
@@ -745,8 +750,8 @@ nobody asked for would be guessing.
 
 ### Two people, not one
 
-Restricting and deactivating are **maker-checker**. The POST stages an
-`EmployeeActionRequest` and notifies an approver; nothing is applied until
+Restricting, deactivating and creating are **maker-checker**. The POST stages
+an `EmployeeActionRequest` and notifies an approver; nothing is applied until
 that approver acts. The requester cannot approve their own request.
 
 The approver is resolved from the **requester's own reporting chain** — not
@@ -773,9 +778,10 @@ so `GET /employee_action_requests` has no role gate either, and a
 `manager`-role identity who happens to manage an HR person sees their requests
 normally. A different HR identity gets a 403.
 
-Deactivation's preconditions are re-checked at approval time, not just at
-request time: an approval can sit pending while the org moves under it, and
-someone can acquire direct reports in that window.
+Preconditions are re-checked at approval time, not just at request time: an
+approval can sit pending while the org moves under it. Someone can acquire
+direct reports in that window; a proposed hire's email address can be taken by
+somebody else, or their chosen manager or mentor can leave.
 
 ### Finding someone after you've deactivated them
 
@@ -801,12 +807,64 @@ parameter, not a bigger cap.
 
 `POST /employees` takes a deliberately small required set — full name, job
 title, org unit, work email, employment type — plus optional placement
-(office, manager, preferred name, work phone, hire date, defaulting to today).
-Everything `update_employee` already covers (salary, DOB, cost centre,
-LinkedIn) is a follow-up PATCH rather than a duplicated field list here: a new
-hire's identity and where they sit is what onboarding needs on day one, and
-the rest fills in as it becomes known. `work_email` uniqueness, and the
-existence of the org unit / office / manager, are checked before the insert.
+(office, manager, preferred name, work phone, hire date, defaulting to today)
+and an optional mentor. Everything `update_employee` already covers (salary,
+DOB, cost centre, LinkedIn) is a follow-up PATCH rather than a duplicated
+field list here: a new hire's identity and where they sit is what onboarding
+needs on day one, and the rest fills in as it becomes known.
+
+**Creating is maker-checker too**, on the same machinery as restrict and
+deactivate — the route returns **202 with a pending request**, not 201 with a
+person. Adding someone is what mints a real identity in the directory, and a
+fabricated one isn't cheaply undone: deactivating it later leaves the record,
+its audit trail, and anything already linked to it in place. (`reactivate`
+stays single-actor, and genuinely is the low-risk direction — it can only
+restore somebody the two-person control already approved removing.)
+
+`create` is the one action type with **no target employee**, since the person
+doesn't exist until the approval lands. That shapes three things:
+
+- `employee_action_requests.target_employee_id` is nullable, and the proposed
+  fields sit in a new `payload` column as JSON. Deliberately inert text, not a
+  half-built `employees` row with `is_active=false`: a real row would be
+  reachable by every query that forgets to exclude it — search indexing, the
+  org chart, the deactivated-employees list, the `work_email` uniqueness
+  check. Keeping it as text means "proposed" and "employed" cannot be confused
+  by any code path that doesn't deliberately open the column.
+- Every "who is this about" surface reads through `request_subject_name`,
+  which falls back to the payload's name. The approval queue can therefore
+  name a person who has no id yet.
+- On approval the request's `target_employee_id` is backfilled with the id it
+  just created, so the audit trail can get from "who approved this" to "who
+  exists because of it".
+
+Validation (`work_email` uniqueness; the org unit, office, manager and mentor
+existing and being active) runs **twice** — once when the request is staged,
+so HR gets immediate feedback and an approver is never handed something that
+cannot apply, and again at approval, because the world moves while a request
+sits pending. Someone else can take the email address; the chosen manager or
+mentor can leave. Either way the whole action is refused (409), never applied
+half-way.
+
+#### The mentor question
+
+The create form asks whether the new hire has a mentor. `mentor_id` is the one
+field that isn't an `employees` column at all — "who shows this person the
+ropes" is a relationship, not an attribute of them — so on approval it becomes
+an **official `community_links` row owned by the new hire**, byte-identical to
+what `auto_assign_mentors` would have created: `role_label: "mentor"`,
+`is_mentor_link: true`, office and department stamped.
+
+Matching that shape exactly is load-bearing, not tidiness. `_eligible_new_hires`
+excludes anyone who already has a mentor link, so an HR-chosen mentor
+automatically suppresses the sweep for that person — HR's real decision
+overrides the algorithm's guess instead of being topped up with a second
+mentor beside it. And because it's `official` rather than `personal`, the new
+hire can't delete it, and it ages into a personal link on the same
+`mentor_link_duration_days` clock as every other mentor link.
+
+Leaving the field blank keeps today's behaviour: the sweep picks somebody
+during their first few weeks.
 
 ## Document extraction and review
 

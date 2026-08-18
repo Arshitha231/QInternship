@@ -372,9 +372,13 @@ class UpdateEmployeeRequest(BaseModel):
 
 class CreateEmployeeRequest(BaseModel):
     """POST /employees — HR, work mode. Deliberately a small required set;
-    see app.writes.create_employee's docstring for why the rest (salary,
-    date_of_birth, cost_centre, ...) is a follow-up PATCH /employees/{id}
-    instead of a bigger form here."""
+    see app.writes' create section for why the rest (salary, date_of_birth,
+    cost_centre, ...) is a follow-up PATCH /employees/{id} instead of a
+    bigger form here.
+
+    Staging only: this body describes a request for approval, not a person.
+    Nothing lands in `employees` until the requester's resolved approver
+    approves it (app.writes.request_creation)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -388,6 +392,10 @@ class CreateEmployeeRequest(BaseModel):
     manager_id: str | None = None
     work_phone: str | None = Field(default=None, max_length=50)
     hire_date: date | None = None
+    # Not an employees column — becomes an official community_links row on
+    # approval, the same shape auto_assign_mentors would have created. See
+    # app.writes._apply_creation.
+    mentor_id: str | None = None
 
 
 class RejectActionRequestBody(BaseModel):

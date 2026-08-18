@@ -37,10 +37,12 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.models import (
-    AuditLog, Employee, EmployeeActionRequest, EmployeeProject, Notification, Office, OrgUnit, Project,
+    AuditLog, CommunityLink, Employee, EmployeeActionRequest, EmployeeProject, Notification, Office,
+    OrgUnit, Project,
 )
 from app.models.enums import (
-    AvailabilityStatus, EmployeeActionStatus, EmployeeActionType, EmploymentType, NotificationKind,
+    AvailabilityStatus, CommunityLinkSource, EmployeeActionStatus, EmployeeActionType, EmploymentType,
+    NotificationKind,
 )
 from app.org_chart import manager_chain_ids
 from app.permissions import ViewMode, can_edit, editable_fields
@@ -227,11 +229,12 @@ def update_employee(
 
 
 # ---------------------------------------------------------------------------
-# Maker-checker: restricting a profile or deactivating an employee is staged
-# as a request, not applied directly. The requester's OWN reporting chain
-# resolves who has to approve it — never the target's chain, and never the
-# requester themselves. See _resolve_approver for the escalation rule
-# (delegate first when away, then up one level, bounded and exhaustible).
+# Maker-checker: restricting a profile, deactivating an employee, or adding
+# one is staged as a request, not applied directly. The requester's OWN
+# reporting chain resolves who has to approve it — never the target's chain
+# (there isn't one for a create), and never the requester themselves. See
+# _resolve_approver for the escalation rule (delegate first when away, then
+# up one level, bounded and exhaustible).
 # ---------------------------------------------------------------------------
 
 def _resolve_approver(db: Session, requester_id: str) -> Employee | None:
@@ -271,6 +274,28 @@ def _notify(db: Session, *, recipient_id: str, subject_employee_id: str, kind: N
 
 def _requester_label(caller: AuthenticatedUser) -> str:
     return caller.name or caller.id
+
+
+def request_subject_name(db: Session, request: EmployeeActionRequest) -> str:
+    """Who a request is about, in words, whether or not they exist yet.
+
+    A `create` request's subject lives only in its payload until the moment
+    it's approved, so every surface that wants to say "X requested to
+    <action> <someone>" needs this rather than a plain db.get on
+    target_employee_id. Public because app.main's serializer needs the same
+    answer the notification bodies use — two spellings of "who is this
+    about" would drift.
+    """
+    if request.target_employee_id is not None:
+        target = db.get(Employee, request.target_employee_id)
+        if target is not None:
+            return target.full_name
+        return request.target_employee_id
+    if request.payload:
+        proposed = json.loads(request.payload).get("full_name")
+        if proposed:
+            return proposed
+    return "(unknown)"
 
 
 def request_restriction(
@@ -405,9 +430,37 @@ def approve_action_request(
     if request.approver_id != caller.id:
         raise WriteDenied(f"only the resolved approver may act on request {request_id}")
 
+    if request.action_type is EmployeeActionType.create:
+        # No target to load — this branch MAKES the target. Re-validated
+        # against the live database first (see _validate_create_fields):
+        # between staging and now, the email could have been taken by
+        # another hire, or the chosen manager or mentor could have left.
+        payload = json.loads(request.payload) if request.payload else {}
+        _validate_create_fields(db, payload)
+        created = _apply_creation(db, payload)
+
+        request.status = EmployeeActionStatus.approved
+        request.resolved_at = datetime.now()
+        request.resolved_by = caller.id
+        # Now that the person exists, the request finally has something to
+        # point at — so the row stops being the only record of who it was
+        # about, and the created employee is reachable from the audit trail.
+        request.target_employee_id = created.id
+        db.commit()
+        db.refresh(request)
+
+        _audit(db, caller, "approve_action_request", f"request_id={request_id}",
+               {"is_active", "target_employee_id"})
+        _notify(
+            db, recipient_id=request.requested_by, subject_employee_id=created.id,
+            kind=NotificationKind.action_approved,
+            body=f"Your request to add {created.full_name} to the directory was approved.",
+        )
+        return request
+
     target = db.get(Employee, request.target_employee_id)
     if target is None or not target.is_active:
-        raise WriteTargetMissing(request.target_employee_id)
+        raise WriteTargetMissing(request.target_employee_id or "(no target)")
 
     if request.action_type is EmployeeActionType.deactivate:
         active_reports = _active_direct_reports(db, target.id)
@@ -458,23 +511,27 @@ def reject_action_request(
     db.commit()
     db.refresh(request)
 
-    target = db.get(Employee, request.target_employee_id)
-    target_name = target.full_name if target is not None else request.target_employee_id
-
     _audit(db, caller, "reject_action_request", f"request_id={request_id}", {"status"})
     reason_suffix = f" Reason: {reason}" if reason else ""
     _notify(
-        db, recipient_id=request.requested_by, subject_employee_id=request.target_employee_id,
+        db, recipient_id=request.requested_by,
+        # A rejected create leaves no employee behind to point at, so the
+        # notification is about the requester — same reasoning as the one
+        # request_creation sends, and the only other real person involved.
+        subject_employee_id=request.target_employee_id or request.requested_by,
         kind=NotificationKind.action_rejected,
-        body=f"Your request to {request.action_type.value} {target_name} was rejected.{reason_suffix}",
+        body=f"Your request to {request.action_type.value} {request_subject_name(db, request)} "
+             f"was rejected.{reason_suffix}",
     )
     return request
 
 
 def list_my_pending_approvals(db: Session, caller: AuthenticatedUser) -> list[EmployeeActionRequest]:
-    """No role gate at all — deliberately. The approver is resolved by
-    reporting-chain identity (_resolve_approver), which has nothing to do
-    with which role header this caller happens to be using right now."""
+    """Every pending request — restrict, deactivate, create — this caller is
+    the resolved approver for. No role gate at all, deliberately: the
+    approver is resolved by reporting-chain identity (_resolve_approver),
+    which has nothing to do with which role header this caller happens to be
+    using right now."""
     return (
         db.query(EmployeeActionRequest)
         .filter(EmployeeActionRequest.approver_id == caller.id,
@@ -587,27 +644,40 @@ def list_deactivated_employees(
 
 
 # ---------------------------------------------------------------------------
-# HR, work mode: create a new employee record.
+# HR, work mode: create a new employee record — staged for approval, like
+# restrict and deactivate. request_creation validates and parks the proposed
+# fields; nothing exists in `employees` until the requester's own resolved
+# approver approves and _apply_creation runs.
 #
 # Deliberately a small required set (full_name, job_title, org_unit_id,
 # work_email, employment_type) plus a handful of optional placement fields
-# (office_id, manager_id, preferred_name, work_phone, hire_date). Everything
-# update_employee already covers -- salary, date_of_birth, cost_centre,
-# linkedin_profile, and so on -- is reachable through that endpoint right
-# after creation instead of duplicating its whole field set here. A new
-# hire's basic identity and where they sit in the org is what onboarding
-# actually needs on day one; the rest fills in as it becomes known.
+# (office_id, manager_id, preferred_name, work_phone, hire_date, mentor_id).
+# Everything update_employee already covers -- salary, date_of_birth,
+# cost_centre, linkedin_profile, and so on -- is reachable through that
+# endpoint right after creation instead of duplicating its whole field set
+# here. A new hire's basic identity and where they sit in the org is what
+# onboarding actually needs on day one; the rest fills in as it becomes known.
+#
+# mentor_id is the one field that isn't an employees column at all: it
+# becomes a community_links row (see _apply_creation), because "who shows
+# this person the ropes" is a relationship, not an attribute of them.
 # ---------------------------------------------------------------------------
 
 _REQUIRED_CREATE_FIELDS = {"full_name", "job_title", "org_unit_id", "work_email", "employment_type"}
-_OPTIONAL_CREATE_FIELDS = {"preferred_name", "office_id", "manager_id", "work_phone", "hire_date"}
+_OPTIONAL_CREATE_FIELDS = {
+    "preferred_name", "office_id", "manager_id", "work_phone", "hire_date", "mentor_id",
+}
 
 
-def create_employee(
-    db: Session, caller: AuthenticatedUser, fields: dict, view_mode: ViewMode,
-) -> Employee:
-    _authorize(caller.role, view_mode, {"create_employee"})
-
+def _validate_create_fields(db: Session, fields: dict) -> None:
+    """Everything that must hold for a create to be applicable, with no
+    writes and no side effects — so it can run twice: once when the request
+    is staged (immediate feedback to HR, and an approver is never handed a
+    request that cannot possibly apply) and again when the approval lands,
+    because the world moves while a request sits pending. Somebody else can
+    take the email address, the chosen manager or mentor can be deactivated,
+    an org unit can be dissolved.
+    """
     missing = _REQUIRED_CREATE_FIELDS - fields.keys()
     if missing:
         raise ValueError(f"missing required field(s): {', '.join(sorted(missing))}")
@@ -618,31 +688,91 @@ def create_employee(
     if db.query(Employee).filter(Employee.work_email == fields["work_email"]).first() is not None:
         raise DuplicateEmail(fields["work_email"])
 
-    org_unit = db.get(OrgUnit, fields["org_unit_id"])
-    if org_unit is None:
+    if db.get(OrgUnit, fields["org_unit_id"]) is None:
         raise ValueError(f"org_unit_id {fields['org_unit_id']!r} does not exist")
 
     office_id = fields.get("office_id")
     if office_id is not None and db.get(Office, office_id) is None:
         raise ValueError(f"office_id {office_id!r} does not exist")
 
-    manager_id = fields.get("manager_id")
-    if manager_id is not None:
-        manager = db.get(Employee, manager_id)
-        if manager is None or not manager.is_active:
-            raise ValueError(f"manager_id {manager_id!r} is not an active employee")
+    # manager and mentor are both "must be a real, active person" — checked
+    # the same way, reported separately, so HR is told which one went stale.
+    for field in ("manager_id", "mentor_id"):
+        person_id = fields.get(field)
+        if person_id is None:
+            continue
+        person = db.get(Employee, person_id)
+        if person is None or not person.is_active:
+            raise ValueError(f"{field} {person_id!r} is not an active employee")
 
+    # employment_type/hire_date parse errors surface here rather than at
+    # apply time, where the approver would be the one seeing HR's typo.
+    _coerce("employment_type", fields["employment_type"])
+    _coerce("hire_date", fields.get("hire_date"))
+
+
+def request_creation(
+    db: Session, caller: AuthenticatedUser, fields: dict, view_mode: ViewMode,
+) -> EmployeeActionRequest:
+    """Stages a create request; creates nobody. The proposed fields are
+    frozen into the request as JSON (see EmployeeActionRequest.payload for
+    why a pending hire is not a half-built employees row), and only
+    approve_action_request turns them into a person.
+    """
+    _authorize(caller.role, view_mode, {"create_employee"})
+    _validate_create_fields(db, fields)
+
+    approver = _resolve_approver(db, caller.id)
+    if approver is None:
+        raise NoApproverAvailable(caller.id)
+
+    request = EmployeeActionRequest(
+        action_type=EmployeeActionType.create, target_employee_id=None,
+        payload=json.dumps(fields, default=str),
+        requested_by=caller.id, approver_id=approver.id,
+        status=EmployeeActionStatus.pending, created_at=datetime.now(),
+    )
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+
+    _audit(db, caller, "request_creation", f"work_email={fields['work_email']}",
+           {"action_type", "payload", "approver_id"})
+    _notify(
+        # subject_employee_id is the REQUESTER here, not the proposed hire —
+        # the column is a non-null FK to employees, and the whole point of
+        # this request is that the person it describes has no row yet. The
+        # requester is the only real employee this notification is about,
+        # and the body carries the proposed name.
+        db, recipient_id=approver.id, subject_employee_id=caller.id,
+        kind=NotificationKind.action_approval_requested,
+        body=f"{_requester_label(caller)} requested to add {fields['full_name']} "
+             f"({fields['job_title']}) to the directory — review and approve or reject.",
+    )
+    return request
+
+
+def _apply_creation(db: Session, payload: dict) -> Employee:
+    """The actual insert, plus the mentor link if one was chosen. Takes no
+    caller at all, same shape as _apply_deactivation: the approver is
+    whoever the requester's reporting chain named, who may well not be HR,
+    so re-running the create_employee capability check against THEIR role
+    would deny the very approval that authorizes this.
+
+    Callers must have run _validate_create_fields against the live database
+    first — this function assumes the payload is applicable.
+    """
     employee = Employee(
-        full_name=fields["full_name"],
-        preferred_name=fields.get("preferred_name"),
-        job_title=fields["job_title"],
-        org_unit_id=fields["org_unit_id"],
-        office_id=office_id,
-        manager_id=manager_id,
-        work_email=fields["work_email"],
-        work_phone=fields.get("work_phone"),
-        employment_type=_coerce("employment_type", fields["employment_type"]),
-        hire_date=_coerce("hire_date", fields.get("hire_date")) or date.today(),
+        full_name=payload["full_name"],
+        preferred_name=payload.get("preferred_name"),
+        job_title=payload["job_title"],
+        org_unit_id=payload["org_unit_id"],
+        office_id=payload.get("office_id"),
+        manager_id=payload.get("manager_id"),
+        work_email=payload["work_email"],
+        work_phone=payload.get("work_phone"),
+        employment_type=_coerce("employment_type", payload["employment_type"]),
+        hire_date=_coerce("hire_date", payload.get("hire_date")) or date.today(),
         availability_status=AvailabilityStatus.available,
         is_active=True,
     )
@@ -650,11 +780,25 @@ def create_employee(
     db.commit()
     db.refresh(employee)
 
+    mentor_id = payload.get("mentor_id")
+    if mentor_id is not None:
+        # Byte-for-byte the shape app.community_links.auto_assign_mentors
+        # creates, on purpose: an HR-chosen mentor and a swept-in one must
+        # be the same kind of row, or _resolve_mentor_expiration would age
+        # them differently and _eligible_new_hires would not recognize this
+        # one as "already has a mentor" — which is what stops the sweep from
+        # later assigning a second mentor over the top of HR's choice.
+        db.add(CommunityLink(
+            owner_employee_id=employee.id, contact_employee_id=mentor_id,
+            role_label="mentor", reason=None, source=CommunityLinkSource.official,
+            office_id=employee.office_id, department_id=employee.org_unit_id,
+            is_mentor_link=True, created_at=datetime.now(),
+        ))
+        db.commit()
+
     # Rule 6 — a brand-new employee is indexed the same as any other write
     # that touches build_profile_text's inputs (full_name, job_title, ...).
     reindex_employee(db, employee)
-
-    _audit(db, caller, "create_employee", f"person_id={employee.id}", fields.keys())
     return employee
 
 

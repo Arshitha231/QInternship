@@ -438,6 +438,9 @@ button { font: inherit; }
   padding: 10px 12px; font-size: 13px;
 }
 .pending-approvals-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* The consequence line under each request. Block, so "what approving does"
+   sits on its own row under the request rather than running into it. */
+.pending-approvals-effect { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
 
 /* ---------- deactivated employees (PeopleAdminPage) ---------- */
 .deactivated-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
