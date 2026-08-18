@@ -286,14 +286,22 @@ export function reactivateEmployee(
   });
 }
 
+// viewMode matters for direction="down": an hr/it caller previewing the
+// ordinary view loses the downward chain, exactly as they lose every other
+// privilege there. (A manager keeps their own team chart — they are pinned
+// to employee mode permanently and never had a work mode to give up; see
+// app.policy.is_previewing_ordinary_view.)
 export async function getOrgChart(
   identity: Identity,
   personId: string,
   direction: "up" | "down",
+  viewMode: ViewMode,
   depth = 10,
 ): Promise<OrgChainNode[]> {
   try {
-    return await request<OrgChainNode[]>(`/people/${personId}/org-chart?direction=${direction}&depth=${depth}`, identity);
+    return await request<OrgChainNode[]>(
+      `/people/${personId}/org-chart?direction=${direction}&depth=${depth}&view_mode=${viewMode}`,
+      identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return [];
     throw e;
@@ -575,28 +583,41 @@ export async function deleteCommunityLink(identity: Identity, linkId: number): P
 // Continuity's HR-only calls carry.
 
 export function listSuggestedOfficialLinks(
-  identity: Identity, officeId?: number,
+  identity: Identity, viewMode: ViewMode, officeId?: number,
 ): Promise<SuggestedOfficialLinkOut[]> {
-  const qs = officeId !== undefined ? `?office_id=${officeId}` : "";
-  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links${qs}`, identity);
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (officeId !== undefined) params.set("office_id", String(officeId));
+  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links?${params}`, identity);
 }
 
-export function generateSuggestedOfficialLinks(identity: Identity): Promise<SuggestedOfficialLinkOut[]> {
-  return request<SuggestedOfficialLinkOut[]>("/suggested_official_links/generate", identity, { method: "POST" });
+export function generateSuggestedOfficialLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut[]> {
+  return request<SuggestedOfficialLinkOut[]>(
+    `/suggested_official_links/generate?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function confirmSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/confirm`, identity, { method: "POST" });
+export function confirmSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/confirm?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function rejectSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/reject`, identity, { method: "POST" });
+export function rejectSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/reject?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
 // Mentor auto-assignment sweep for new hires -- unlike the office/role
 // suggestions above, this creates the official mentor link directly (no
 // confirm step); see app/community_links.py's auto_assign_mentors for why.
 // HR-only, same gate as the rest of this section.
-export function autoAssignMentors(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links/auto_assign_mentors", identity, { method: "POST" });
+export function autoAssignMentors(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(
+    `/community_links/auto_assign_mentors?view_mode=${viewMode}`, identity, { method: "POST" });
 }

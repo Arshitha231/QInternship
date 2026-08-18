@@ -137,3 +137,62 @@ async def test_org_chart_audits_even_on_role_denial(client, db_session):
     )
     assert row.actor_id == "org-auditor-2"
     assert row.result_count == 0
+
+
+# ---------------------------------------------------------------------------
+# view_mode on the org chart.
+#
+# get_org_chain had no view_mode parameter at all, so employee mode could not
+# be expressed here even though every other read route honours it. An hr
+# caller previewing the ordinary view kept the downward direction (44 reports
+# against a real dataset, where an ordinary colleague gets none) and kept
+# seeing restricted people in the chain.
+#
+# The asymmetry below is the point: hr/it CHOSE employee mode and lose their
+# privileges in it; a manager is pinned to employee mode permanently
+# (WORK_MODE_ROLES is hr/it only), so collapsing on the raw mode would delete
+# every manager's own team chart rather than close a hole. See
+# app.policy.is_previewing_ordinary_view.
+# ---------------------------------------------------------------------------
+
+async def test_hr_loses_the_downward_chain_when_previewing_employee_mode(client):
+    work = await client.get(
+        "/people/chain-3/org-chart",
+        params={"direction": "down", "view_mode": "work"}, headers=auth_headers("hr"))
+    assert [n["id"] for n in work.json()] == ["chain-2", "chain-1"]
+
+    preview = await client.get(
+        "/people/chain-3/org-chart",
+        params={"direction": "down", "view_mode": "employee"}, headers=auth_headers("hr"))
+    assert preview.status_code == 200
+    assert preview.json() == [], "hr kept the downward chain while previewing the ordinary view"
+
+    # ...and that matches what an ordinary colleague actually gets.
+    ordinary = await client.get(
+        "/people/chain-3/org-chart", params={"direction": "down"}, headers=auth_headers("employee"))
+    assert ordinary.json() == preview.json()
+
+
+async def test_a_manager_keeps_their_own_team_chart(client):
+    """A manager never had a work mode to give up. resolve_view_mode pins
+    them to employee mode however they ask, so collapsing the direction gate
+    on the raw mode would take this away from every manager in the company —
+    a capability regression dressed up as a permission fix."""
+    for params in ({"direction": "down"},
+                   {"direction": "down", "view_mode": "employee"},
+                   {"direction": "down", "view_mode": "work"}):
+        resp = await client.get("/people/chain-3/org-chart", params=params,
+                                headers=auth_headers("manager"))
+        assert [n["id"] for n in resp.json()] == ["chain-2", "chain-1"], params
+
+
+async def test_upward_chain_is_unaffected_by_view_mode(client):
+    """Upward is visible to everyone who can see the record at all, so it has
+    nothing to lose in employee mode — pinned so a later tightening of the
+    downward gate doesn't quietly take the upward one with it."""
+    for mode in ("work", "employee"):
+        resp = await client.get(
+            "/people/chain-1/org-chart", params={"direction": "up", "view_mode": mode},
+            headers=auth_headers("hr"))
+        assert resp.status_code == 200
+        assert len(resp.json()) > 0, mode

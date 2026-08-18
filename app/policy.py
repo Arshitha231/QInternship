@@ -28,6 +28,7 @@ from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.permissions import (
     TRAINING_FIELDS,
+    WORK_MODE_ROLES,
     ViewMode,
     abac_extra_fields,
     department_filter,
@@ -147,6 +148,31 @@ def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
     field access, which is exactly this module's job.
     """
     return effective_role(role, view_mode) in ("manager", "hr")
+
+
+def is_previewing_ordinary_view(role: str, view_mode: ViewMode) -> bool:
+    """Whether this caller is a privileged one LOOKING AT the ordinary
+    colleague's view, as opposed to simply being an ordinary colleague.
+
+    Employee mode means two different things depending on who is in it, and
+    conflating them is a real bug in both directions. For hr/it it is a
+    deliberate preview they toggled into, and stripping their privileges is
+    the entire point. For employee/manager it is not a choice at all --
+    app.permissions.resolve_view_mode pins every role outside
+    WORK_MODE_ROLES to employee mode however they ask -- so it is just their
+    normal operating lens, and "strip what work mode would have granted"
+    resolves to stripping nothing, because they never had a work mode.
+
+    That distinction only matters where a role predicate is the whole gate.
+    It does NOT apply to the field table (manager and employee are granted
+    exactly the same fields in both modes, checked: ALLOWED[("manager",
+    "work")] == ALLOWED[("employee", "work")]), nor to ABAC, which keys on
+    identity and survives employee mode by design. It matters for
+    can_see_direct_reports, where collapsing a manager to "employee" would
+    silently take their own team's org chart away from every manager in the
+    company rather than close any hole.
+    """
+    return view_mode == "employee" and role in WORK_MODE_ROLES
 
 
 def can_see_training_status_by_role(role: str, view_mode: ViewMode = "work") -> bool:

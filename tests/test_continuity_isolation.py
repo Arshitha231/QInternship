@@ -217,3 +217,62 @@ async def test_service_layer_refuses_employee_mode_without_going_through_http(db
 
     # Same caller, work mode: allowed.
     assert get_org_exposure(db_session, hr, view_mode="work") is not None
+
+
+# ---------------------------------------------------------------------------
+# The same audit, applied to every other surface gated on a role predicate.
+#
+# Continuity was found by inspection, not by a test — so these pin the rest of
+# the class rather than waiting for each one to be reported. Every route here
+# was verified against a running server to actually leak before the fix.
+# ---------------------------------------------------------------------------
+
+HR_ONLY_READS = [
+    "/suggested_official_links",
+]
+
+
+@pytest.mark.parametrize("path", HR_ONLY_READS)
+async def test_hr_only_reads_close_in_employee_mode(client, path):
+    assert (await client.get(
+        path, params={"view_mode": "work"}, headers=auth_headers("hr"))).status_code == 200
+    assert (await client.get(
+        path, params={"view_mode": "employee"}, headers=auth_headers("hr"))).status_code == 403
+
+
+async def test_hr_confidential_project_bypass_closes_in_employee_mode(db_session):
+    """HR's blanket exemption for confidential projects is a role privilege,
+    so it collapses in employee mode like every other one. Membership does
+    not — that's an ABAC grant keyed on identity, and those survive employee
+    mode by design, so somebody actually staffed on the project still sees
+    it either way."""
+    from app.auth import AuthenticatedUser
+    from app.models import Project
+    from app.models.enums import ProjectClassification
+    from app.project_skills import get_required_skills
+
+    project = (
+        db_session.query(Project)
+        .filter(Project.classification == ProjectClassification.confidential)
+        .first()
+    )
+    assert project is not None, "fixture set has no confidential project to test with"
+
+    hr = AuthenticatedUser(id="hr-conf-vm", role="hr")
+    assert get_required_skills(db_session, hr, project.id, "work") is not None
+    assert get_required_skills(db_session, hr, project.id, "employee") is None
+
+    # An unrelated ordinary employee never saw it in either mode.
+    outsider = AuthenticatedUser(id="stranger-conf-vm", role="employee")
+    assert get_required_skills(db_session, outsider, project.id, "work") is None
+
+
+async def test_hr_writes_outside_the_editable_table_close_in_employee_mode(client):
+    """POST /notifications/date-milestones and the training write are the two
+    writes that don't go through EDITABLE, which is empty for every role in
+    employee mode. Without their own collapse they'd be the only writes an hr
+    caller could still make while previewing the ordinary view."""
+    resp = await client.post(
+        "/notifications/date-milestones",
+        params={"view_mode": "employee", "on": "2026-01-01"}, headers=auth_headers("hr"))
+    assert resp.status_code == 403

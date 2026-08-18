@@ -694,15 +694,32 @@ Three things are worth knowing before changing any of this:
   supposed to be anonymous. The sharp edge: **HR loses its restricted-record
   exemption in employee mode**, so `restricted-1` 404s for them there too.
 - **Whole surfaces disappear in employee mode, not just fields.** Continuity
-  (HR), Review (IT) and Admin (HR) are work-mode surfaces: an ordinary
-  colleague has no upcoming work-authorization review dates, no document
-  review queue, no create-employee form, so neither does anyone previewing
-  that lens. Continuity is the one that had to be retrofitted — its gate read
-  `caller.role` alone, which let an HR caller keep full access to
-  authorization review dates while claiming to be looking at the ordinary
-  view. It routes through `effective_role` now, in the service functions and
-  again at the route layer, so hiding the tab is the cosmetic half of a check
-  that exists on the server.
+  (HR), Review (IT), Admin (HR) and the official-link/mentor-sweep panels (HR)
+  are work-mode surfaces: an ordinary colleague has no work-authorization
+  review dates, no document review queue, no create-employee form and no
+  bootstrapping queue, so neither does anyone previewing that lens. Several
+  had to be retrofitted — their gates read `caller.role` alone, so an HR
+  caller kept full access while claiming to be looking at the ordinary view.
+  They route through `effective_role` now, in the service functions and again
+  at the route layer, so hiding a tab is the cosmetic half of a check that
+  exists on the server. Also retrofitted: the org chart's downward direction
+  (`GET /people/{id}/org-chart` had no `view_mode` parameter *at all*), and
+  HR's blanket exemption for confidential projects in
+  `project_skills._visible_project`.
+- **"Employee mode" means two different things, and conflating them is a bug
+  in both directions.** For `hr`/`it` it's a preview they toggled into, and
+  stripping their privileges is the whole point. For `employee`/`manager` it
+  isn't a choice — `resolve_view_mode` pins every role outside
+  `WORK_MODE_ROLES` to it however they ask — so it's simply their normal lens,
+  and "strip what work mode granted" strips nothing, because they never had a
+  work mode. `app.policy.is_previewing_ordinary_view` is that distinction.
+  It matters wherever a *role predicate* is the whole gate: collapsing a
+  manager to `employee` in `can_see_direct_reports` would have taken every
+  manager's own team chart away company-wide rather than closed any hole. It
+  does **not** apply to the field table (`ALLOWED[("manager", "work")]` is
+  identical to `ALLOWED[("employee", "work")]` — a manager's extra reach is
+  ABAC, not the table), nor to ABAC itself, which keys on identity and
+  survives employee mode by design.
 - **ABAC survives employee mode, deliberately.** Own-profile and
   direct-manager grants (personal_mobile, own salary/DOB, training status up
   the chain) key on the caller's *identity*, never their role, so they return

@@ -33,6 +33,7 @@ from app.models import AuditLog, CommunityLink, Employee, OrgSettings, OrgUnit, 
 from app.models.enums import CommunityLinkSource, SuggestedLinkStatus
 from app.models.org_settings import DEFAULT_MENTOR_LINK_DURATION_DAYS
 from app.permissions import ViewMode
+from app.permissions import effective_role
 from app.policy import enforce, excluded_by_obligations
 from app.query_plan import PeopleQuery
 
@@ -301,9 +302,13 @@ def delete_personal_link(db: Session, caller: AuthenticatedUser, link_id: int) -
 # HR review queue for bootstrapped office/role suggestions.
 # ---------------------------------------------------------------------------
 
-def _authorize_hr(caller: AuthenticatedUser) -> None:
-    if caller.role != "hr":
-        raise SuggestionDenied("reviewing official-link suggestions is an HR action")
+def _authorize_hr(caller: AuthenticatedUser, view_mode: ViewMode = "work") -> None:
+    """HR in work mode. Employee mode is "what an ordinary colleague sees",
+    and an ordinary colleague has no bootstrapping queue to review — so the
+    role collapses through effective_role here exactly as it does on every
+    other privileged surface. This used to read caller.role alone."""
+    if effective_role(caller.role, view_mode) != "hr":
+        raise SuggestionDenied("reviewing official-link suggestions is an HR action, in work mode")
 
 
 def _serialize_suggestion(row: SuggestedOfficialLink) -> dict:
@@ -316,8 +321,9 @@ def _serialize_suggestion(row: SuggestedOfficialLink) -> dict:
 
 def list_suggested_official_links(
     db: Session, caller: AuthenticatedUser, office_id: int | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[dict]:
-    _authorize_hr(caller)
+    _authorize_hr(caller, view_mode)
     query = db.query(SuggestedOfficialLink)
     if office_id is not None:
         query = query.filter(SuggestedOfficialLink.office_id == office_id)
@@ -334,7 +340,9 @@ def _load_pending_suggestion(db: Session, suggestion_id: int) -> SuggestedOffici
     return row
 
 
-def confirm_suggested_official_link(db: Session, caller: AuthenticatedUser, suggestion_id: int) -> dict:
+def confirm_suggested_official_link(
+    db: Session, caller: AuthenticatedUser, suggestion_id: int, view_mode: ViewMode = "work",
+) -> dict:
     """Fans the confirmed office/role mapping out to every active employee
     in the office: one official CommunityLink per employee, owner=that
     employee, contact=the confirmed candidate.
@@ -344,7 +352,7 @@ def confirm_suggested_official_link(db: Session, caller: AuthenticatedUser, sugg
     so "never overwrite a confirmed one" holds per-owner, not just at the
     suggestion level, and re-running a confirm stays idempotent.
     """
-    _authorize_hr(caller)
+    _authorize_hr(caller, view_mode)
     suggestion = _load_pending_suggestion(db, suggestion_id)
 
     candidate = db.get(Employee, suggestion.candidate_employee_id)
@@ -386,8 +394,10 @@ def confirm_suggested_official_link(db: Session, caller: AuthenticatedUser, sugg
     return _serialize_suggestion(suggestion)
 
 
-def reject_suggested_official_link(db: Session, caller: AuthenticatedUser, suggestion_id: int) -> dict:
-    _authorize_hr(caller)
+def reject_suggested_official_link(
+    db: Session, caller: AuthenticatedUser, suggestion_id: int, view_mode: ViewMode = "work",
+) -> dict:
+    _authorize_hr(caller, view_mode)
     suggestion = _load_pending_suggestion(db, suggestion_id)
     suggestion.status = SuggestedLinkStatus.rejected
     suggestion.reviewed_by = caller.id
@@ -597,7 +607,7 @@ def _pick_mentor(db: Session, new_hire: Employee) -> Employee | None:
     )
 
 
-def auto_assign_mentors(db: Session, caller: AuthenticatedUser) -> list[dict]:
+def auto_assign_mentors(db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work") -> list[dict]:
     """Sweep for new hires (app.config.new_hire_mentor_window_days()) who
     don't yet have a mentor link, and pair each with an eligible colleague —
     see module docstring above for why this creates the CommunityLink
@@ -608,7 +618,7 @@ def auto_assign_mentors(db: Session, caller: AuthenticatedUser) -> list[dict]:
     has one, so a second run only ever picks up genuinely new employees, or
     ones an earlier run had no eligible candidate for.
     """
-    _authorize_hr(caller)
+    _authorize_hr(caller, view_mode)
     from app.config import new_hire_mentor_window_days
 
     window_days = new_hire_mentor_window_days()
