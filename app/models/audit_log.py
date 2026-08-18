@@ -42,4 +42,14 @@ class AuditLog(Base):
     # rule as `source`.
     routed_via: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # Link the assistant-level rows a single bounded multi-step chain
+    # writes (app.tool_calling.execute_chain) -- one row per step, sharing
+    # one chain_id, chain_step 1/2/3 in order:
+    #   SELECT * FROM audit_log WHERE chain_id = X ORDER BY chain_step
+    # reconstructs the whole chain. Both null on every non-chained row
+    # (a single-call request, deterministic or not) -- same "null means
+    # not recorded" rule as `source`/`routed_via` above, not "chain of 1".
+    chain_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    chain_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

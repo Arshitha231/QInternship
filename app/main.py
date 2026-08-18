@@ -562,6 +562,12 @@ def continuity_engagement_exposure_route(
 
 @app.get("/continuity/review-queue", response_model=list[HrReviewQueueItem])
 def continuity_review_queue_route(
+    authorization_type: str | None = None,
+    exposure: str | None = None,
+    next_review_from: date | None = None,
+    next_review_to: date | None = None,
+    engagements_min: int | None = None,
+    engagements_max: int | None = None,
     window_days: int | None = Query(None),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
@@ -573,7 +579,11 @@ def continuity_review_queue_route(
     whose review does intersect something. HR-only."""
     if user.role != "hr":
         raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
-    return get_hr_review_queue_service(db, user, window_days=window_days)
+    return get_hr_review_queue_service(
+        db, user, window_days=window_days, authorization_type=authorization_type, exposure=exposure,
+        next_review_from=next_review_from, next_review_to=next_review_to,
+        engagements_min=engagements_min, engagements_max=engagements_max,
+    )
 
 
 @app.get("/continuity/employees/{employee_id}", response_model=EmployeeContinuityDetail)

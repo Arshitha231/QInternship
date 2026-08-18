@@ -671,6 +671,7 @@ button { font: inherit; }
 .continuity-window-control input {
   font: inherit; font-size: 13px; width: 80px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius);
 }
+.continuity-window-control input[type="date"] { width: 150px; }
 
 .continuity-summary-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .continuity-summary-card { padding: 16px 18px; text-align: center; }

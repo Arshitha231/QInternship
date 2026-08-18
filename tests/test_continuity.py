@@ -647,6 +647,67 @@ def test_review_queue_respects_window_days(fx, db_session):
     assert "Fixture Low" not in names
 
 
+def test_review_queue_filters_by_authorization_type(fx, db_session):
+    # Every fx record defaults to h1b (_mkrecord's own default) -- filtering
+    # for it keeps everyone, filtering for a type nobody holds returns none.
+    kept = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, authorization_type="h1b")
+    assert "Fixture High" in {i.employee.full_name for i in kept}
+    dropped = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, authorization_type="opt")
+    assert "Fixture High" not in {i.employee.full_name for i in dropped}
+
+
+def test_review_queue_filters_by_exposure(fx, db_session):
+    high_only = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, exposure="high")
+    names = {i.employee.full_name for i in high_only}
+    assert names == {"Fixture High"}
+
+    # "none" is a real, meaningful value here (unlike the engagements-only
+    # list) -- fx.after_review's review doesn't intersect anything.
+    none_only = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, exposure="none")
+    none_names = {i.employee.full_name for i in none_only}
+    assert "Fixture After Review" in none_names
+    assert "Fixture High" not in none_names
+
+
+def test_review_queue_filters_by_next_review_date_range(fx, db_session):
+    # fx.high is 10 days out, fx.medium/low are 30, fx.after_review is 50 --
+    # a 0-15 day window keeps only the first.
+    items = _list_review_queue_items(
+        db_session, CFG, TODAY, window_days=365,
+        next_review_from=TODAY, next_review_to=TODAY + timedelta(days=15),
+    )
+    names = {i.employee.full_name for i in items}
+    assert "Fixture High" in names
+    assert "Fixture Medium" not in names
+    assert "Fixture Low" not in names
+    assert "Fixture After Review" not in names
+
+
+def test_review_queue_engagements_filter_defaults_keep_zero_engagement_employees(fx, db_session):
+    # The point of this endpoint: a review with zero delivery consequence
+    # must stay visible unless a caller actively narrows it out. Leaving
+    # engagements_min/engagements_max unset (their default) must never do
+    # that narrowing by accident.
+    items = _list_review_queue_items(db_session, CFG, TODAY, window_days=365)
+    assert "Fixture After Review" in {i.employee.full_name for i in items}
+
+
+def test_review_queue_engagements_min_excludes_zero_when_explicitly_set(fx, db_session):
+    items = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, engagements_min=1)
+    names = {i.employee.full_name for i in items}
+    assert "Fixture After Review" not in names
+    assert "Fixture High" in names
+
+
+def test_review_queue_engagements_max_isolates_zero_engagement_employees(fx, db_session):
+    items = _list_review_queue_items(db_session, CFG, TODAY, window_days=365, engagements_max=0)
+    names = {i.employee.full_name for i in items}
+    assert "Fixture After Review" in names
+    assert "Fixture High" not in names
+    assert "Fixture Medium" not in names
+    assert "Fixture Low" not in names
+
+
 def test_review_queue_sorted_by_days_until_review_ascending():
     # Pure ordering check against already-built items, no DB needed.
     from app.schemas import AuthorizationRecordOut, HrReviewQueueItem, PersonRef
@@ -688,3 +749,19 @@ def test_get_hr_review_queue_hr_succeeds_and_writes_one_audit_row(fx, db_session
     assert row.action == "continuity.review_queue_view"
     for leaky in ("h1b", "opt", "stem_opt", "verified", "pending"):
         assert leaky not in row.query_text.lower()
+
+
+def test_get_hr_review_queue_audit_never_leaks_authorization_type_or_dates_even_when_filtered(fx, db_session):
+    # Same discipline _write_audit's own docstring states -- target is never
+    # a raw authorization type or date -- but now actually exercised with
+    # those filters SET, not just left at their default None.
+    get_hr_review_queue(
+        db_session, HR, window_days=365, authorization_type="h1b",
+        next_review_from=TODAY, next_review_to=TODAY + timedelta(days=100),
+    )
+    row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
+    for leaky in ("h1b", "opt", "stem_opt", str(TODAY), str(TODAY + timedelta(days=100))):
+        assert leaky not in row.query_text.lower()
+    # The fact that a filter WAS applied is still recorded -- just not its value.
+    assert "authorization_type_filtered=true" in row.query_text.lower()
+    assert "next_review_range_filtered=true" in row.query_text.lower()

@@ -585,11 +585,14 @@ def _list_engagement_exposures(
 # track and verify that record regardless of its delivery consequence.
 
 def _list_review_queue_items(
-    db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None,
+    db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None, *,
+    authorization_type: str | None = None, exposure: str | None = None,
+    next_review_from: date | None = None, next_review_to: date | None = None,
+    engagements_min: int | None = None, engagements_max: int | None = None,
 ) -> list[HrReviewQueueItem]:
     effective_window = window_days if window_days is not None else cfg.lookahead_days
 
-    rows = (
+    query = (
         db.query(WorkAuthorizationRecord, Employee)
         .join(Employee, WorkAuthorizationRecord.employee_id == Employee.id)
         .filter(
@@ -598,8 +601,19 @@ def _list_review_queue_items(
             WorkAuthorizationRecord.next_hr_review_date.isnot(None),
             Employee.is_active == True,  # noqa: E712
         )
-        .all()
     )
+    # authorization_type and the review-date range are real WorkAuthorizationRecord
+    # columns, filtered in SQL like the rest of this query. exposure/engagements_*
+    # only exist after _compute_employee_engagement_entries runs below, so those
+    # stay a post-computation filter, same split _list_engagement_exposures uses
+    # for its own computed-vs-column filters.
+    if authorization_type:
+        query = query.filter(WorkAuthorizationRecord.authorization_type == authorization_type)
+    if next_review_from:
+        query = query.filter(WorkAuthorizationRecord.next_hr_review_date >= next_review_from)
+    if next_review_to:
+        query = query.filter(WorkAuthorizationRecord.next_hr_review_date <= next_review_to)
+    rows = query.all()
 
     items: list[HrReviewQueueItem] = []
     for record, employee in rows:
@@ -611,6 +625,16 @@ def _list_review_queue_items(
         highest = max(
             (e.exposure for e in intersecting), key=lambda s: _SEVERITY_RANK[s], default="none",
         )
+        # None (the default for both) means no bound at all -- engagements_affected
+        # can legitimately be 0 (see HrReviewQueueItem's own docstring in
+        # app/schemas.py), and that case must stay visible unless a caller
+        # actively asks to narrow it out.
+        if engagements_min is not None and len(intersecting) < engagements_min:
+            continue
+        if engagements_max is not None and len(intersecting) > engagements_max:
+            continue
+        if exposure and highest != exposure:
+            continue
         items.append(HrReviewQueueItem(
             employee=PersonRef(id=employee.id, full_name=employee.full_name),
             current_record=_to_record_out(record),
@@ -669,7 +693,10 @@ def get_engagement_exposure(
 
 
 def get_hr_review_queue(
-    db: Session, caller: AuthenticatedUser, window_days: int | None = None,
+    db: Session, caller: AuthenticatedUser, window_days: int | None = None, *,
+    authorization_type: str | None = None, exposure: str | None = None,
+    next_review_from: date | None = None, next_review_to: date | None = None,
+    engagements_min: int | None = None, engagements_max: int | None = None,
 ) -> list[HrReviewQueueItem]:
     """The proactive "who is nearing a review date" list -- every employee
     with a current, HR-verified record and a scheduled review, whether or
@@ -679,10 +706,23 @@ def get_hr_review_queue(
     _require_hr(caller)
     cfg = _load_thresholds()
     today = date.today()
-    items = _list_review_queue_items(db, cfg, today, window_days)
+    items = _list_review_queue_items(
+        db, cfg, today, window_days, authorization_type=authorization_type, exposure=exposure,
+        next_review_from=next_review_from, next_review_to=next_review_to,
+        engagements_min=engagements_min, engagements_max=engagements_max,
+    )
     effective_window = window_days if window_days is not None else cfg.lookahead_days
+    # authorization_type and the two review-date bounds are deliberately
+    # recorded as "was a filter applied" booleans, never their actual value --
+    # _write_audit's own docstring: target is never a raw authorization type
+    # or date. exposure/engagements_min/engagements_max aren't authorization
+    # data, so those log their real values, same as get_engagement_exposure's
+    # audit row already does for its own non-authorization filters.
     _write_audit(
-        db, caller, "continuity.review_queue_view", f"window_days={effective_window}",
+        db, caller, "continuity.review_queue_view",
+        f"window_days={effective_window};authorization_type_filtered={authorization_type is not None};"
+        f"exposure={exposure};next_review_range_filtered={next_review_from is not None or next_review_to is not None};"
+        f"engagements_min={engagements_min};engagements_max={engagements_max}",
         len(items), {"employee", "current_record", "days_until_hr_review",
                      "engagements_affected", "highest_exposure"},
     )
