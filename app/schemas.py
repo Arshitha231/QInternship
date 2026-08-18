@@ -685,3 +685,76 @@ class EmployeeContinuityDetail(BaseModel):
     current_record: AuthorizationRecordOut | None
     history: list[AuthorizationRecordOut]
     engagements: list[EngagementExposure]
+
+
+# ---------------------------------------------------------------------------
+# GET /registry-view — HR-only, read-only rendering of app/registry.py's
+# access-control model. See app/registry_view.py for how each field here is
+# produced; every value is either computed by calling app.registry.is_visible()
+# directly or read verbatim off REGISTRY/IGNORED_COLUMNS — never a second,
+# hand-maintained description of what's already enforced elsewhere.
+# ---------------------------------------------------------------------------
+
+class SchemaCheck(BaseModel):
+    """Live proof — computed on every request via the same sa_inspect() call
+    app.registry.assert_registry_covers_schema() makes at startup, not
+    trusted from a past startup run — that every real `employees` column is
+    either a REGISTRY entry or an IGNORED_COLUMNS entry. `unaccounted` should
+    always be empty (the app wouldn't have started otherwise); it's reported
+    computed rather than assumed so this is a proof, not a claim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    registered_count: int
+    ignored_count: int
+    unaccounted_count: int
+    unaccounted: list[str]
+
+
+class RegistryFieldView(BaseModel):
+    """One app.registry.REGISTRY entry, as HR sees it. `visible_by` is keyed
+    by RegistryView.columns and comes from calling app.registry.is_visible()
+    directly, never a reimplementation. `abac_note` is set only for the
+    handful of fields where the static sensitivity tier alone would
+    understate (or entirely miss) who actually sees the field — see
+    app/registry_view.py's module docstring."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    type: str
+    sensitivity: str | None
+    filterable: bool
+    derived_from: list[str]
+    visible_by: dict[str, bool]
+    abac_note: str | None = None
+
+
+class IgnoredColumnView(BaseModel):
+    """One app.registry.IGNORED_COLUMNS entry — a real `employees` column
+    deliberately outside REGISTRY, with the reason carried as data (not just
+    a source comment) so it can be shown, not just trusted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    reason: str
+
+
+class RegistryView(BaseModel):
+    """GET /registry-view's full response. `methodology`, `filterable_note`,
+    and `results_scoping_note` are fixed, authored strings — plain-English
+    context a bare field grid can't convey on its own — never generated and
+    never a substitute for the mechanism-level explanation, which stays in
+    app/registry.py's and app/permissions.py's own module docstrings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_check: SchemaCheck
+    columns: list[str]
+    methodology: str
+    filterable_note: str
+    results_scoping_note: str
+    fields: list[RegistryFieldView]
+    ignored_columns: list[IgnoredColumnView]
+    derived_hr_note: str
