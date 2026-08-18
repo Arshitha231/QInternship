@@ -40,17 +40,27 @@ from app.permissions import resolve_view_mode
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
 from app.project_skills import set_required_skills as set_required_skills_service
-from app.proposals import ProposalNotActionable, ProposalNotFound, ReviewDenied, SubjectNotFound
+from app.proposals import (
+    DocumentAlreadyFinalized,
+    DocumentNotFound,
+    ProposalNotActionable,
+    ProposalNotFound,
+    ReviewDenied,
+    SubjectNotFound,
+)
 from app.proposals import accept as accept_proposal
 from app.proposals import bulk_accept as bulk_accept_proposals
 from app.proposals import bulk_reject as bulk_reject_proposals
 from app.proposals import correct as correct_proposal
 from app.proposals import edit as edit_proposal
+from app.proposals import finalize_document as finalize_document_service
+from app.proposals import list_documents
 from app.proposals import list_proposals
 from app.proposals import list_subjects
 from app.proposals import reassign as reassign_proposal
 from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
+from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
@@ -62,6 +72,7 @@ from app.schemas import (
     EditProposalRequest,
     EmployeeContinuityDetail,
     EngagementExposure,
+    FinalizeDocumentRequest,
     HrReviewQueueItem,
     NotificationOut,
     OrgChainNode,
@@ -641,6 +652,30 @@ async def upload_doc_route(
     }
 
 
+@app.get("/uploaded_docs")
+def list_documents_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Every uploaded document, newest first — the review screen's index of
+    what's awaiting a decision (pending_count, unresolved_subject_count)
+    versus what's already been finalized (content_scrubbed_at set).
+
+    Named /uploaded_docs, not the more obvious /docs — FastAPI's own
+    interactive API documentation is already mounted at GET /docs
+    (docs_url, the default), and a second route on the identical path
+    would either shadow it or be shadowed by it depending on registration
+    order. /docs/upload and /docs/{id}/finalize don't collide (FastAPI's
+    reservation is the exact bare path), only a bare GET /docs would.
+    """
+    try:
+        documents = list_documents(db, user, resolve_view_mode(user.role, view_mode))
+    except ReviewDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"documents": documents}
+
+
 @app.get("/doc_subject_matches")
 def list_doc_subject_matches_route(
     doc_id: int | None = Query(None, description="Restrict to one uploaded document."),
@@ -791,6 +826,20 @@ def reject_proposed_change_route(
         reject_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
 
 
+@app.post("/proposed_changes/{proposal_id}/undo")
+def undo_proposed_change_route(
+    proposal_id: int,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Flip an accepted/edited proposal back to pending and reverse exactly
+    what it wrote — only while its source document hasn't been finalized
+    yet (see app.proposals.undo)."""
+    return _review_action(
+        undo_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
+
+
 @app.post("/proposed_changes/bulk_accept")
 def bulk_accept_proposed_changes_route(
     body: BulkProposalRequest,
@@ -813,6 +862,30 @@ def bulk_reject_proposed_changes_route(
 ) -> dict:
     return _bulk_action(
         bulk_reject_proposals, db, user, resolve_view_mode(user.role, view_mode), body)
+
+
+@app.post("/docs/{doc_id}/finalize")
+def finalize_document_route(
+    doc_id: int,
+    body: FinalizeDocumentRequest,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The "Update" action: accept every id in accept_ids, reject every
+    OTHER still-pending row this document has waiting, then clear the
+    document's own extracted text for good — a one-shot pass, not
+    repeatable once it's run once (see DocumentAlreadyFinalized)."""
+    try:
+        result = finalize_document_service(
+            db, user, doc_id, resolve_view_mode(user.role, view_mode), accept_ids=body.accept_ids)
+    except ReviewDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentNotFound as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
+    except DocumentAlreadyFinalized as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
 
 
 def _bulk_action(fn, db, user, mode: str, body: BulkProposalRequest) -> dict:

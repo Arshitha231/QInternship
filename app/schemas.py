@@ -42,6 +42,17 @@ class ProjectHistoryItem(BaseModel):
     # here keeps the same absent-not-null guarantee the top-level fields have.
     project_desc: str | None = None
 
+    # This person's own one-line account of what they did on the project —
+    # EmployeeProject.contribution, not Project.description (project_desc
+    # above). Same visibility precedent as project_desc: EDITABLE gates who
+    # may WRITE it (it/work, see app.permissions and app.proposals'
+    # FIELD_FOR_CHANGE_TYPE), but nothing narrows who may READ it beyond
+    # project_history's own BASE_FIELDS gate — it was simply missing from
+    # this model entirely, which is why accepting a document's contribution
+    # proposal committed the row correctly but it never appeared on anyone's
+    # profile.
+    contribution: str | None = None
+
 
 class TrainingStatusItem(BaseModel):
     """One course on a person's profile.
@@ -376,6 +387,18 @@ class ResolveSubjectRequest(BaseModel):
 
     employee_id: str | None = None
     new_hire: bool = False
+
+
+class FinalizeDocumentRequest(BaseModel):
+    """Body of POST /docs/{id}/finalize — the "Update" action. Every id here
+    gets accepted; every OTHER still-pending, employee-resolved proposal
+    from this document gets rejected. An empty list is a valid, meaningful
+    request — "reject everything, I don't want any of this document's
+    suggestions" — not an error, same as unchecking every box would mean."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accept_ids: list[int] = Field(default_factory=list)
 
 
 class BulkProposalRequest(BaseModel):

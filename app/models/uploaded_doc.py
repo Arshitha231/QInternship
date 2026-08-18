@@ -33,3 +33,15 @@ class UploadedDoc(Base):
     # document's provenance has to survive the uploader leaving.
     uploaded_by: Mapped[str] = mapped_column(String(36), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+    # Set once, by app.proposals.finalize_document, the moment every
+    # actionable proposed_changes row from this document has been decided.
+    # At that point extracted_text is overwritten to "" — the row itself
+    # (id, filename, uploaded_at) survives, because proposed_changes and
+    # doc_subject_matches both hold a non-nullable FK to it and every
+    # already-accepted/rejected row is kept, not deleted, as its own audit
+    # trail. This column is what distinguishes "empty because nothing
+    # parsed" from "emptied on purpose after review finished" — the same
+    # confusion app.doc_extraction.correct_call would otherwise be exposed
+    # to if it ever ran against a scrubbed row (it checks this first).
+    content_scrubbed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -2,7 +2,7 @@ import type {
   BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
   EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode, PersonDetail,
   PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
-  UpdateEmployeeChanges, UploadDocResult, ViewMode,
+  UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -239,6 +239,22 @@ export async function uploadDoc(
   return res.json() as Promise<UploadDocResult>;
 }
 
+export function listUploadedDocs(
+  identity: Identity, viewMode: ViewMode,
+): Promise<{ documents: UploadedDocSummary[] }> {
+  return request(`/uploaded_docs?view_mode=${viewMode}`, identity);
+}
+
+export function finalizeDocument(
+  identity: Identity, docId: number, acceptIds: number[], viewMode: ViewMode,
+): Promise<{ doc_id: number; results: BulkResultRow[]; content_scrubbed_at: string }> {
+  return request(`/docs/${docId}/finalize?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ accept_ids: acceptIds }),
+  });
+}
+
 export function listDocSubjectMatches(
   identity: Identity, viewMode: ViewMode, filters: { docId?: number; status?: string } = {},
 ): Promise<{ doc_id: number | null; subjects: DocSubjectMatchOut[] }> {
@@ -290,6 +306,11 @@ export const editProposedChange = (
 
 export const rejectProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
   proposedChangeAction(identity, id, "reject", viewMode);
+
+// Only valid on an accepted/edited row, and only while its source document
+// hasn't been finalized yet — see app/proposals.py's undo().
+export const undoProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
+  proposedChangeAction(identity, id, "undo", viewMode);
 
 export const reassignProposedChange = (
   identity: Identity, id: number, employeeId: string, viewMode: ViewMode,

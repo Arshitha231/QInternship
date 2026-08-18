@@ -15,6 +15,7 @@ deployment configured — see conftest), so nothing here touches a model API.
 """
 import io
 import json
+from datetime import date
 
 import pytest
 
@@ -555,6 +556,263 @@ async def test_correct_stays_pending_and_updates_proposed_value(client, project_
 
 
 # ---------------------------------------------------------------------------
+# Undo: reverse an accept()/edit() while the source document is still
+# under review.
+# ---------------------------------------------------------------------------
+
+async def _undo(client, proposal_id, role="it", view_mode="work"):
+    return await client.post(
+        f"/proposed_changes/{proposal_id}/undo", params={"view_mode": view_mode},
+        headers=auth_headers(role, "it-reviewer-1"))
+
+
+# A dedicated document + skill name for the two tests below, deliberately
+# distinct from PROJECT_DOC_TEXT (which most other tests in this file also
+# accept skills from, against the same shared session-scoped database — see
+# conftest.py). A name this specific can't collide with anything an earlier
+# or later test in the suite committed, so "was this skill freshly created
+# by MY accept()" stays a fact these tests can rely on regardless of run
+# order, instead of a guess about what already happened to extract-alex.
+UNDO_SKILL_DOC_TEXT = """Weekly status report
+
+Uma Kestrel worked on Project Undo Test Alpha. Piloted a rollback tool using Zephyrion Toolkit.
+"""
+
+
+async def _undo_skill_doc(client):
+    resp = await _upload(client, UNDO_SKILL_DOC_TEXT, filename="undo-skill-fixture.docx")
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["doc_id"]
+    subjects = await _subjects(client, doc_id)
+    subject = next(s for s in subjects if s["extracted_name"] == "Uma Kestrel")
+    await _resolve(client, subject["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, doc_id, "extract-alex", "skill"))[0]
+    return skill_id
+
+
+async def test_undo_skill_removes_a_newly_created_skill(client, db_session):
+    skill_id = await _undo_skill_doc(client)
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    skill_name = accept_resp.json()["proposed_value"]["skill"]
+
+    db_session.expire_all()
+    from app.models import Skill
+    row = (
+        db_session.query(EmployeeSkill).join(Skill, EmployeeSkill.skill_id == Skill.id)
+        .filter(EmployeeSkill.employee_id == "extract-alex", Skill.name == skill_name).first()
+    )
+    assert row is not None  # accept() created it
+
+    undo_resp = await _undo(client, skill_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+    assert undo_resp.json()["status"] == "pending"
+
+    db_session.expire_all()
+    row = (
+        db_session.query(EmployeeSkill).join(Skill, EmployeeSkill.skill_id == Skill.id)
+        .filter(EmployeeSkill.employee_id == "extract-alex", Skill.name == skill_name).first()
+    )
+    assert row is None  # undo() removed exactly what accept() created
+    assert db_session.get(ProposedChange, skill_id).status is ProposedChangeStatus.pending
+
+
+async def test_undo_skill_never_removes_one_that_already_existed(client, db_session):
+    """Two proposals could plausibly target the same (employee, skill) —
+    two documents both mentioning Alex knows Terraform, say. The second
+    accept() no-ops (never downgrades a level already held); undoing IT
+    must not delete a skill the first, still-accepted proposal is
+    responsible for."""
+    skill_id = await _undo_skill_doc(client)
+    skill_name = json.loads(db_session.get(ProposedChange, skill_id).proposed_value)["skill"]
+
+    from app.models import Skill
+    skill = db_session.query(Skill).filter(Skill.name == skill_name).first()
+    if skill is None:
+        from app.models.enums import SkillCategory
+        skill = Skill(name=skill_name, category=SkillCategory.technical, canonical_id=None)
+        db_session.add(skill)
+        db_session.commit()
+    from app.models.enums import SkillLevel, SkillSource
+    db_session.add(EmployeeSkill(
+        employee_id="extract-alex", skill_id=skill.id, level=SkillLevel.working, source=SkillSource.confirmed,
+    ))
+    db_session.commit()
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+
+    undo_resp = await _undo(client, skill_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    row = db_session.query(EmployeeSkill).filter(
+        EmployeeSkill.employee_id == "extract-alex", EmployeeSkill.skill_id == skill.id).first()
+    assert row is not None
+    assert row.level is SkillLevel.working  # the pre-existing, higher-level row survives untouched
+
+
+async def _seed_project(db_session, name, owner_id):
+    """Find-or-create, same shape as app.proposals._get_or_create_project —
+    the test database is session-scoped (see conftest.py), so a project
+    named "Project Nightingale" almost certainly already exists by the
+    time any one of these tests runs, from an earlier test's own accept().
+    Reusing it (rather than blind-inserting a duplicate) is what keeps
+    _get_or_create_project's own `.first()` lookup pointed at the same row
+    this test just set up, instead of an ambiguous earlier one."""
+    from app.models import Employee, Project
+    from app.models.enums import ProjectClassification, ProjectType
+
+    project = db_session.query(Project).filter(Project.name.ilike(name)).first()
+    if project is not None:
+        return project
+    owner = db_session.get(Employee, owner_id)
+    project = Project(
+        name=name, type=ProjectType.project, description=None,
+        owning_unit_id=owner.org_unit_id, owner_id=owner_id,
+        classification=ProjectClassification.internal, is_client_engagement=False,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+    return project
+
+
+async def _seed_membership(db_session, employee_id, project_id, **fields):
+    """Find-or-create the membership row too, same reasoning as
+    _seed_project — an earlier test in this session may have already put
+    extract-alex on Project Nightingale. Overwrites `fields` onto whichever
+    row it finds/creates, so each test still controls its own "previous"
+    state regardless of what an earlier test left behind."""
+    membership = (
+        db_session.query(EmployeeProject)
+        .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == project_id)
+        .first()
+    )
+    if membership is None:
+        membership = EmployeeProject(
+            employee_id=employee_id, project_id=project_id,
+            role="Contributor", start_date=date(2020, 1, 1),
+        )
+        db_session.add(membership)
+    for key, val in fields.items():
+        setattr(membership, key, val)
+    db_session.commit()
+    db_session.refresh(membership)
+    return membership
+
+
+async def test_undo_contribution_restores_previous_text(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    contribution_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "contribution"))[0]
+    project_name = json.loads(db_session.get(ProposedChange, contribution_id).proposed_value)["project"]
+    project = await _seed_project(db_session, project_name, "extract-alex")
+    await _seed_membership(db_session, "extract-alex", project.id, contribution="ORIGINAL CONTRIBUTION")
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{contribution_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.contribution != "ORIGINAL CONTRIBUTION"
+
+    undo_resp = await _undo(client, contribution_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.contribution == "ORIGINAL CONTRIBUTION"
+
+
+async def test_undo_project_entry_restores_previous_role(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    entry_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "project_entry"))[0]
+    project_name = json.loads(db_session.get(ProposedChange, entry_id).proposed_value)["project"]
+    project = await _seed_project(db_session, project_name, "extract-alex")
+    await _seed_membership(db_session, "extract-alex", project.id, role="Legacy Role")
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{entry_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.role != "Legacy Role"
+
+    undo_resp = await _undo(client, entry_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.role == "Legacy Role"
+
+
+async def test_undo_refuses_after_document_finalized(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+    assert "finalized" in resp.json()["detail"]
+
+    db_session.expire_all()
+    assert db_session.get(ProposedChange, skill_id).status is ProposedChangeStatus.accepted
+
+
+async def test_undo_refuses_on_rejected_row(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    await client.post(
+        f"/proposed_changes/{skill_id}/reject", params={"view_mode": "work"}, headers=auth_headers("it"))
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+
+
+async def test_undo_refuses_on_still_pending_row(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("role", ["employee", "manager", "hr"])
+async def test_undo_is_it_only(client, project_doc, role):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+    await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+
+    resp = await _undo(client, skill_id, role=role)
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # Permissions: skills/contribution/project_entry gated per change_type.
 # ---------------------------------------------------------------------------
 
@@ -672,6 +930,179 @@ async def test_bulk_action_requires_a_selector(client):
         "/proposed_changes/bulk_accept", params={"view_mode": "work"},
         json={}, headers=auth_headers("it"))
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /docs + POST /docs/{id}/finalize — the "Update" action: accept the
+# checked rows, reject the rest, then scrub the document's own content.
+# ---------------------------------------------------------------------------
+
+async def _docs(client, role="it"):
+    resp = await client.get("/uploaded_docs", params={"view_mode": "work"}, headers=auth_headers(role))
+    assert resp.status_code == 200, resp.text
+    return resp.json()["documents"]
+
+
+async def test_finalize_accepts_selected_and_rejects_the_rest(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    ids = await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex")
+    assert len(ids) >= 2
+    keep, drop = ids[0], ids[1:]
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": [keep]}, headers=auth_headers("it", "it-reviewer-1"))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["content_scrubbed_at"] is not None
+    results = {r["id"]: r for r in body["results"]}
+    assert results[keep]["status"] == "accepted"
+    assert all(results[i]["status"] == "rejected" for i in drop)
+
+    db_session.expire_all()
+    assert db_session.get(ProposedChange, keep).status is ProposedChangeStatus.accepted
+    for i in drop:
+        assert db_session.get(ProposedChange, i).status is ProposedChangeStatus.rejected
+
+    from app.models import UploadedDoc
+    doc = db_session.get(UploadedDoc, project_doc["doc_id"])
+    assert doc.extracted_text == ""
+    assert doc.content_scrubbed_at is not None
+
+
+async def test_finalize_with_no_accepted_ids_rejects_everything_and_still_scrubs(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    ids = await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex")
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    assert all(r["status"] == "rejected" for r in results)
+
+    db_session.expire_all()
+    from app.models import UploadedDoc
+    assert db_session.get(UploadedDoc, project_doc["doc_id"]).extracted_text == ""
+
+
+async def test_finalize_leaves_unresolved_subject_rows_pending_and_decidable_later(
+    client, project_doc, db_session,
+):
+    """Jamie Doubleton's subject is left unresolved (two same-named
+    candidates) — its proposed_changes rows have no employee_id yet, so
+    they're invisible to GET /proposed_changes and finalize can't touch
+    them. Finalizing the document anyway must not lose them: they stay
+    pending, and resolving the subject afterward still works, since
+    accept()/reject() never need the document's own text."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 200, resp.text
+
+    jamie_row = db_session.query(ProposedChange).filter(
+        ProposedChange.subject_match_id == jamie["id"]).first()
+    assert jamie_row.status is ProposedChangeStatus.pending
+    assert jamie_row.employee_id is None
+
+    resolve_resp = await _resolve(client, jamie["id"], employee_id="extract-dup-2")
+    assert resolve_resp.status_code == 200, resolve_resp.text
+    accept_resp = await client.post(
+        f"/proposed_changes/{jamie_row.id}/accept", params={"view_mode": "work"},
+        headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+
+
+async def test_correct_refuses_once_the_document_is_scrubbed(client, project_doc, db_session):
+    """Jamie's subject is left unresolved on purpose (see the
+    "leaves unresolved subject rows pending" test above) — its
+    proposed_changes row stays pending straight through finalize, since
+    finalize only ever touches employee-resolved rows. /correct still
+    requires just `status == pending`, so it's reachable on that row even
+    after the document is scrubbed — exactly the case the new guard in
+    app.proposals.correct exists for."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    jamie_row = db_session.query(ProposedChange).filter(
+        ProposedChange.subject_match_id == jamie["id"]).first()
+
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    resp = await client.post(
+        f"/proposed_changes/{jamie_row.id}/correct", params={"view_mode": "work"},
+        json={"instruction": "actually it was React, not Terraform"}, headers=auth_headers("it"))
+    assert resp.status_code == 409
+    assert "cleared" in resp.json()["detail"]
+
+
+async def test_finalize_is_not_repeatable(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+
+    first = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert first.status_code == 200, first.text
+
+    second = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert second.status_code == 409
+
+
+async def test_finalize_unknown_document_is_404(client):
+    resp = await client.post(
+        "/docs/999999/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("role", ["employee", "manager", "hr"])
+async def test_finalize_is_it_only(client, project_doc, role):
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers(role))
+    assert resp.status_code == 403
+
+
+async def test_list_documents_reports_pending_and_scrubbed_state(client, project_doc, db_session):
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["content_scrubbed_at"] is None
+    assert doc["pending_count"] == 0  # nothing visible yet — both subjects unresolved
+    assert doc["unresolved_subject_count"] == 3
+
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["pending_count"] > 0
+    assert doc["unresolved_subject_count"] == 2
+
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["content_scrubbed_at"] is not None
+    assert doc["pending_count"] == 0
 
 
 # ---------------------------------------------------------------------------

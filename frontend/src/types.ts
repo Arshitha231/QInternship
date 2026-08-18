@@ -41,10 +41,19 @@ export interface ProjectHistoryItem {
   start_month: string;
   end_month: string | null;
   current: boolean;
-  // Work mode, hr/it only. Absent (not null) for anyone else -- the backend
-  // serializes with exclude_unset, so `"project_desc" in item` is the honest
-  // test for "am I allowed to see this", and undefined means no.
+  // Visible to every role/view_mode that can see project_history at all --
+  // EDITABLE gates who may WRITE this (it/work only), not who may read it.
+  // Still optional/nullable rather than a plain string: the backend
+  // serializes with exclude_unset, so `"project_desc" in item` stays the
+  // honest test for "did the backend even attempt to set this", separate
+  // from whether it happens to be empty.
   project_desc?: string | null;
+  // This person's own account of what they did -- EmployeeProject.
+  // contribution, not the project's own shared description above. Same
+  // visibility rule as project_desc: readable by anyone who can see
+  // project_history, writable only by it/work (see app/proposals.py's
+  // accept()/edit(), the only two paths that ever set it).
+  contribution?: string | null;
 }
 
 export interface TrainingStatusItem {
@@ -325,6 +334,21 @@ export interface ProposedChangeGroup {
   employee_id: string;
   employee_name: string | null;
   changes: ProposedChangeOut[];
+}
+
+// GET /uploaded_docs — one row per document ever uploaded. pending_count and
+// unresolved_subject_count are live, computed server-side, so the review
+// screen can tell "still awaiting a decision" apart from "finalized"
+// (content_scrubbed_at set) without re-deriving it from every subject/change
+// row itself.
+export interface UploadedDocSummary {
+  id: number;
+  filename: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  content_scrubbed_at: string | null;
+  pending_count: number;
+  unresolved_subject_count: number;
 }
 
 export interface BulkResultRow {

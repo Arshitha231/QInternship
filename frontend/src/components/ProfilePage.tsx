@@ -694,6 +694,23 @@ export function ProfilePage({
                       <p className="job-meta">
                         {p.role} &middot; {p.project_type} &middot; {p.start_month} &ndash; {p.current ? "Present" : p.end_month}
                       </p>
+                      {/* This person's own account of what they did here —
+                          EmployeeProject.contribution, distinct from the
+                          project's own shared description below. Same
+                          absent-vs-empty rule: `!== undefined` rather than a
+                          truthiness check, so a caller who can see
+                          project_history at all always gets the key, empty
+                          or not. Most rows won't have one yet (it's set via
+                          accept()/edit() on an AI-extracted or manually
+                          typed proposal, not backfilled), which is exactly
+                          why "nothing on file" is worth saying explicitly
+                          rather than the row silently having one fewer line. */}
+                      {p.contribution !== undefined && (
+                        <p className="job-desc">
+                          <strong>Contribution: </strong>
+                          {p.contribution || <span className="muted">No contribution note on file</span>}
+                        </p>
+                      )}
                       {/* Visible to every role/view_mode now — project_desc
                           moved into BASE_FIELDS. `!== undefined` stays
                           rather than becoming a truthiness check, so if a
