@@ -32,7 +32,15 @@ load_dotenv()
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT", "").rstrip("/")
 SEARCH_KEY = os.environ.get("SEARCH_KEY", "")
 SEARCH_API_VERSION = "2024-07-01"
-INDEX_NAME = "employees-index"
+# Overridable so a local run can point at an index built from ITS OWN
+# database. The index stores employee ids, and ids are per-database: a local
+# SQLite dataset and the deployed Azure SQL one share none of them, so a
+# local run against the deployed index resolves every ranked hit to nothing
+# and every free-text query silently returns zero results. (seed.py's
+# docstring warns about the same collision in the other direction --
+# rebuilding this index from local data breaks search for the deployed app
+# and everyone using it.) Default unchanged, so deployment needs no config.
+INDEX_NAME = os.environ.get("SEARCH_INDEX_NAME", "employees-index")
 
 # Its own resource, separate from chat (app/tool_calling.py) — a v1-API
 # Azure AI Foundry endpoint, not a classic per-resource Azure OpenAI

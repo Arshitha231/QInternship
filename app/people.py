@@ -394,9 +394,28 @@ def find_people(
             top=MAX_SEARCH_RESULTS,
         )
         if ranked_ids is not None:
-            rows = db.execute(select(Employee).where(Employee.id.in_(ranked_ids))).scalars().all()
+            rows = db.execute(
+                # is_active belongs here and was missing: the index is a
+                # derived cache, and a deactivation whose re-index failed
+                # (search_reindex degrades rather than raising, by design)
+                # would otherwise resurrect that person into ranked results
+                # only. The SQL branch below has always had this filter.
+                select(Employee).where(Employee.id.in_(ranked_ids), Employee.is_active == True)  # noqa: E712
+            ).scalars().all()
             by_id = {e.id: e for e in rows}
-            candidates = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
+            resolved = [by_id[i] for i in ranked_ids if i in by_id]  # preserve Search's relevance order
+            # Search answered, but none of what it named exists in THIS
+            # database. Leaving candidates as an empty list would report "no
+            # such person" -- a confident wrong answer -- when the truthful
+            # state is "the index is describing different data". Leaving it
+            # None instead falls through to the SQL branch below, which is
+            # the same degradation path an unreachable Search already takes.
+            #
+            # Not hypothetical: pointing a local run at the deployed index
+            # does exactly this (seed.py's docstring warns about the reverse
+            # direction), and every free-text query silently returned zero
+            # results while the identical query worked in deployment.
+            candidates = resolved or None
 
     if candidates is None:
         stmt = select(Employee).where(Employee.is_active == True)
