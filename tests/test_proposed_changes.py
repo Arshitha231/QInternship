@@ -675,6 +675,179 @@ async def test_bulk_action_requires_a_selector(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /docs + POST /docs/{id}/finalize — the "Update" action: accept the
+# checked rows, reject the rest, then scrub the document's own content.
+# ---------------------------------------------------------------------------
+
+async def _docs(client, role="it"):
+    resp = await client.get("/uploaded_docs", params={"view_mode": "work"}, headers=auth_headers(role))
+    assert resp.status_code == 200, resp.text
+    return resp.json()["documents"]
+
+
+async def test_finalize_accepts_selected_and_rejects_the_rest(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    ids = await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex")
+    assert len(ids) >= 2
+    keep, drop = ids[0], ids[1:]
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": [keep]}, headers=auth_headers("it", "it-reviewer-1"))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["content_scrubbed_at"] is not None
+    results = {r["id"]: r for r in body["results"]}
+    assert results[keep]["status"] == "accepted"
+    assert all(results[i]["status"] == "rejected" for i in drop)
+
+    db_session.expire_all()
+    assert db_session.get(ProposedChange, keep).status is ProposedChangeStatus.accepted
+    for i in drop:
+        assert db_session.get(ProposedChange, i).status is ProposedChangeStatus.rejected
+
+    from app.models import UploadedDoc
+    doc = db_session.get(UploadedDoc, project_doc["doc_id"])
+    assert doc.extracted_text == ""
+    assert doc.content_scrubbed_at is not None
+
+
+async def test_finalize_with_no_accepted_ids_rejects_everything_and_still_scrubs(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    ids = await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex")
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    assert all(r["status"] == "rejected" for r in results)
+
+    db_session.expire_all()
+    from app.models import UploadedDoc
+    assert db_session.get(UploadedDoc, project_doc["doc_id"]).extracted_text == ""
+
+
+async def test_finalize_leaves_unresolved_subject_rows_pending_and_decidable_later(
+    client, project_doc, db_session,
+):
+    """Jamie Doubleton's subject is left unresolved (two same-named
+    candidates) — its proposed_changes rows have no employee_id yet, so
+    they're invisible to GET /proposed_changes and finalize can't touch
+    them. Finalizing the document anyway must not lose them: they stay
+    pending, and resolving the subject afterward still works, since
+    accept()/reject() never need the document's own text."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 200, resp.text
+
+    jamie_row = db_session.query(ProposedChange).filter(
+        ProposedChange.subject_match_id == jamie["id"]).first()
+    assert jamie_row.status is ProposedChangeStatus.pending
+    assert jamie_row.employee_id is None
+
+    resolve_resp = await _resolve(client, jamie["id"], employee_id="extract-dup-2")
+    assert resolve_resp.status_code == 200, resolve_resp.text
+    accept_resp = await client.post(
+        f"/proposed_changes/{jamie_row.id}/accept", params={"view_mode": "work"},
+        headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+
+
+async def test_correct_refuses_once_the_document_is_scrubbed(client, project_doc, db_session):
+    """Jamie's subject is left unresolved on purpose (see the
+    "leaves unresolved subject rows pending" test above) — its
+    proposed_changes row stays pending straight through finalize, since
+    finalize only ever touches employee-resolved rows. /correct still
+    requires just `status == pending`, so it's reachable on that row even
+    after the document is scrubbed — exactly the case the new guard in
+    app.proposals.correct exists for."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    jamie_row = db_session.query(ProposedChange).filter(
+        ProposedChange.subject_match_id == jamie["id"]).first()
+
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    resp = await client.post(
+        f"/proposed_changes/{jamie_row.id}/correct", params={"view_mode": "work"},
+        json={"instruction": "actually it was React, not Terraform"}, headers=auth_headers("it"))
+    assert resp.status_code == 409
+    assert "cleared" in resp.json()["detail"]
+
+
+async def test_finalize_is_not_repeatable(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+
+    first = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert first.status_code == 200, first.text
+
+    second = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert second.status_code == 409
+
+
+async def test_finalize_unknown_document_is_404(client):
+    resp = await client.post(
+        "/docs/999999/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("role", ["employee", "manager", "hr"])
+async def test_finalize_is_it_only(client, project_doc, role):
+    resp = await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers(role))
+    assert resp.status_code == 403
+
+
+async def test_list_documents_reports_pending_and_scrubbed_state(client, project_doc, db_session):
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["content_scrubbed_at"] is None
+    assert doc["pending_count"] == 0  # nothing visible yet — both subjects unresolved
+    assert doc["unresolved_subject_count"] == 3
+
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["pending_count"] > 0
+    assert doc["unresolved_subject_count"] == 2
+
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    docs = await _docs(client)
+    doc = next(d for d in docs if d["id"] == project_doc["doc_id"])
+    assert doc["content_scrubbed_at"] is not None
+    assert doc["pending_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Nothing pending (unresolved OR unaccepted) appears in search.
 # ---------------------------------------------------------------------------
 

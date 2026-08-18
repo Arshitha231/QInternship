@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  acceptProposedChange, ApiError, bulkAcceptProposedChanges, bulkRejectProposedChanges,
-  editProposedChange, findPeople, listDocSubjectMatches, listProposedChanges,
-  reassignProposedChange, rejectProposedChange, resolveDocSubjectMatch, uploadDoc,
+  acceptProposedChange, ApiError, editProposedChange, findPeople, finalizeDocument,
+  listDocSubjectMatches, listProposedChanges, listUploadedDocs, reassignProposedChange,
+  rejectProposedChange, resolveDocSubjectMatch, uploadDoc,
 } from "../api";
 import type {
   DocSubjectMatchOut, Identity, PersonSummary, ProposedChangeGroup, ProposedChangeOut,
-  UploadDocResult, ViewMode,
+  UploadDocResult, UploadedDocSummary, ViewMode,
 } from "../types";
 
 // AI-assisted doc upload, IT-only, work mode only — see App.tsx's tab
@@ -15,12 +15,14 @@ import type {
 // never fire (the backend 403s them regardless, per app/proposals.py's
 // _authorize / _authorize_commit).
 //
-// Deliberately a single scrolling pipeline (upload -> resolve people ->
-// review fields), not tabs like ContinuityPage's three independent views
-// of the same data -- this workflow is genuinely sequential, and losing
-// the "people to resolve" list from view while looking at "proposed
-// changes" would hide exactly the thing that's blocking more of them from
-// appearing.
+// One card per uploaded document, each a self-contained pipeline (its own
+// unresolved people, its own proposed changes, its own selection state) —
+// not a page-wide flat list, because the actions that finish a document
+// (finalizeDocument) are scoped to exactly one document's rows. Nesting
+// keeps a document's "people to resolve" in view right above its own
+// proposed changes, same reasoning the single-scrolling-pipeline design
+// this replaces already had, just re-scoped per document instead of
+// flattened globally across every document ever uploaded.
 
 const CHANGE_TYPE_LABEL: Record<string, string> = {
   skill: "Skill", contribution: "Contribution", project_entry: "Project entry",
@@ -364,67 +366,68 @@ function ChangeRow({
   );
 }
 
-export function ReviewPage({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [lastUpload, setLastUpload] = useState<UploadDocResult | null>(null);
+// ---------------------------------------------------------------------------
+// Reshapes the two flat, cross-document lists GET /doc_subject_matches and
+// GET /proposed_changes return into per-document buckets — every
+// DocSubjectMatchOut and ProposedChangeOut already carries source_doc_id,
+// so this is pure client-side regrouping, not a second fetch.
+// ---------------------------------------------------------------------------
 
-  const [subjects, setSubjects] = useState<DocSubjectMatchOut[] | null>(null);
-  const [loadingSubjects, setLoadingSubjects] = useState(false);
-  const [groups, setGroups] = useState<ProposedChangeGroup[] | null>(null);
-  const [loadingGroups, setLoadingGroups] = useState(false);
-
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [refreshToken, setRefreshToken] = useState(0);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkError, setBulkError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingSubjects(true);
-    listDocSubjectMatches(identity, viewMode).then((r) => {
-      if (!cancelled) {
-        setSubjects(r.subjects);
-        setLoadingSubjects(false);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [identity, viewMode, refreshToken]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingGroups(true);
-    listProposedChanges(identity, viewMode).then((r) => {
-      if (!cancelled) {
-        setGroups(r.groups);
-        setLoadingGroups(false);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [identity, viewMode, refreshToken]);
-
-  function refresh() {
-    setSelected(new Set());
-    setRefreshToken((t) => t + 1);
+function groupByDocId<T extends { source_doc_id: number }>(items: T[]): Map<number, T[]> {
+  const out = new Map<number, T[]>();
+  for (const item of items) {
+    const bucket = out.get(item.source_doc_id);
+    if (bucket) bucket.push(item);
+    else out.set(item.source_doc_id, [item]);
   }
+  return out;
+}
 
-  async function handleUpload(file: File) {
-    setUploading(true);
-    setUploadError(null);
-    try {
-      const result = await uploadDoc(identity, file, viewMode);
-      setLastUpload(result);
-      refresh();
-    } catch (e) {
-      setUploadError(errorMessage(e, "Upload failed — try again."));
-    } finally {
-      setUploading(false);
+function groupChangesByDocument(groups: ProposedChangeGroup[]): Map<number, ProposedChangeGroup[]> {
+  const byDoc = new Map<number, Map<string, ProposedChangeGroup>>();
+  for (const g of groups) {
+    for (const c of g.changes) {
+      let perEmployee = byDoc.get(c.source_doc_id);
+      if (!perEmployee) {
+        perEmployee = new Map();
+        byDoc.set(c.source_doc_id, perEmployee);
+      }
+      let entry = perEmployee.get(g.employee_id);
+      if (!entry) {
+        entry = { employee_id: g.employee_id, employee_name: g.employee_name, changes: [] };
+        perEmployee.set(g.employee_id, entry);
+      }
+      entry.changes.push(c);
     }
   }
+  const out = new Map<number, ProposedChangeGroup[]>();
+  for (const [docId, perEmployee] of byDoc) {
+    out.set(docId, [...perEmployee.values()].sort((a, b) => (a.employee_name ?? "").localeCompare(b.employee_name ?? "")));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// One uploaded document's whole review surface: its own unresolved people,
+// its own proposed changes (with the same per-row Accept/Edit/Reassign/
+// Reject actions the rows always had), a checkbox per pending row, and one
+// "Update" button that finalizes the document — accepts whatever's checked,
+// dismisses everything else still pending, then clears its content for good.
+// ---------------------------------------------------------------------------
+
+function DocumentReviewCard({
+  doc, subjects, groups, identity, viewMode, onChanged,
+}: {
+  doc: UploadedDocSummary; subjects: DocSubjectMatchOut[]; groups: ProposedChangeGroup[];
+  identity: Identity; viewMode: ViewMode; onChanged: () => void;
+}) {
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const unresolvedSubjects = subjects.filter((s) => s.resolution_status === "unresolved");
+  const pendingIds = groups.flatMap((g) => g.changes.filter((c) => c.status === "pending").map((c) => c.id));
+  const pendingSet = new Set(pendingIds);
 
   function toggleSelect(id: number) {
     setSelected((prev) => {
@@ -444,35 +447,150 @@ export function ReviewPage({ identity, viewMode }: { identity: Identity; viewMod
     });
   }
 
-  async function bulkAccept() {
-    setBulkBusy(true);
-    setBulkError(null);
+  async function handleUpdate() {
+    setBusy(true);
+    setError(null);
     try {
-      await bulkAcceptProposedChanges(identity, viewMode, { ids: [...selected] });
-      refresh();
+      await finalizeDocument(identity, doc.id, [...selected].filter((id) => pendingSet.has(id)), viewMode);
+      setSelected(new Set());
+      onChanged();
     } catch (e) {
-      setBulkError(errorMessage(e, "Bulk accept failed — try again."));
+      setError(errorMessage(e, "Couldn't finish this document — try again."));
     } finally {
-      setBulkBusy(false);
+      setBusy(false);
     }
   }
 
-  async function bulkReject() {
-    setBulkBusy(true);
-    setBulkError(null);
+  const selectedCount = [...selected].filter((id) => pendingSet.has(id)).length;
+  const dismissCount = pendingIds.length - selectedCount;
+
+  return (
+    <div className="card review-document-card">
+      <div className="card-head">
+        <h3>{doc.filename}</h3>
+        <span className="continuity-meta">Doc #{doc.id}</span>
+      </div>
+
+      {unresolvedSubjects.length > 0 && (
+        <div className="review-subject-list">
+          {unresolvedSubjects.map((s) => (
+            <SubjectCard key={s.id} subject={s} identity={identity} viewMode={viewMode} onResolved={onChanged} />
+          ))}
+        </div>
+      )}
+
+      {groups.length === 0 ? (
+        <p className="continuity-meta">Nobody resolved yet — nothing to review here until someone is.</p>
+      ) : (
+        groups.map((g) => {
+          const ids = g.changes.filter((c) => c.status === "pending").map((c) => c.id);
+          return (
+            <div key={g.employee_id} className="review-employee-group">
+              <div className="card-head review-employee-head">
+                <h4>{g.employee_name ?? g.employee_id}</h4>
+                {ids.length > 0 && (
+                  <button className="link-btn" onClick={() => toggleGroupSelect(ids)}>
+                    Select all
+                  </button>
+                )}
+              </div>
+              <ul className="review-change-list">
+                {g.changes.map((c) => (
+                  <ChangeRow
+                    key={c.id} change={c} identity={identity} viewMode={viewMode}
+                    selected={selected.has(c.id)} onToggleSelect={() => toggleSelect(c.id)}
+                    onChanged={onChanged}
+                  />
+                ))}
+              </ul>
+            </div>
+          );
+        })
+      )}
+
+      {error && <p className="bio-error">{error}</p>}
+
+      <div className="review-finalize-row">
+        <p className="continuity-meta">
+          {pendingIds.length > 0
+            ? `${selectedCount} to apply, ${dismissCount} to dismiss.`
+            : "Nothing left to decide for this document."}
+          {unresolvedSubjects.length > 0 &&
+            ` ${unresolvedSubjects.length} ${unresolvedSubjects.length === 1 ? "person" : "people"} still unresolved`
+            + " — their suggestions stay pending after you finish."}
+        </p>
+        <button className="btn btn-primary" disabled={busy} onClick={handleUpdate}>
+          {busy ? "Updating…" : pendingIds.length > 0 ? "Update" : "Finish document"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FinalizedDocumentRow({ doc, groups }: { doc: UploadedDocSummary; groups: ProposedChangeGroup[] }) {
+  const changes = groups.flatMap((g) => g.changes);
+  const applied = changes.filter((c) => c.status === "accepted" || c.status === "edited").length;
+  const dismissed = changes.filter((c) => c.status === "rejected").length;
+  const when = doc.content_scrubbed_at ? new Date(doc.content_scrubbed_at).toLocaleString() : "";
+  return (
+    <li>
+      <strong>{doc.filename}</strong> — finalized {when} · {applied} applied, {dismissed} dismissed
+    </li>
+  );
+}
+
+export function ReviewPage({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastUpload, setLastUpload] = useState<UploadDocResult | null>(null);
+
+  const [documents, setDocuments] = useState<UploadedDocSummary[] | null>(null);
+  const [subjects, setSubjects] = useState<DocSubjectMatchOut[] | null>(null);
+  const [groups, setGroups] = useState<ProposedChangeGroup[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      listUploadedDocs(identity, viewMode),
+      listDocSubjectMatches(identity, viewMode),
+      listProposedChanges(identity, viewMode),
+    ]).then(([docsResult, subjectsResult, groupsResult]) => {
+      if (cancelled) return;
+      setDocuments(docsResult.documents);
+      setSubjects(subjectsResult.subjects);
+      setGroups(groupsResult.groups);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, viewMode, refreshToken]);
+
+  function refresh() {
+    setRefreshToken((t) => t + 1);
+  }
+
+  async function handleUpload(file: File) {
+    setUploading(true);
+    setUploadError(null);
     try {
-      await bulkRejectProposedChanges(identity, viewMode, { ids: [...selected] });
+      const result = await uploadDoc(identity, file, viewMode);
+      setLastUpload(result);
       refresh();
     } catch (e) {
-      setBulkError(errorMessage(e, "Bulk reject failed — try again."));
+      setUploadError(errorMessage(e, "Upload failed — try again."));
     } finally {
-      setBulkBusy(false);
+      setUploading(false);
     }
   }
 
-  const unresolvedSubjects = (subjects ?? []).filter((s) => s.resolution_status === "unresolved");
-  const decidedSubjects = (subjects ?? []).filter((s) => s.resolution_status !== "unresolved");
-  const hasAnyChanges = (groups ?? []).some((g) => g.changes.length > 0);
+  const subjectsByDoc = groupByDocId(subjects ?? []);
+  const changesByDoc = groupChangesByDocument(groups ?? []);
+  const activeDocs = (documents ?? []).filter((d) => d.content_scrubbed_at === null);
+  const finalizedDocs = (documents ?? []).filter((d) => d.content_scrubbed_at !== null);
 
   return (
     <div className="review-page">
@@ -480,7 +598,8 @@ export function ReviewPage({ identity, viewMode }: { identity: Identity; viewMod
         <h2>Upload a document</h2>
         <p className="continuity-meta">
           A project status document or a resume (.docx or .pdf). Everything it proposes is staged for review
-          here — nothing reaches a real profile until you accept or edit it.
+          here — nothing reaches a real profile until you accept it, and the document itself is cleared once
+          you finish reviewing it.
         </p>
         <input
           type="file" accept=".docx,.pdf" disabled={uploading}
@@ -503,80 +622,37 @@ export function ReviewPage({ identity, viewMode }: { identity: Identity; viewMod
       </section>
 
       <section className="card">
-        <div className="card-head">
-          <h2>People to resolve</h2>
-          {subjects && <span className="continuity-meta">{unresolvedSubjects.length} unresolved</span>}
-        </div>
-        {loadingSubjects || subjects === null ? (
-          <div className="skel skel-card" style={{ height: 100 }} />
-        ) : unresolvedSubjects.length === 0 ? (
-          <p className="continuity-meta">Nobody is waiting on resolution.</p>
+        <h2>Documents awaiting review</h2>
+        {loading || documents === null ? (
+          <div className="skel skel-card" style={{ height: 140 }} />
+        ) : activeDocs.length === 0 ? (
+          <p className="continuity-meta">Nothing waiting on review.</p>
         ) : (
-          <div className="review-subject-list">
-            {unresolvedSubjects.map((s) => (
-              <SubjectCard key={s.id} subject={s} identity={identity} viewMode={viewMode} onResolved={refresh} />
+          <div className="review-document-list">
+            {activeDocs.map((doc) => (
+              <DocumentReviewCard
+                key={doc.id} doc={doc}
+                subjects={subjectsByDoc.get(doc.id) ?? []}
+                groups={changesByDoc.get(doc.id) ?? []}
+                identity={identity} viewMode={viewMode} onChanged={refresh}
+              />
             ))}
           </div>
         )}
-        {decidedSubjects.length > 0 && (
+      </section>
+
+      {finalizedDocs.length > 0 && (
+        <section className="card">
           <details className="review-decided-subjects">
-            <summary>{decidedSubjects.length} already decided</summary>
+            <summary>{finalizedDocs.length} finalized document{finalizedDocs.length === 1 ? "" : "s"}</summary>
             <ul className="review-decided-list">
-              {decidedSubjects.map((s) => (
-                <li key={s.id}>
-                  {s.extracted_name} —{" "}
-                  {s.resolution_status === "new_hire_candidate" ? "flagged as new hire" : "resolved"}
-                </li>
+              {finalizedDocs.map((doc) => (
+                <FinalizedDocumentRow key={doc.id} doc={doc} groups={changesByDoc.get(doc.id) ?? []} />
               ))}
             </ul>
           </details>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h2>Proposed changes</h2>
-          {hasAnyChanges && (
-            <div className="review-bulk-actions">
-              <button className="btn btn-primary" disabled={bulkBusy || selected.size === 0} onClick={bulkAccept}>
-                Accept selected ({selected.size})
-              </button>
-              <button className="btn btn-danger-outline" disabled={bulkBusy || selected.size === 0} onClick={bulkReject}>
-                Reject selected
-              </button>
-            </div>
-          )}
-        </div>
-        {bulkError && <p className="bio-error">{bulkError}</p>}
-        {loadingGroups || groups === null ? (
-          <div className="skel skel-card" style={{ height: 140 }} />
-        ) : groups.length === 0 ? (
-          <p className="continuity-meta">Nothing is ready for review — resolve who a document is about first.</p>
-        ) : (
-          groups.map((g) => {
-            const ids = g.changes.map((c) => c.id);
-            return (
-              <div key={g.employee_id} className="review-employee-group">
-                <div className="card-head review-employee-head">
-                  <h3>{g.employee_name ?? g.employee_id}</h3>
-                  <button className="link-btn" onClick={() => toggleGroupSelect(ids)}>
-                    Select all
-                  </button>
-                </div>
-                <ul className="review-change-list">
-                  {g.changes.map((c) => (
-                    <ChangeRow
-                      key={c.id} change={c} identity={identity} viewMode={viewMode}
-                      selected={selected.has(c.id)} onToggleSelect={() => toggleSelect(c.id)}
-                      onChanged={refresh}
-                    />
-                  ))}
-                </ul>
-              </div>
-            );
-          })
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }

@@ -378,6 +378,18 @@ class ResolveSubjectRequest(BaseModel):
     new_hire: bool = False
 
 
+class FinalizeDocumentRequest(BaseModel):
+    """Body of POST /docs/{id}/finalize — the "Update" action. Every id here
+    gets accepted; every OTHER still-pending, employee-resolved proposal
+    from this document gets rejected. An empty list is a valid, meaningful
+    request — "reject everything, I don't want any of this document's
+    suggestions" — not an error, same as unchecking every box would mean."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accept_ids: list[int] = Field(default_factory=list)
+
+
 class BulkProposalRequest(BaseModel):
     """Body shared by /proposed_changes/bulk_accept and .../bulk_reject.
     Exactly one selector — an explicit id list, or a doc_id/employee_id

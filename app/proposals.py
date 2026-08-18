@@ -37,6 +37,7 @@ from app.models import (
     Project,
     ProposedChange,
     Skill,
+    UploadedDoc,
 )
 from app.models.enums import (
     ChangeType,
@@ -79,6 +80,17 @@ class ProposalNotFound(Exception):
 
 class SubjectNotFound(Exception):
     pass
+
+
+class DocumentNotFound(Exception):
+    pass
+
+
+class DocumentAlreadyFinalized(Exception):
+    """content_scrubbed_at is already set — finalize_document is a one-shot
+    action, not idempotent: a second call would silently reject nothing
+    (every target row is already terminal) and re-stamp a timestamp that
+    should mark the one real event, not the latest double-click."""
 
 
 class ProposalNotActionable(Exception):
@@ -610,6 +622,19 @@ def correct(
     _authorize(caller, view_mode)
     proposal = _load_pending(db, proposal_id)
 
+    # correct_call re-reads doc.extracted_text to re-run extraction with the
+    # reviewer's hint attached — once finalize_document has scrubbed it,
+    # that text is gone (by design), so a re-extract has nothing left to
+    # work from. Checked here rather than left to silently ask the model to
+    # correct an empty document: /edit is still available for exactly this
+    # case, since it commits the reviewer's own typed value directly.
+    doc = db.get(UploadedDoc, proposal.source_doc_id)
+    if doc is not None and doc.content_scrubbed_at is not None:
+        raise ProposalNotActionable(
+            f"document {doc.id} was finalized at {doc.content_scrubbed_at} and its content was cleared — "
+            f"use /edit to set a value directly instead of re-extracting"
+        )
+
     from app.doc_extraction import correct_call
 
     corrected = correct_call(db, proposal, instruction)
@@ -695,3 +720,123 @@ def bulk_reject(
         except (ProposalNotFound, ProposalNotActionable, ReviewDenied) as exc:
             results.append({"id": proposal_id, "ok": False, "error": str(exc)})
     return results
+
+
+# ---------------------------------------------------------------------------
+# GET /docs — every uploaded document, with the live counts a review screen
+# needs to tell "still awaiting a decision" apart from "finalized" without a
+# second round trip per document.
+# ---------------------------------------------------------------------------
+
+def _serialize_document(db: Session, doc: UploadedDoc) -> dict:
+    pending_count = (
+        db.query(ProposedChange)
+        .filter(
+            ProposedChange.source_doc_id == doc.id,
+            ProposedChange.status == ProposedChangeStatus.pending,
+            ProposedChange.employee_id.isnot(None),  # only what's actually actionable right now
+        )
+        .count()
+    )
+    unresolved_subject_count = (
+        db.query(DocSubjectMatch)
+        .filter(
+            DocSubjectMatch.source_doc_id == doc.id,
+            DocSubjectMatch.resolution_status == ResolutionStatus.unresolved,
+        )
+        .count()
+    )
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "uploaded_by": doc.uploaded_by,
+        "uploaded_at": doc.uploaded_at,
+        "content_scrubbed_at": doc.content_scrubbed_at,
+        "pending_count": pending_count,
+        "unresolved_subject_count": unresolved_subject_count,
+    }
+
+
+def list_documents(db: Session, caller: AuthenticatedUser, view_mode: ViewMode) -> list[dict]:
+    _authorize(caller, view_mode)
+    docs = db.query(UploadedDoc).order_by(UploadedDoc.uploaded_at.desc()).all()
+    return [_serialize_document(db, doc) for doc in docs]
+
+
+def _load_document(db: Session, doc_id: int) -> UploadedDoc:
+    doc = db.get(UploadedDoc, doc_id)
+    if doc is None:
+        raise DocumentNotFound(str(doc_id))
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# POST /docs/{id}/finalize — the "Update" action. One decisive pass over
+# everything currently actionable for this document, then the document's
+# own content is gone.
+# ---------------------------------------------------------------------------
+
+def finalize_document(
+    db: Session, caller: AuthenticatedUser, doc_id: int, view_mode: ViewMode,
+    accept_ids: list[int],
+) -> dict:
+    """Accept every row in accept_ids; reject every OTHER still-pending,
+    employee-resolved row for this document — an unchecked suggestion is a
+    rejected one, not a skipped one, same "shopping cart" contract the
+    frontend presents. A subject that's still unresolved (no employee_id
+    yet) is untouched either way: its proposed_changes rows stay pending
+    and remain decidable later, independently of what happens to the
+    document's content here — resolving it later still works, since
+    accept()/edit()/reject() never read source_doc.extracted_text (only
+    /correct does, and /correct on a scrubbed document is refused, see
+    app.doc_extraction.correct_call).
+
+    Then the document's extracted_text is wiped and content_scrubbed_at is
+    stamped — once. Calling this again on an already-finalized document
+    raises DocumentAlreadyFinalized rather than quietly doing nothing.
+
+    Per-row failures are collected exactly like bulk_accept/bulk_reject
+    already do (a stale row — e.g. an employee who went inactive mid-
+    review — is reported, not raised) and never block the scrub: a single
+    bad row shouldn't leave a document's content stuck un-scrubbable
+    forever. An id in accept_ids that isn't actually one of this
+    document's pending, employee-resolved rows (wrong doc, already
+    decided, subject still unresolved) is silently ignored — the only ids
+    a well-behaved reviewer UI can ever send are exactly the ones this
+    function would already process as targets.
+    """
+    _authorize(caller, view_mode)
+    doc = _load_document(db, doc_id)
+    if doc.content_scrubbed_at is not None:
+        raise DocumentAlreadyFinalized(f"document {doc_id} was already finalized at {doc.content_scrubbed_at}")
+
+    accept_set = set(accept_ids)
+    target_ids = [
+        row[0] for row in
+        db.query(ProposedChange.id)
+        .filter(
+            ProposedChange.source_doc_id == doc_id,
+            ProposedChange.status == ProposedChangeStatus.pending,
+            ProposedChange.employee_id.isnot(None),
+        )
+        .all()
+    ]
+
+    results: list[dict] = []
+    for proposal_id in target_ids:
+        try:
+            if proposal_id in accept_set:
+                proposal = accept(db, caller, proposal_id, view_mode)
+            else:
+                proposal = reject(db, caller, proposal_id, view_mode)
+            results.append({"id": proposal_id, "ok": True, "status": proposal.status.value})
+        except (ProposalNotFound, ProposalNotActionable, ReviewDenied) as exc:
+            results.append({"id": proposal_id, "ok": False, "error": str(exc)})
+
+    doc.extracted_text = ""
+    doc.content_scrubbed_at = datetime.now()
+    db.commit()
+    db.refresh(doc)
+
+    _audit(db, caller, "finalize_document", f"doc_id={doc_id}", ["content_scrubbed_at"])
+    return {"doc_id": doc_id, "results": results, "content_scrubbed_at": doc.content_scrubbed_at}

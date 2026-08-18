@@ -327,6 +327,21 @@ export interface ProposedChangeGroup {
   changes: ProposedChangeOut[];
 }
 
+// GET /uploaded_docs — one row per document ever uploaded. pending_count and
+// unresolved_subject_count are live, computed server-side, so the review
+// screen can tell "still awaiting a decision" apart from "finalized"
+// (content_scrubbed_at set) without re-deriving it from every subject/change
+// row itself.
+export interface UploadedDocSummary {
+  id: number;
+  filename: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  content_scrubbed_at: string | null;
+  pending_count: number;
+  unresolved_subject_count: number;
+}
+
 export interface BulkResultRow {
   id: number;
   ok: boolean;

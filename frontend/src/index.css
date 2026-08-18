@@ -716,6 +716,17 @@ button { font: inherit; }
 .review-page { display: flex; flex-direction: column; gap: 20px; }
 
 .review-page h3 { margin: 0; font-size: 14.5px; font-weight: 500; }
+.review-page h4 { margin: 0; font-size: 13px; font-weight: 500; color: var(--ink); }
+
+.review-document-list { display: flex; flex-direction: column; gap: 16px; }
+.review-document-card { background: var(--page); }
+.review-document-card .review-employee-group:first-of-type { border-top: none; }
+
+.review-finalize-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.review-finalize-row .continuity-meta { flex: 1; min-width: 0; }
 
 .btn-danger-outline {
   border-color: var(--red-100); color: var(--red);
