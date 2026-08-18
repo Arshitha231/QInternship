@@ -439,6 +439,17 @@ button { font: inherit; }
 }
 .pending-approvals-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* ---------- deactivated employees (PeopleAdminPage) ---------- */
+.deactivated-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.deactivated-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.deactivated-who { min-width: 0; }
+.deactivated-who .job { margin: 0; font-size: 13.5px; font-weight: 500; }
+.deactivated-who .job-meta { margin: 2px 0 0; }
+
 .timeline { list-style: none; margin: 0; padding: 0 0 0 20px; position: relative; }
 .timeline::before { content: ""; position: absolute; left: 4px; top: 7px; bottom: 9px; width: 1px; background: var(--border); }
 .timeline li { position: relative; padding-bottom: 18px; }

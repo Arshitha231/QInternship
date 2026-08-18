@@ -247,6 +247,27 @@ export function listPendingApprovals(identity: Identity): Promise<{ requests: Ac
   return request(`/employee_action_requests`, identity);
 }
 
+// Narrow by design — see app.writes.DEACTIVATED_FIELDS. Identity and
+// placement only; this is the one carve-out that sees is_active=false
+// records at all, so it stays as small as it can.
+export interface DeactivatedEmployee {
+  id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string | null;
+  work_email: string;
+  deactivated_at: string | null;
+}
+
+// The only call that surfaces deactivated employees. Every other read in
+// this app treats them as nonexistent, which is what made reactivate
+// unreachable from the UI without knowing an id by heart.
+export function listDeactivatedEmployees(
+  identity: Identity, viewMode: ViewMode,
+): Promise<{ employees: DeactivatedEmployee[] }> {
+  return request(`/employees/deactivated?view_mode=${viewMode}`, identity);
+}
+
 export function reactivateEmployee(
   identity: Identity, personId: string, viewMode: ViewMode,
 ): Promise<EmployeeActionResult> {

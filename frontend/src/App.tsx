@@ -332,7 +332,15 @@ export default function App() {
         ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
           <div data-help="review"><ReviewPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "admin" && identity.role === "hr" && viewMode === "work" ? (
-          <div data-help="admin"><PeopleAdminPage identity={identity} viewMode={viewMode} /></div>
+          <div data-help="admin">
+            <PeopleAdminPage
+              identity={identity} viewMode={viewMode}
+              onOpenPerson={(id, name) => {
+                resetProfile(id, name);
+                setMode("profile");
+              }}
+            />
+          </div>
         ) : null}
       </main>
 

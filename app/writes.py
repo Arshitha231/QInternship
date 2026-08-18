@@ -18,6 +18,14 @@ Each write follows the same four steps, in this order:
 
 Audit last and unconditionally: a write that succeeded and then failed to
 re-index is still a write that happened, and the audit row is what says so.
+
+One READ lives here too — list_deactivated_employees. It sits with the
+lifecycle functions rather than in app/people.py because every read path in
+that module treats is_active=False as nonexistent (deliberately), and it's
+gated by the same EDITABLE capability as deactivate/reactivate rather than
+by directory visibility. Putting it next to find_people/get_person would
+place a function whose whole job is to surface inactive records beside
+functions whose whole contract is that they don't.
 """
 from __future__ import annotations
 
@@ -506,6 +514,76 @@ def reactivate_employee(
     reindex_employee(db, target)
     _audit(db, caller, "reactivate_employee", f"person_id={person_id}", {"is_active", "deactivated_at"})
     return target
+
+
+# How many deactivated employees the list returns, newest departure first.
+# Capped because this set grows monotonically for the life of the company —
+# every person ever deactivated stays in it — while the thing it exists to
+# serve is short-horizon: undoing a mistaken deactivation, or reinstating a
+# recent leaver. A genuine "search every former employee" need would want a
+# query parameter rather than a bigger number here.
+MAX_DEACTIVATED_RESULTS = 200
+
+# The only fields the list surfaces. Deliberately narrower than PersonDetail:
+# this answers "who did we deactivate, when, and should they come back",
+# which needs identity and placement and nothing else. HR in work mode could
+# read salary through the ordinary profile path anyway — the point is that
+# this carve-out into is_active=False territory stays as small as it can be,
+# not that the data is secret from this caller.
+DEACTIVATED_FIELDS = frozenset({
+    "id", "full_name", "job_title", "org_unit", "work_email", "deactivated_at",
+})
+
+
+def list_deactivated_employees(
+    db: Session, caller: AuthenticatedUser, view_mode: ViewMode,
+) -> list[dict]:
+    """Deactivated employees, most recently deactivated first.
+
+    The one deliberate way to see is_active=False records at all. Every
+    other read path in this app — find_people, get_person, the org chart,
+    project membership, the search index — treats them as nonexistent for
+    every caller including HR, which is what made reactivate_employee
+    unreachable from the UI without knowing an id by heart. This is that
+    gap closed, not that rule relaxed: it's one narrow list, gated by the
+    same "deactivate_employee" capability that deactivating took in the
+    first place, so the people who can put someone back are exactly the
+    people who could have taken them out.
+
+    Rows with deactivated_at NULL are included and sort last: an employee
+    deactivated before that column existed (or seeded inactive) is still a
+    deactivated employee, and dropping them from the only view that can
+    see them would make them permanently unreachable.
+    """
+    _authorize(caller.role, view_mode, {"deactivate_employee"})
+
+    rows = (
+        db.query(Employee, OrgUnit)
+        .outerjoin(OrgUnit, Employee.org_unit_id == OrgUnit.id)
+        .filter(Employee.is_active == False)  # noqa: E712
+        # NULLs last without relying on dialect-specific NULLS LAST, which
+        # SQLite accepts and older SQL Server does not: sort on a computed
+        # "is it null" flag first, then the date itself.
+        .order_by((Employee.deactivated_at.is_(None)).asc(), Employee.deactivated_at.desc())
+        .limit(MAX_DEACTIVATED_RESULTS)
+        .all()
+    )
+
+    out = [
+        {
+            "id": employee.id,
+            "full_name": employee.full_name,
+            "job_title": employee.job_title,
+            "org_unit": org_unit.name if org_unit else None,
+            "work_email": employee.work_email,
+            "deactivated_at": employee.deactivated_at,
+        }
+        for employee, org_unit in rows
+    ]
+
+    _audit(db, caller, "list_deactivated_employees", "(all deactivated)",
+           DEACTIVATED_FIELDS, result_count=len(out))
+    return out
 
 
 # ---------------------------------------------------------------------------

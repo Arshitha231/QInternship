@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { ApiError, createEmployee, listOffices, listOrgUnits } from "../api";
-import type { CreateEmployeeFields } from "../api";
+import {
+  ApiError, createEmployee, listDeactivatedEmployees, listOffices, listOrgUnits, reactivateEmployee,
+} from "../api";
+import type { CreateEmployeeFields, DeactivatedEmployee } from "../api";
 import type { Identity, OfficeOut, OrgUnitOut, PersonSummary, ViewMode } from "../types";
 import { EditField } from "./ProfilePage";
 import { EmployeeSearchPicker } from "./ReviewPage";
@@ -32,13 +34,27 @@ function unitLabel(unit: OrgUnitOut): string {
   return `${unit.name} — ${unit.unit_type}`;
 }
 
-export function PeopleAdminPage({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
+export function PeopleAdminPage({
+  identity, viewMode, onOpenPerson,
+}: {
+  identity: Identity;
+  viewMode: ViewMode;
+  // Reactivating makes a profile reachable again, so the flow ends by
+  // offering to go look at it — same shape GraphPage's onOpenProfile uses.
+  onOpenPerson?: (id: string, name: string) => void;
+}) {
   const [orgUnits, setOrgUnits] = useState<OrgUnitOut[] | null>(null);
   const [offices, setOffices] = useState<OfficeOut[] | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ id: string; full_name: string } | null>(null);
+
+  const [deactivated, setDeactivated] = useState<DeactivatedEmployee[] | null>(null);
+  const [reactivatingId, setReactivatingId] = useState<string | null>(null);
+  const [deactivatedError, setDeactivatedError] = useState<string | null>(null);
+  const [reactivated, setReactivated] = useState<{ id: string; full_name: string } | null>(null);
+  const [deactivatedToken, setDeactivatedToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +67,38 @@ export function PeopleAdminPage({ identity, viewMode }: { identity: Identity; vi
       cancelled = true;
     };
   }, [identity]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listDeactivatedEmployees(identity, viewMode)
+      .then((r) => {
+        if (!cancelled) setDeactivated(r.employees);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setDeactivated([]);
+          setDeactivatedError(e instanceof ApiError ? e.message : "Couldn't load deactivated employees.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, viewMode, deactivatedToken]);
+
+  async function handleReactivate(employee: DeactivatedEmployee) {
+    if (!window.confirm(`Reactivate ${employee.full_name}? Their profile becomes visible again.`)) return;
+    setReactivatingId(employee.id);
+    setDeactivatedError(null);
+    try {
+      await reactivateEmployee(identity, employee.id, viewMode);
+      setReactivated({ id: employee.id, full_name: employee.full_name });
+      setDeactivatedToken((t) => t + 1);
+    } catch (e) {
+      setDeactivatedError(e instanceof ApiError ? e.message : "Couldn't reactivate — try again.");
+    } finally {
+      setReactivatingId(null);
+    }
+  }
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -186,6 +234,67 @@ export function PeopleAdminPage({ identity, viewMode }: { identity: Identity; vi
             {saving ? "Creating…" : "Create employee"}
           </button>
         </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Deactivated employees</h2>
+          {deactivated && deactivated.length > 0 && (
+            <span className="continuity-meta">{deactivated.length} deactivated</span>
+          )}
+        </div>
+        <p className="continuity-meta">
+          Deactivated profiles are invisible everywhere else in the directory — including to HR — so this is
+          the only place they can be found and put back.
+        </p>
+
+        {reactivated && (
+          <p className="review-upload-summary">
+            <strong>{reactivated.full_name}</strong> is active again.
+            {onOpenPerson && (
+              <>
+                {" "}
+                <button
+                  type="button" className="link-btn"
+                  onClick={() => onOpenPerson(reactivated.id, reactivated.full_name)}
+                >
+                  View profile
+                </button>
+              </>
+            )}
+          </p>
+        )}
+        {deactivatedError && <p className="bio-error">{deactivatedError}</p>}
+
+        {deactivated === null ? (
+          <div className="skel skel-card" style={{ height: 80 }} />
+        ) : deactivated.length === 0 ? (
+          <p className="continuity-meta">Nobody is deactivated.</p>
+        ) : (
+          <ul className="deactivated-list">
+            {deactivated.map((employee) => (
+              <li key={employee.id} className="deactivated-row">
+                <div className="deactivated-who">
+                  <p className="job">{employee.full_name}</p>
+                  <p className="job-meta">
+                    {employee.job_title}
+                    {employee.org_unit ? ` · ${employee.org_unit}` : ""}
+                    {" · "}
+                    {employee.deactivated_at
+                      ? `deactivated ${new Date(employee.deactivated_at).toLocaleDateString()}`
+                      : "deactivation date not on file"}
+                  </p>
+                </div>
+                <button
+                  className="btn" disabled={reactivatingId === employee.id}
+                  onClick={() => handleReactivate(employee)}
+                >
+                  {reactivatingId === employee.id ? "Reactivating…" : "Reactivate"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

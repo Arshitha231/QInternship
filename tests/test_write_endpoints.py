@@ -977,3 +977,143 @@ async def test_list_offices_any_authenticated_role(client, db_session):
     assert resp.status_code == 200, resp.text
     names = {o["name"] for o in resp.json()}
     assert "Test HQ" in names
+
+
+# ---------------------------------------------------------------------------
+# GET /employees/deactivated — the one read path that surfaces
+# is_active=False records at all. Everything else in the app treats them as
+# nonexistent, which is what left reactivate unreachable without an id.
+# ---------------------------------------------------------------------------
+
+async def _deactivated(client, role="hr", user_id="hr-lister-1"):
+    resp = await client.get(
+        "/employees/deactivated", params={"view_mode": "work"}, headers=auth_headers(role, user_id))
+    assert resp.status_code == 200, resp.text
+    return resp.json()["employees"]
+
+
+async def test_deactivated_list_shows_an_inactive_employee(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "dlist-shows")
+    target = _mkemp(db_session, "dlist-shows-target", "Deactivated Lister Target")
+    request_id = (await _request_deactivate(client, target.id, requester_id=requester.id)).json()["request_id"]
+    await _approve(client, request_id, approver_id=approver.id)
+
+    rows = await _deactivated(client)
+    match = next((r for r in rows if r["id"] == target.id), None)
+    assert match is not None
+    assert match["full_name"] == "Deactivated Lister Target"
+    assert match["deactivated_at"] is not None
+    assert match["org_unit"] == "Platform Engineering"
+
+
+async def test_deactivated_list_excludes_active_employees(client, db_session):
+    active = _mkemp(db_session, "dlist-active", "Still Active Person")
+    rows = await _deactivated(client)
+    assert all(r["id"] != active.id for r in rows)
+
+
+async def test_deactivated_list_includes_rows_with_no_deactivated_at(client, db_session):
+    """Seeded-inactive (or pre-column) rows have deactivated_at NULL. They're
+    still deactivated employees, and this is the only view that can see them
+    — dropping them would make them permanently unreachable."""
+    legacy = _mkemp(db_session, "dlist-legacy", "Legacy Inactive Person", is_active=False)
+    assert legacy.deactivated_at is None
+
+    rows = await _deactivated(client)
+    assert any(r["id"] == legacy.id for r in rows)
+
+
+async def test_deactivated_list_sorts_newest_first_nulls_last(client, db_session):
+    from datetime import datetime
+
+    older = _mkemp(db_session, "dlist-sort-older", "Older Departure", is_active=False)
+    newer = _mkemp(db_session, "dlist-sort-newer", "Newer Departure", is_active=False)
+    nulled = _mkemp(db_session, "dlist-sort-null", "Null Departure", is_active=False)
+    older.deactivated_at = datetime(2024, 1, 1, 12, 0, 0)
+    newer.deactivated_at = datetime(2026, 1, 1, 12, 0, 0)
+    nulled.deactivated_at = None
+    db_session.commit()
+
+    ids = [r["id"] for r in await _deactivated(client)]
+    assert ids.index(newer.id) < ids.index(older.id)
+    assert ids.index(older.id) < ids.index(nulled.id)
+
+
+async def test_deactivated_list_omits_salary_and_dob(client, db_session):
+    """Narrow by construction — identity and placement, nothing else. Not
+    because HR/work couldn't read those elsewhere, but because this
+    carve-out into is_active=False territory stays as small as it can."""
+    from decimal import Decimal
+
+    target = _mkemp(db_session, "dlist-narrow", "Narrow Fields Target", is_active=False,
+                    salary=Decimal("123456.00"), salary_currency="USD", date_of_birth=date(1990, 1, 1))
+    rows = await _deactivated(client)
+    match = next(r for r in rows if r["id"] == target.id)
+    assert set(match) == {"id", "full_name", "job_title", "org_unit", "work_email", "deactivated_at"}
+
+
+@pytest.mark.parametrize("role", ["employee", "manager", "it"])
+async def test_deactivated_list_is_hr_only(client, role):
+    resp = await client.get(
+        "/employees/deactivated", params={"view_mode": "work"}, headers=auth_headers(role))
+    assert resp.status_code == 403
+
+
+async def test_deactivated_list_denied_in_employee_mode(client):
+    resp = await client.get(
+        "/employees/deactivated", params={"view_mode": "employee"}, headers=auth_headers("hr"))
+    assert resp.status_code == 403
+
+
+async def test_deactivated_path_does_not_shadow_the_person_id_routes(client, db_session):
+    """GET /employees/deactivated is a static path sitting beside
+    /employees/{person_id}/... ones. Asserts the literal segment didn't get
+    captured as a person_id by some other route, and that the id-shaped
+    routes still work — the classic failure mode for this shape."""
+    requester, approver = _requester_with_approver(db_session, "dlist-noshadow")
+    target = _mkemp(db_session, "dlist-noshadow-target", "No Shadow Target")
+
+    # An id-shaped POST still routes to the deactivate handler, not here.
+    staged = await _request_deactivate(client, target.id, requester_id=requester.id)
+    assert staged.status_code == 200, staged.text
+    await _approve(client, staged.json()["request_id"], approver_id=approver.id)
+
+    # And the literal word isn't treated as an employee id by the PATCH route.
+    patched = await client.patch(
+        "/employees/deactivated", params={"view_mode": "work"},
+        json={"job_title": "Should Not Exist"}, headers=auth_headers("hr"),
+    )
+    assert patched.status_code == 404
+
+
+async def test_reactivating_from_the_list_removes_it_from_the_list(client, db_session):
+    """The whole point of the view: it makes reactivate reachable."""
+    requester, approver = _requester_with_approver(db_session, "dlist-roundtrip")
+    target = _mkemp(db_session, "dlist-roundtrip-target", "Round Trip Target")
+    request_id = (await _request_deactivate(client, target.id, requester_id=requester.id)).json()["request_id"]
+    await _approve(client, request_id, approver_id=approver.id)
+
+    assert any(r["id"] == target.id for r in await _deactivated(client))
+
+    resp = await client.post(
+        f"/employees/{target.id}/reactivate", params={"view_mode": "work"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200, resp.text
+
+    assert all(r["id"] != target.id for r in await _deactivated(client))
+    # Reachable through the ordinary read path again.
+    visible = await client.get(
+        f"/people/{target.id}", params={"view_mode": "work"}, headers=auth_headers("employee"))
+    assert visible.status_code == 200
+
+
+async def test_deactivated_list_writes_an_audit_row(client, db_session):
+    _mkemp(db_session, "dlist-audit", "Audit List Target", is_active=False)
+    await _deactivated(client, user_id="hr-dlist-auditor")
+
+    row = (
+        db_session.query(AuditLog).filter(AuditLog.action == "list_deactivated_employees")
+        .order_by(AuditLog.id.desc()).first()
+    )
+    assert row is not None
+    assert row.actor_id == "hr-dlist-auditor"
+    assert row.result_count >= 1

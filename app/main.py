@@ -109,6 +109,7 @@ from app.writes import (
 from app.writes import approve_action_request as approve_action_request_service
 from app.writes import clear_project_description as clear_project_description_service
 from app.writes import create_employee as create_employee_service
+from app.writes import list_deactivated_employees as list_deactivated_employees_service
 from app.writes import list_my_pending_approvals as list_pending_approvals_service
 from app.writes import reactivate_employee as reactivate_employee_service
 from app.writes import reject_action_request as reject_action_request_service
@@ -525,6 +526,28 @@ def reject_action_request_route(
     except RequestNotPending as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _action_request_result(db, request)
+
+
+@app.get("/employees/deactivated")
+def list_deactivated_employees_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """HR, work mode: the deactivated employees, newest departure first.
+
+    The only route in this app that surfaces is_active=False records —
+    every other read treats them as nonexistent, which is what left
+    /employees/{id}/reactivate unreachable without knowing an id by heart.
+    Gated by the same capability deactivating took. Static path, so no
+    collision with the /employees/{person_id}/... routes below.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        employees = list_deactivated_employees_service(db, user, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"employees": employees}
 
 
 @app.post("/employees/{person_id}/reactivate")
