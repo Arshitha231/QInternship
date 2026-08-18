@@ -108,13 +108,14 @@ from app.writes import (
 )
 from app.writes import approve_action_request as approve_action_request_service
 from app.writes import clear_project_description as clear_project_description_service
-from app.writes import create_employee as create_employee_service
 from app.writes import list_deactivated_employees as list_deactivated_employees_service
 from app.writes import list_my_pending_approvals as list_pending_approvals_service
 from app.writes import reactivate_employee as reactivate_employee_service
 from app.writes import reject_action_request as reject_action_request_service
+from app.writes import request_creation as request_creation_service
 from app.writes import request_deactivation as request_deactivation_service
 from app.writes import request_restriction as request_restriction_service
+from app.writes import request_subject_name
 from app.writes import set_project_description as set_project_description_service
 from app.writes import update_employee as update_employee_service
 
@@ -370,40 +371,55 @@ def list_offices_route(
     return db.query(Office).order_by(Office.name).all()
 
 
-@app.post("/employees", status_code=201)
+@app.post("/employees", status_code=202)
 def create_employee_route(
     body: CreateEmployeeRequest,
     view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """HR, work mode: create a new employee record. See
-    app.writes.create_employee for the required/optional field split."""
+    """HR, work mode: stages a request to add an employee — creates nobody.
+    202, not 201: the response describes a pending approval, and there is no
+    person to have created yet. Only approve_action_request, called by the
+    requester's own resolved approver, inserts the row. See
+    app.writes.request_creation for the required/optional field split and
+    for how mentor_id becomes a community link."""
     mode = resolve_view_mode(user.role, view_mode)
     fields = body.model_dump(exclude_unset=True)
     try:
-        employee = create_employee_service(db, user, fields, mode)
+        request = request_creation_service(db, user, fields, mode)
     except WriteDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DuplicateEmail as exc:
         raise HTTPException(status_code=409, detail=f"work_email {exc} is already in use") from exc
+    except NoApproverAvailable as exc:
+        raise HTTPException(
+            status_code=422, detail=f"no reachable approver in {exc}'s reporting chain") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _employee_action_result(employee)
+    return _action_request_result(db, request)
 
 
 def _action_request_result(db: Session, request) -> dict:
-    target = db.get(Employee, request.target_employee_id)
     approver = db.get(Employee, request.approver_id) if request.approver_id else None
+    requester = db.get(Employee, request.requested_by)
     return {
         "request_id": request.id,
         "action_type": request.action_type.value,
         "status": request.status.value,
+        # Null until approval for a `create` request — there is no employee
+        # id to report while the person is still only proposed. target_name
+        # is always populated, from the payload in that case (see
+        # app.writes.request_subject_name).
         "target_id": request.target_employee_id,
-        "target_name": target.full_name if target else request.target_employee_id,
+        "target_name": request_subject_name(db, request),
         "approver_id": request.approver_id,
         "approver_name": approver.full_name if approver else None,
         "requested_by": request.requested_by,
+        # Names, not just ids: the approval list is read by a person
+        # deciding whether to approve, and "8f3c-..." requested to
+        # deactivate someone tells them nothing about who is asking.
+        "requested_by_name": requester.full_name if requester else request.requested_by,
         "created_at": request.created_at,
         "resolved_at": request.resolved_at,
         "rejection_reason": request.rejection_reason,
@@ -471,8 +487,8 @@ def list_pending_approvals_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """Every pending restrict/deactivate request THIS caller is the resolved
-    approver for — identity-gated (app.writes.list_my_pending_approvals),
+    """Every pending restrict/deactivate/create request THIS caller is the
+    resolved approver for — identity-gated (app.writes.list_my_pending_approvals),
     not role-gated. Whoever the requester's reporting chain names as
     approver sees these, whatever role header they're currently using."""
     requests = list_pending_approvals_service(db, user)
@@ -487,7 +503,13 @@ def approve_action_request_route(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     """Only the request's own resolved approver may call this — see
-    app.writes.approve_action_request."""
+    app.writes.approve_action_request.
+
+    The 409s below are all the same situation: the request was valid when it
+    was staged and no longer is, because the org moved while it sat pending.
+    A create whose email has since been taken, a deactivation whose target
+    has picked up direct reports — both refuse the whole action rather than
+    applying a partial one."""
     mode = resolve_view_mode(user.role, view_mode)
     try:
         request = approve_action_request_service(db, user, request_id, mode)
@@ -497,6 +519,10 @@ def approve_action_request_route(
         raise HTTPException(status_code=404, detail="Request or target not found") from exc
     except RequestNotPending as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DuplicateEmail as exc:
+        raise HTTPException(
+            status_code=409, detail=f"work_email {exc} was taken while this request was pending",
+        ) from exc
     except HasActiveDirectReports as exc:
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "active_direct_reports": exc.reports,

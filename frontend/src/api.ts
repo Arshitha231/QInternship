@@ -146,6 +146,9 @@ export interface CreateEmployeeFields {
   manager_id?: string;
   work_phone?: string;
   hire_date?: string;
+  // Not a field on the employee — becomes an official mentor link in their
+  // community graph when the request is approved (app.writes._apply_creation).
+  mentor_id?: string;
 }
 
 export function listOrgUnits(identity: Identity): Promise<OrgUnitOut[]> {
@@ -156,10 +159,13 @@ export function listOffices(identity: Identity): Promise<OfficeOut[]> {
   return request<OfficeOut[]>("/offices", identity);
 }
 
-export function createEmployee(
+// Stages a request; creates nobody. Returns the pending approval, not an
+// employee — adding a person is a two-person action, same as restricting or
+// deactivating one (app.writes.request_creation).
+export function requestEmployeeCreation(
   identity: Identity, fields: CreateEmployeeFields, viewMode: ViewMode,
-): Promise<EmployeeActionResult> {
-  return request<EmployeeActionResult>(`/employees?view_mode=${viewMode}`, identity, {
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employees?view_mode=${viewMode}`, identity, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
@@ -173,18 +179,22 @@ export function createEmployee(
 // needs the actual list to render an inline reassignment picker, not just
 // the fact that it was blocked.
 // The shape app/main.py's _action_request_result returns for restrict/
-// deactivate — a staged request, not an applied change. Nothing here takes
-// effect until the resolved approver (approver_id/approver_name) acts on
-// it — see approveActionRequest/rejectActionRequest below.
+// deactivate/create — a staged request, not an applied change. Nothing here
+// takes effect until the resolved approver (approver_id/approver_name) acts
+// on it — see approveActionRequest/rejectActionRequest below.
 export interface ActionRequestResult {
   request_id: number;
-  action_type: "restrict" | "deactivate";
+  action_type: "restrict" | "deactivate" | "create";
   status: "pending" | "approved" | "rejected";
-  target_id: string;
+  // Null for a pending "create": the person being proposed has no id until
+  // the approval creates them. target_name is always populated (read from
+  // the request's payload in that case), so render that, never target_id.
+  target_id: string | null;
   target_name: string;
   approver_id: string | null;
   approver_name: string | null;
   requested_by: string;
+  requested_by_name: string;
   created_at: string;
   resolved_at: string | null;
   rejection_reason: string | null;

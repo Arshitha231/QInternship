@@ -781,6 +781,10 @@ button {
   color: var(--ink);
   font-weight: 500;
 }
+.pending-approvals-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* The consequence line under each request. Block, so "what approving does"
+   sits on its own row under the request rather than running into it. */
+.pending-approvals-effect { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
 
 .bio-edit {
   display: flex;

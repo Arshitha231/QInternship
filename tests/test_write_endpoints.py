@@ -11,8 +11,10 @@ from datetime import date
 
 import pytest
 
-from app.models import AuditLog, Employee, EmployeeActionRequest, Office, OrgUnit, Project
-from app.models.enums import AvailabilityStatus, EmploymentType
+from app.models import (
+    AuditLog, CommunityLink, Employee, EmployeeActionRequest, Office, OrgUnit, Project,
+)
+from app.models.enums import AvailabilityStatus, CommunityLinkSource, EmploymentType
 from tests.conftest import auth_headers
 
 ALL_ROLES = ["employee", "manager", "hr", "it"]
@@ -807,7 +809,14 @@ async def test_non_hr_cannot_reactivate(client, db_session, role):
 
 
 # ---------------------------------------------------------------------------
-# Create employee.
+# Create employee — maker-checker, same as restrict/deactivate. POST
+# /employees stages a request (202) and creates NOBODY; only the requester's
+# own resolved approver, via approve_action_request, inserts the row.
+#
+# The extra wrinkle this action has and the other two don't: there is no
+# target_employee_id until the approval lands, so the proposed person lives
+# in the request's payload column and every "who is this about" surface has
+# to read it from there (app.writes.request_subject_name).
 # ---------------------------------------------------------------------------
 
 def _org_unit_id(db_session) -> int:
@@ -818,60 +827,139 @@ def _office_id(db_session) -> int:
     return db_session.query(Office).filter(Office.name == "Test HQ").one().id
 
 
-async def test_hr_can_create_employee_with_required_fields_only(client, db_session):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Brand New Hire", "job_title": "Software Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": "brand.new.hire@example.test",
-            "employment_type": "fte",
-        },
-        headers=auth_headers("hr", "hr-creator-1"),
+async def _request_create(client, db_session, requester_id="hr-actor-1", role="hr", **overrides):
+    body = {
+        "full_name": "Brand New Hire", "job_title": "Software Engineer",
+        "org_unit_id": _org_unit_id(db_session), "work_email": "brand.new.hire@example.test",
+        "employment_type": "fte",
+    }
+    body.update(overrides)
+    return await client.post(
+        "/employees", params={"view_mode": "work"}, json=body,
+        headers=auth_headers(role, requester_id),
     )
-    assert resp.status_code == 201, resp.text
-    new_id = resp.json()["id"]
 
+
+def _employee_named(db_session, full_name: str) -> Employee | None:
     db_session.expire_all()
-    row = db_session.get(Employee, new_id)
-    assert row.full_name == "Brand New Hire"
+    return db_session.query(Employee).filter(Employee.full_name == full_name).first()
+
+
+async def test_create_stages_a_pending_request_and_creates_nobody(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-stage")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Staged Not Created", work_email="staged.not.created@example.test",
+    )
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["status"] == "pending"
+    assert body["action_type"] == "create"
+    assert body["approver_id"] == approver.id
+    # No employee to point at yet — but the person is still named, from the
+    # payload rather than from a FK.
+    assert body["target_id"] is None
+    assert body["target_name"] == "Staged Not Created"
+
+    assert _employee_named(db_session, "Staged Not Created") is None
+
+
+async def test_approving_a_create_actually_creates_the_employee(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-approve")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Approved Into Existence", work_email="approved.into.existence@example.test",
+    )
+    request_id = resp.json()["request_id"]
+
+    approved = await _approve(client, request_id, approver_id=approver.id)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved"
+
+    row = _employee_named(db_session, "Approved Into Existence")
+    assert row is not None
     assert row.is_active is True
     assert row.availability_status is AvailabilityStatus.available
     assert row.hire_date == date.today()
+    # The request now points at the person it made, so the audit trail can
+    # get from "who approved this" to "who exists because of it".
+    assert approved.json()["target_id"] == row.id
 
 
-async def test_hr_can_create_employee_with_optional_fields(client, db_session):
-    manager = _mkemp(db_session, "create-with-mgr", "Manager For New Hire")
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Fully Specified Hire", "preferred_name": "Fully", "job_title": "Analyst",
-            "org_unit_id": _org_unit_id(db_session), "office_id": _office_id(db_session),
-            "manager_id": manager.id, "work_email": "fully.specified@example.test",
-            "work_phone": "+1-555-0199", "employment_type": "contractor", "hire_date": "2026-03-01",
-        },
-        headers=auth_headers("hr"),
+async def test_rejecting_a_create_creates_nobody(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-reject")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Rejected Never Existed", work_email="rejected.never.existed@example.test",
     )
-    assert resp.status_code == 201, resp.text
+    rejected = await _reject(
+        client, resp.json()["request_id"], approver_id=approver.id, reason="headcount not approved",
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+    assert _employee_named(db_session, "Rejected Never Existed") is None
 
-    db_session.expire_all()
-    row = db_session.get(Employee, resp.json()["id"])
+
+async def test_create_approval_requires_being_the_resolved_approver(client, db_session):
+    requester, _real_approver = _requester_with_approver(db_session, "create-wrongapprover")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Wrong Approver Hire", work_email="wrong.approver.hire@example.test",
+    )
+    denied = await _approve(client, resp.json()["request_id"], approver_id="someone-else-entirely")
+    assert denied.status_code == 403
+    assert _employee_named(db_session, "Wrong Approver Hire") is None
+
+
+async def test_approved_create_carries_optional_fields_through_the_payload(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-optional")
+    manager = _mkemp(db_session, "create-with-mgr", "Manager For New Hire")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Fully Specified Hire", preferred_name="Fully", job_title="Analyst",
+        office_id=_office_id(db_session), manager_id=manager.id,
+        work_email="fully.specified@example.test", work_phone="+1-555-0199",
+        employment_type="contractor", hire_date="2026-03-01",
+    )
+    assert resp.status_code == 202, resp.text
+    await _approve(client, resp.json()["request_id"], approver_id=approver.id)
+
+    row = _employee_named(db_session, "Fully Specified Hire")
+    assert row is not None
     assert row.preferred_name == "Fully"
     assert row.manager_id == manager.id
+    # Round-tripped through JSON as a string and coerced back on the way in.
     assert row.hire_date == date(2026, 3, 1)
+    assert row.employment_type is EmploymentType.contractor
 
 
-async def test_create_duplicate_email_is_409(client, db_session):
+async def test_create_duplicate_email_is_409_at_request_time(client, db_session):
+    _requester_with_approver(db_session, "create-dup")
     _mkemp(db_session, "dup-email-existing", "Existing Person", work_email="dup@example.test")
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Duplicate Email Attempt", "job_title": "Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": "dup@example.test",
-            "employment_type": "fte",
-        },
-        headers=auth_headers("hr"),
+    resp = await _request_create(
+        client, db_session, requester_id="requester-create-dup",
+        full_name="Duplicate Email Attempt", work_email="dup@example.test",
     )
     assert resp.status_code == 409
+
+
+async def test_email_taken_while_pending_is_caught_at_approval(client, db_session):
+    """The world moves while a request sits pending — so the same validation
+    runs again on the way in, and a create that has become inapplicable
+    fails at approval rather than colliding in the database."""
+    requester, approver = _requester_with_approver(db_session, "create-raced")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Raced Hire", work_email="raced.hire@example.test",
+    )
+    request_id = resp.json()["request_id"]
+
+    # Somebody else takes the address between staging and approval.
+    _mkemp(db_session, "raced-winner", "Raced Winner", work_email="raced.hire@example.test")
+
+    denied = await _approve(client, request_id, approver_id=approver.id)
+    assert denied.status_code == 409, denied.text
+    assert _employee_named(db_session, "Raced Hire") is None
 
 
 async def test_create_missing_required_field_is_422(client, db_session):
@@ -883,80 +971,171 @@ async def test_create_missing_required_field_is_422(client, db_session):
     assert resp.status_code == 422
 
 
-async def test_create_invalid_org_unit_is_422(client):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Bad Org Unit", "job_title": "Engineer",
-            "org_unit_id": 999999, "work_email": "bad.org.unit@example.test", "employment_type": "fte",
-        },
-        headers=auth_headers("hr"),
+async def test_create_invalid_org_unit_is_422(client, db_session):
+    _requester_with_approver(db_session, "create-badunit")
+    resp = await _request_create(
+        client, db_session, requester_id="requester-create-badunit",
+        full_name="Bad Org Unit", work_email="bad.org.unit@example.test", org_unit_id=999999,
     )
     assert resp.status_code == 422
 
 
 async def test_create_invalid_manager_is_422(client, db_session):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Bad Manager", "job_title": "Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": "bad.manager@example.test",
-            "employment_type": "fte", "manager_id": "does-not-exist",
-        },
-        headers=auth_headers("hr"),
+    _requester_with_approver(db_session, "create-badmgr")
+    resp = await _request_create(
+        client, db_session, requester_id="requester-create-badmgr",
+        full_name="Bad Manager", work_email="bad.manager@example.test", manager_id="does-not-exist",
     )
     assert resp.status_code == 422
 
 
+async def test_create_with_no_reachable_approver_is_422(client, db_session):
+    """A requester with nobody above them cannot self-serve a create — the
+    request is refused outright rather than applied unapproved."""
+    loner = _mkemp(db_session, "create-no-approver", "Create No Approver", manager_id=None)
+    resp = await _request_create(
+        client, db_session, requester_id=loner.id,
+        full_name="Unapprovable Hire", work_email="unapprovable.hire@example.test",
+    )
+    assert resp.status_code == 422
+    assert _employee_named(db_session, "Unapprovable Hire") is None
+
+
 @pytest.mark.parametrize("role", ["employee", "manager", "it"])
-async def test_non_hr_cannot_create_employee(client, db_session, role):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": f"Unauthorized Create {role}", "job_title": "Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": f"unauthorized.{role}@example.test",
-            "employment_type": "fte",
-        },
-        headers=auth_headers(role),
+async def test_non_hr_cannot_request_create(client, db_session, role):
+    resp = await _request_create(
+        client, db_session, role=role, requester_id=f"nonhr-create-{role}",
+        full_name=f"Unauthorized Create {role}", work_email=f"unauthorized.{role}@example.test",
     )
     assert resp.status_code == 403
 
 
-async def test_created_employee_is_findable(client, db_session):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Findable New Hire", "job_title": "Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": "findable.new.hire@example.test",
-            "employment_type": "fte",
-        },
-        headers=auth_headers("hr"),
+async def test_created_employee_is_findable_only_after_approval(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-findable")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Findable New Hire", work_email="findable.new.hire@example.test",
     )
-    assert resp.status_code == 201, resp.text
+    request_id = resp.json()["request_id"]
 
-    found = await client.get(
+    before = await client.get(
         "/people", params={"name": "Findable New Hire", "view_mode": "work"}, headers=auth_headers("hr"))
-    assert found.status_code == 200
-    assert any(p["id"] == resp.json()["id"] for p in found.json())
+    assert before.json() == []
+
+    await _approve(client, request_id, approver_id=approver.id)
+    after = await client.get(
+        "/people", params={"name": "Findable New Hire", "view_mode": "work"}, headers=auth_headers("hr"))
+    assert [p["full_name"] for p in after.json()] == ["Findable New Hire"]
 
 
-async def test_create_writes_an_audit_row(client, db_session):
-    resp = await client.post(
-        "/employees", params={"view_mode": "work"},
-        json={
-            "full_name": "Audited New Hire", "job_title": "Engineer",
-            "org_unit_id": _org_unit_id(db_session), "work_email": "audited.new.hire@example.test",
-            "employment_type": "fte",
-        },
-        headers=auth_headers("hr", "hr-create-auditor"),
+async def test_create_request_writes_an_audit_row(client, db_session):
+    _requester_with_approver(db_session, "create-audit")
+    resp = await _request_create(
+        client, db_session, requester_id="requester-create-audit",
+        full_name="Audited New Hire", work_email="audited.new.hire@example.test",
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 202, resp.text
     row = (
-        db_session.query(AuditLog).filter(AuditLog.action == "create_employee")
+        db_session.query(AuditLog).filter(AuditLog.action == "request_creation")
         .order_by(AuditLog.id.desc()).first()
     )
     assert row is not None
-    assert row.actor_id == "hr-create-auditor"
+    assert row.actor_id == "requester-create-audit"
+
+
+async def test_pending_create_appears_in_the_approvers_queue_by_name(client, db_session):
+    """The approver's queue has to name a person who has no row yet — the
+    one surface where target_name cannot come from a join."""
+    requester, approver = _requester_with_approver(db_session, "create-queue")
+    await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Queued Hire", work_email="queued.hire@example.test",
+    )
+    queue = await client.get(
+        "/employee_action_requests", headers=auth_headers("hr", approver.id))
+    assert queue.status_code == 200
+    mine = [r for r in queue.json()["requests"] if r["action_type"] == "create"]
+    assert any(
+        r["target_name"] == "Queued Hire" and r["requested_by_name"] == requester.full_name
+        for r in mine
+    )
+
+
+# ---------------------------------------------------------------------------
+# The mentor answer on the create form. Not an employees column — it becomes
+# an official community_links row owned by the new hire, byte-identical to
+# what auto_assign_mentors would have created, so the sweep recognizes it.
+# ---------------------------------------------------------------------------
+
+async def test_approved_create_with_a_mentor_adds_the_community_link(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-mentor")
+    mentor = _mkemp(db_session, "chosen-mentor", "Chosen Mentor")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Mentored Hire", work_email="mentored.hire@example.test", mentor_id=mentor.id,
+    )
+    assert resp.status_code == 202, resp.text
+    # Staged only — no link yet, because there is no owner for it to belong to.
+    assert db_session.query(CommunityLink).filter(
+        CommunityLink.contact_employee_id == mentor.id).count() == 0
+
+    await _approve(client, resp.json()["request_id"], approver_id=approver.id)
+
+    new_hire = _employee_named(db_session, "Mentored Hire")
+    link = db_session.query(CommunityLink).filter(
+        CommunityLink.owner_employee_id == new_hire.id).one()
+    assert link.contact_employee_id == mentor.id
+    assert link.role_label == "mentor"
+    assert link.is_mentor_link is True
+    # Official, not personal: HR chose it, so the new hire can't edit or
+    # delete it — same as any swept-in mentor link.
+    assert link.source is CommunityLinkSource.official
+
+
+async def test_mentor_link_shows_up_in_the_new_hires_own_community_graph(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-mentor-graph")
+    mentor = _mkemp(db_session, "graph-mentor", "Graph Mentor")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Graph Mentored Hire", work_email="graph.mentored@example.test",
+        mentor_id=mentor.id,
+    )
+    await _approve(client, resp.json()["request_id"], approver_id=approver.id)
+    new_hire = _employee_named(db_session, "Graph Mentored Hire")
+
+    graph = await client.get("/community_links", headers=auth_headers("employee", new_hire.id))
+    assert graph.status_code == 200
+    mentor_rows = [r for r in graph.json() if r["is_mentor_link"]]
+    assert [r["contact_employee_id"] for r in mentor_rows] == [mentor.id]
+
+
+async def test_create_with_an_inactive_mentor_is_422(client, db_session):
+    _requester_with_approver(db_session, "create-deadmentor")
+    dead_mentor = _mkemp(db_session, "inactive-mentor", "Inactive Mentor", is_active=False)
+    resp = await _request_create(
+        client, db_session, requester_id="requester-create-deadmentor",
+        full_name="Bad Mentor Hire", work_email="bad.mentor.hire@example.test",
+        mentor_id=dead_mentor.id,
+    )
+    assert resp.status_code == 422
+
+
+async def test_mentor_deactivated_while_pending_is_caught_at_approval(client, db_session):
+    requester, approver = _requester_with_approver(db_session, "create-mentor-left")
+    mentor = _mkemp(db_session, "departing-mentor", "Departing Mentor")
+    resp = await _request_create(
+        client, db_session, requester_id=requester.id,
+        full_name="Orphaned Mentee", work_email="orphaned.mentee@example.test", mentor_id=mentor.id,
+    )
+    request_id = resp.json()["request_id"]
+
+    mentor.is_active = False
+    db_session.commit()
+
+    denied = await _approve(client, request_id, approver_id=approver.id)
+    assert denied.status_code == 409, denied.text
+    # Refused as a whole: no half-created employee with a missing mentor.
+    assert _employee_named(db_session, "Orphaned Mentee") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1216,30 @@ async def test_deactivated_list_sorts_newest_first_nulls_last(client, db_session
     ids = [r["id"] for r in await _deactivated(client)]
     assert ids.index(newer.id) < ids.index(older.id)
     assert ids.index(older.id) < ids.index(nulled.id)
+
+
+def test_deactivated_ordering_compiles_for_sql_server():
+    """The ordering above has to survive the dialect it actually ships on.
+
+    This suite runs on SQLite and the app deploys to Azure SQL, so a query
+    can pass every behavioural test here and still 500 in production — which
+    is exactly what `ORDER BY deactivated_at IS NULL` did. SQLite evaluates a
+    predicate as 0/1 and sorts by it happily; T-SQL has no boolean type, so a
+    predicate is not a sortable expression and SQL Server rejects the
+    statement outright.
+
+    Compiling against the mssql dialect catches that class of bug without a
+    SQL Server to run against: the NULLs-last flag must be a CASE, and the
+    ORDER BY must not carry a bare predicate.
+    """
+    from sqlalchemy.dialects import mssql
+
+    from app.writes import deactivated_employees_query
+
+    sql = str(deactivated_employees_query().compile(dialect=mssql.dialect()))
+    order_by = sql[sql.index("ORDER BY"):]
+    assert "CASE WHEN" in order_by
+    assert "IS NULL ASC" not in order_by
 
 
 async def test_deactivated_list_omits_salary_and_dob(client, db_session):
