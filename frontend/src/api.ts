@@ -520,8 +520,14 @@ export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode
 // own graph; there is no person-id parameter anywhere below that could ask
 // for someone else's (see app/community_links.py's visibility guarantee).
 
-export function listCommunityLinks(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links", identity);
+// viewMode is forwarded because the server drops links whose contact is no
+// longer visible, using the same check getPerson applies — passing a
+// different mode to each would hand back a contact the profile lookup then
+// refuses, which is what used to render a bare id in the graph.
+export function listCommunityLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(`/community_links?view_mode=${viewMode}`, identity);
 }
 
 export function createCommunityLink(

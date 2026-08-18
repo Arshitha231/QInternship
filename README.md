@@ -866,6 +866,33 @@ hire can't delete it, and it ages into a personal link on the same
 Leaving the field blank keeps today's behaviour: the sweep picks somebody
 during their first few weeks.
 
+### A link outlives the person it points at
+
+Nothing deletes `community_links` rows when somebody is deactivated or
+restricted, and nothing should — the row is the owner's own note about who to
+ask for what, and it should come back intact if that person returns.
+
+But the link is only a pointer, and the Community graph was the one surface
+that rendered a contact who had since become invisible. `GET /community_links`
+returned every stored row; the client's per-contact profile lookup then 404'd
+for the ones it wasn't allowed to see, and the card fell back to printing the
+**raw contact id** with a green "available" dot — for someone who was neither
+available nor visible. The synthesized manager entry had a narrower version of
+the same hole: it checked `is_active` but not `restricted`.
+
+Both now filter on the same `is_active` + obligations pair every other read
+path uses, at read time rather than by deleting anything. That's why the route
+takes `view_mode`: the check has to agree with the one `GET /people/{id}`
+applies in the same mode, or the list hands back a contact the profile lookup
+refuses — which is exactly the disagreement that produced the bare id. So hr in
+work mode still sees a restricted contact here, and loses it in employee mode,
+consistent with everywhere else.
+
+The frontend stopped being able to express the bug rather than just avoiding
+it: `ContactNode.person` is no longer nullable, and `ContactCard` takes the
+person as a required prop, so a card cannot be constructed for a contact
+nobody can name.
+
 ## Document extraction and review
 
 `POST /docs/upload` (IT, work mode) parses a .docx/.pdf, stores the extracted

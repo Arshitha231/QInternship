@@ -1217,14 +1217,21 @@ def _review_action(fn, db, user, proposal_id: int, mode: str, **kwargs) -> dict:
 
 @app.get("/community_links", response_model=list[CommunityLinkOut])
 def list_community_links_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[CommunityLinkOut]:
     """The caller's own community graph only — official + personal, merged,
     with mentor-link expiration applied. No person_id parameter, on
     purpose, same reason /me/notifications has none: there is no route
-    shape here that could read someone else's graph, for any role."""
-    return list_community_links_service(db, user)
+    shape here that could read someone else's graph, for any role.
+
+    Links whose contact has been deactivated or restricted are omitted —
+    view_mode is here because that visibility check is the same one
+    GET /people/{id} applies, and the two have to agree or the client is
+    handed a contact it cannot then look up."""
+    mode = resolve_view_mode(user.role, view_mode)
+    return list_community_links_service(db, user, mode)
 
 
 @app.post("/community_links", status_code=201, response_model=CommunityLinkOut)

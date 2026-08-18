@@ -32,6 +32,9 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, CommunityLink, Employee, OrgSettings, OrgUnit, SuggestedOfficialLink
 from app.models.enums import CommunityLinkSource, SuggestedLinkStatus
 from app.models.org_settings import DEFAULT_MENTOR_LINK_DURATION_DAYS
+from app.permissions import ViewMode
+from app.policy import enforce, excluded_by_obligations
+from app.query_plan import PeopleQuery
 
 
 class LinkNotFound(Exception):
@@ -126,17 +129,38 @@ def _serialize(link: CommunityLink) -> dict:
 MANAGER_LINK_ID = -1
 
 
-def _synthesize_manager_link(db: Session, caller_employee: Employee) -> dict | None:
+def _contact_is_visible(db: Session, decision, contact_employee_id: str) -> bool:
+    """Whether the person on the other end of a link can still be shown.
+
+    A community_links row outlives the person it points at: nothing deletes
+    links when somebody is deactivated or restricted, and nothing should —
+    they come back intact if that person is reactivated or unrestricted, and
+    the row is the owner's own note about who to ask for what.
+
+    But the link is only a pointer. Rendering one whose contact has since
+    become invisible means rendering a person the caller is not allowed to
+    see, which is the same question every other read path answers with
+    `is_active` plus the obligations from enforce(). Answering it the same
+    way here keeps the community graph from being the one surface where a
+    deactivated or restricted person still shows up.
+    """
+    contact = db.get(Employee, contact_employee_id)
+    if contact is None or not contact.is_active:
+        return False
+    return not excluded_by_obligations(decision, contact)
+
+
+def _synthesize_manager_link(db: Session, decision, caller_employee: Employee) -> dict | None:
     """The reporting relationship is already real org data
     (Employee.manager_id) — surfaced here at read time, not duplicated into
     a stored community_links row that could drift out of sync the next time
     someone's manager changes. None when the caller has no manager on file,
-    or their manager record is inactive.
+    or their manager can't be shown to them (gone, or restricted).
     """
     if caller_employee.manager_id is None:
         return None
     manager = db.get(Employee, caller_employee.manager_id)
-    if manager is None or not manager.is_active:
+    if manager is None or not _contact_is_visible(db, decision, manager.id):
         return None
     return {
         "id": MANAGER_LINK_ID,
@@ -160,17 +184,38 @@ def _synthesize_manager_link(db: Session, caller_employee: Employee) -> dict | N
 # from org data (see _synthesize_manager_link).
 # ---------------------------------------------------------------------------
 
-def list_community_links(db: Session, caller: AuthenticatedUser) -> list[dict]:
+def list_community_links(
+    db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work",
+) -> list[dict]:
+    """The caller's own graph, with links to people they can no longer see
+    omitted.
+
+    view_mode matters here even though ownership is already private to the
+    caller: the rows are filtered on whether the *contact* is visible, and
+    an hr caller previewing employee mode loses their exemption for
+    restricted records exactly as they do everywhere else. Without it this
+    endpoint would hand back a contact that the profile lookup for the same
+    person, in the same mode, refuses — which is precisely the mismatch that
+    rendered a bare id where a name belonged.
+    """
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+
     rows = (
         db.query(CommunityLink)
         .filter(CommunityLink.owner_employee_id == caller.id)
         .order_by(CommunityLink.id)
         .all()
     )
-    out = [_serialize(_resolve_mentor_expiration(db, row)) for row in rows]
+    out = [
+        _serialize(_resolve_mentor_expiration(db, row))
+        for row in rows
+        if _contact_is_visible(db, decision, row.contact_employee_id)
+    ]
 
     caller_employee = db.get(Employee, caller.id)
-    manager_entry = _synthesize_manager_link(db, caller_employee) if caller_employee else None
+    manager_entry = (
+        _synthesize_manager_link(db, decision, caller_employee) if caller_employee else None
+    )
     if manager_entry is not None:
         out.insert(0, manager_entry)
     return out
