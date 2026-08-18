@@ -149,19 +149,28 @@ async def test_find_people_delegate_visible_to_hr_even_when_restricted(client):
     assert body[0]["delegate"]["id"] == "restricted-1"
 
 
-async def test_org_chain_delegate_hidden_when_delegate_is_restricted_non_hr(client):
-    # role=manager (not employee) so the "down" direction's own RBAC gate
-    # doesn't short-circuit the response before delegate visibility is
-    # even reached -- this test is specifically about the delegate
-    # reference, not about who can walk the chain at all.
-    resp = await client.get(
-        "/people/mgr-1/org-chart", params={"direction": "down", "depth": 1},
-        headers=auth_headers("manager", "mgr-1"),
+def test_org_chain_delegate_hidden_when_delegate_is_restricted_non_hr(db_session):
+    """Delegate redaction inside a walked chain, exercised at the service
+    level rather than over HTTP.
+
+    It needs a caller who can walk DOWNWARD but cannot see restricted
+    people, and that combination is no longer reachable across the wire:
+    walking downward now requires hr in work mode (resolve_view_mode pins
+    every other role to employee mode, where nobody gets the downward
+    direction), and hr in work mode is exactly the role that CAN see
+    restricted people — the sibling test below covers that half. The
+    redaction branch itself is still live for any non-hr caller of
+    get_org_chain, which is why it stays tested here instead of deleted.
+    """
+    from app.auth import AuthenticatedUser
+    from app.org_chart import get_org_chain
+
+    nodes = get_org_chain(
+        db_session, AuthenticatedUser(id="mgr-1", role="manager"), "mgr-1", "down",
+        depth=1, view_mode="work",
     )
-    assert resp.status_code == 200
-    nodes = resp.json()
-    drew = next(n for n in nodes if n["id"] == "delegates-to-restricted-1")
-    assert drew["delegate"] is None
+    drew = next(n for n in nodes if n.id == "delegates-to-restricted-1")
+    assert drew.delegate is None
 
 
 async def test_org_chain_delegate_visible_to_hr_even_when_restricted(client):

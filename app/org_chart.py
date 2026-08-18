@@ -25,9 +25,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
 from app.permissions import ViewMode
-from app.policy import (
-    can_see_direct_reports, enforce, excluded_by_obligations, is_previewing_ordinary_view,
-)
+from app.policy import can_see_direct_reports, enforce, excluded_by_obligations
 from app.query_compiler import enforced_person_ref
 from app.query_plan import PeopleQuery
 from app.schemas import OrgChainNode
@@ -209,21 +207,12 @@ def get_org_chain(
             return None
 
         # Direction check (RBAC only — no relationship requirement, same
-        # shape as hire_date/cost_centre being hr-only).
-        #
-        # The mode handed to can_see_direct_reports is deliberately NOT the
-        # caller's raw view_mode. An hr/it caller previewing employee mode
-        # must lose the downward direction — that was the actual leak here,
-        # 44 reports where an ordinary colleague sees none. But a MANAGER is
-        # pinned to employee mode permanently (resolve_view_mode: only
-        # hr/it are in WORK_MODE_ROLES), so collapsing on the raw mode would
-        # take every manager's own team chart away for good rather than
-        # close anything. is_previewing_ordinary_view is exactly that
-        # distinction; see its docstring.
-        direction_mode: ViewMode = (
-            "employee" if is_previewing_ordinary_view(caller.role, view_mode) else "work"
-        )
-        if direction == "down" and not can_see_direct_reports(caller.role, direction_mode):
+        # shape as hire_date/cost_centre being hr-only). The caller's real
+        # view_mode goes in: can_see_direct_reports owns the hr-previewing-
+        # employee-mode vs manager-who-has-no-work-mode distinction, so this
+        # call site and find_people's enrichment get the same answer for the
+        # same person without either having to re-derive it.
+        if direction == "down" and not can_see_direct_reports(caller.role, view_mode):
             return []
 
         raw = _traverse(db, person_id, direction, effective_depth)

@@ -706,20 +706,28 @@ Three things are worth knowing before changing any of this:
   (`GET /people/{id}/org-chart` had no `view_mode` parameter *at all*), and
   HR's blanket exemption for confidential projects in
   `project_skills._visible_project`.
-- **"Employee mode" means two different things, and conflating them is a bug
-  in both directions.** For `hr`/`it` it's a preview they toggled into, and
-  stripping their privileges is the whole point. For `employee`/`manager` it
-  isn't a choice — `resolve_view_mode` pins every role outside
-  `WORK_MODE_ROLES` to it however they ask — so it's simply their normal lens,
-  and "strip what work mode granted" strips nothing, because they never had a
-  work mode. `app.policy.is_previewing_ordinary_view` is that distinction.
-  It matters wherever a *role predicate* is the whole gate: collapsing a
-  manager to `employee` in `can_see_direct_reports` would have taken every
-  manager's own team chart away company-wide rather than closed any hole. It
-  does **not** apply to the field table (`ALLOWED[("manager", "work")]` is
-  identical to `ALLOWED[("employee", "work")]` — a manager's extra reach is
-  ABAC, not the table), nor to ABAC itself, which keys on identity and
-  survives employee mode by design.
+- **`manager` has no work mode, and that has a consequence worth stating.**
+  `resolve_view_mode` pins every role outside `WORK_MODE_ROLES` (`hr`/`it`) to
+  employee mode however it asks, and `effective_role` collapses every role
+  there — so a manager sees `direct_reports` through **neither** `find_people`
+  nor the org chart. `find_people` was always like this; the org chart only
+  differed because it had no `view_mode` to pass, and the two disagreed
+  outright for a manager until that was fixed.
+
+  The tempting fix is a carve-out — "employee mode takes away what work mode
+  granted, and a manager never had a work mode, so it takes away nothing".
+  That was written, and it fails
+  `test_employee_mode_list_identical_across_roles` immediately:
+  `direct_reports` present for a manager and absent for an employee is the
+  caller's role leaking back into the view that exists to be anonymous. The
+  identity guarantee wins. Giving managers their team back means giving them
+  a **work mode** (adding `manager` to `WORK_MODE_ROLES`), which is a
+  deliberate product change rather than an exception inside one predicate.
+
+  Note this is only about *role predicates*. A manager's real extra reach is
+  ABAC, which keys on identity and survives employee mode by design — and the
+  field table grants them nothing extra anyway (`ALLOWED[("manager", "work")]`
+  is identical to `ALLOWED[("employee", "work")]`).
 - **ABAC survives employee mode, deliberately.** Own-profile and
   direct-manager grants (personal_mobile, own salary/DOB, training status up
   the chain) key on the caller's *identity*, never their role, so they return
