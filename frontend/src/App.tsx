@@ -9,11 +9,12 @@ import { PendingApprovals } from "./components/PendingApprovals";
 import { PeopleAdminPage } from "./components/PeopleAdminPage";
 import { ReviewPage } from "./components/ReviewPage";
 import { HelpMenu } from "./components/HelpMenu";
+import { LoginPage } from "./components/LoginPage";
 import { HelpOverlay } from "./components/HelpOverlay";
 import type { HelpState } from "./components/HelpOverlay";
 import { useDebouncedValue } from "./hooks";
-import { ApiError, unifiedSearch, type SearchFilters } from "./api";
-import { DEV_IDENTITIES } from "./identities";
+import { ApiError, UNAUTHORIZED_EVENT, unifiedSearch, type SearchFilters } from "./api";
+import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
@@ -32,21 +33,71 @@ function profileUrl(id: string): string {
   return `/profile/${encodeURIComponent(id)}${window.location.search}`;
 }
 
+// Nothing below the gate ever sees a null identity, and <Directory> is
+// keyed by id: signing in as someone else remounts the whole app rather
+// than trying to reconcile one person's open profile stack, graph focus and
+// view mode with another person's permissions.
 export default function App() {
-  const [identity, setIdentity] = useState<Identity>(DEV_IDENTITIES[0]);
-  // Defaults to work mode, matching the server's default for hr/it, so the
-  // app opens showing what these roles saw before view modes existed.
-  const [viewMode, setViewMode] = useState<ViewMode>("work");
+  const [identity, setIdentity] = useState<Identity | null>(loadSession);
+
+  function signOut() {
+    clearSession();
+    setIdentity(null);
+    // Back to a bare URL, so the next person to sign in doesn't land on the
+    // previous one's profile before their own is loaded.
+    window.history.replaceState(null, "", "/");
+  }
+
+  // A 401 from any call means these headers are no longer accepted (the
+  // backend restarted into entra mode, say). Drop the session rather than
+  // leaving every panel rendering its own error.
+  useEffect(() => {
+    window.addEventListener(UNAUTHORIZED_EVENT, signOut);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, signOut);
+  }, []);
+
+  if (!identity) {
+    return (
+      <LoginPage
+        onLogin={(next) => {
+          saveSession(next);
+          // Point the URL at their own profile BEFORE mounting Directory --
+          // its initial state reads the path, so this is what makes signing
+          // in land you on your own page rather than on whatever the last
+          // session left in the address bar. Also drops a stale ?q=.
+          window.history.replaceState(null, "", `/profile/${encodeURIComponent(next.id)}`);
+          setIdentity(next);
+        }}
+      />
+    );
+  }
+  return <Directory key={identity.id} identity={identity} onSignOut={signOut} />;
+}
+
+interface DirectoryProps {
+  identity: Identity;
+  onSignOut: () => void;
+}
+
+function Directory({ identity, onSignOut }: DirectoryProps) {
+  // Work mode for the two roles that have one (matching the server's own
+  // default), employee mode for everyone else -- so the UI never opens
+  // claiming a mode the server isn't honouring.
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    WORK_MODE_ROLES.includes(identity.role) ? "work" : "employee",
+  );
   const [mode, setMode] = useState<Mode>("profile");
   const [help, setHelp] = useState<HelpState>("off");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [profileStack, setProfileStack] = useState<ProfileStackEntry[]>(() => {
+    // The path wins on a refresh or a shared deep link; signing in has
+    // already rewritten it to this person's own profile (see App above).
     const urlId = profileIdFromPath();
-    return urlId ? [{ id: urlId, name: "" }] : [{ id: DEV_IDENTITIES[0].id, name: DEV_IDENTITIES[0].name }];
+    return urlId ? [{ id: urlId, name: "" }] : [{ id: identity.id, name: identity.name }];
   });
   const profileId = profileStack[profileStack.length - 1].id;
-  const [graphFocusId, setGraphFocusId] = useState<string>(DEV_IDENTITIES[0].id);
+  const [graphFocusId, setGraphFocusId] = useState<string>(identity.id);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
   const [savedSearch, setSavedSearch] = useState<{ query: string; filters: SearchFilters } | null>(null);
@@ -182,23 +233,7 @@ export default function App() {
           // the UI from asking.
           if (next !== "work" && mode === "continuity") setMode("profile");
         }}
-        onIdentityChange={(next) => {
-          setIdentity(next);
-          setGraphFocusId(next.id);
-          setSavedSearch(null);
-          resetProfile(next.id, next.name);
-          // Switching to a role that cannot choose resets the toggle, so the
-          // UI never claims to be in a mode the server isn't honouring.
-          if (!WORK_MODE_ROLES.includes(next.role)) setViewMode("employee");
-          else setViewMode("work");
-          // The Continuity/Review tabs don't exist at all for non-hr/non-it
-          // identities respectively (see the tab bar below) -- if one was
-          // open when switching away, there'd be no tab left to click back
-          // out of it.
-          if (next.role !== "hr" && mode === "continuity") setMode("profile");
-          if (next.role !== "it" && mode === "review") setMode("profile");
-          if (next.role !== "hr" && mode === "admin") setMode("profile");
-        }}
+        onSignOut={onSignOut}
         onOpenPerson={(id, name) => {
           resetProfile(id, name);
           setMode("profile");

@@ -319,6 +319,14 @@ class RecordCourseStatusRequest(BaseModel):
     completed_on: date | None = None
 
 
+class LoginRequest(BaseModel):
+    """Demo login body. Not a credential type worth modelling further — see
+    app/demo_auth.py's module docstring for what this is and isn't."""
+
+    email: str
+    password: str
+
+
 class UpdateBioRequest(BaseModel):
     bio: str = Field(max_length=2000)
 

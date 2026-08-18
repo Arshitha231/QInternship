@@ -11,6 +11,8 @@ import type {
 // deployed data without running uvicorn locally.
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+export const UNAUTHORIZED_EVENT = "orghub:unauthorized";
+
 export class ApiError extends Error {
   status: number;
   // The raw, still-structured response body's "detail" key -- most routes
@@ -40,9 +42,40 @@ async function request<T>(path: string, identity: Identity, init?: RequestInit):
     headers: { ...headers(identity), ...(init?.headers ?? {}) },
   });
   if (!res.ok) {
+    // A 401 means the identity these headers carry is no longer accepted --
+    // the backend was restarted into entra mode, say. Broadcast it so App
+    // can drop the session and show the login form, rather than leaving
+    // every panel showing its own error. Dispatched, not imported: session.ts
+    // imports API_BASE from this module, and calling into it here would make
+    // the pair circular.
+    if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     throw new ApiError(res.status, `${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<T>;
+}
+
+// --- Sign-in (POST /auth/login). The only call in this file that doesn't
+// take an Identity -- it's what produces one. 404s if the backend is
+// running real auth, where sign-in is Entra's job; see app/demo_auth.py.
+
+export async function login(email: string, password: string): Promise<Identity> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    // The backend distinguishes "wrong credentials" (401) from "right
+    // credentials, but this database has never heard of that person" (503,
+    // i.e. it needs re-seeding). Passing its message straight through is
+    // the whole point -- that second case is unguessable from the form.
+    const detail = typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail, body?.detail);
+  }
+  // The response is an AuthenticatedUser; Identity is the subset the
+  // request headers actually carry.
+  return { id: body.id, role: body.role, name: body.name };
 }
 
 export interface SearchFilters {

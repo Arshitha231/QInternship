@@ -77,6 +77,44 @@ curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami
 pytest   # runs against a throwaway temp SQLite db, never directory.db
 ```
 
+### Signing in
+
+The UI has a login form; `POST /auth/login` turns an email and password into
+the same `{id, role, name}` the dev headers carry, and the frontend sends
+those headers for every call afterwards. **It is a demo shim, not
+authentication** — there is no password column, no hashing, and no reset
+flow (`app/demo_auth.py` says so at length). The route 404s as soon as
+`ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` are set, because signing in is then
+Entra's job and these credentials must not be a second way in.
+
+Every account uses the same password, `orghub2026`, overridable with
+`DEMO_LOGIN_PASSWORD` in `.env`.
+
+| Role | Email | Who they are |
+|---|---|---|
+| `hr` | `naomi.lewis@example.com` | Director of HR Operations — salary fields, Continuity, Admin, work/employee toggle |
+| `it` | `shaun.iyer@example.com` | Director of IT Operations — Review queue, work/employee toggle, no salary access |
+| `manager` | `sean.wilson@example.com` | Director of Platform Engineering — real direct reports, so the downward org chart renders |
+| `employee` | `joshua.liu@example.com` | Senior Infrastructure Engineer — plain IC, the restricted view |
+| `employee` | `xiomara.mensah@example.com` | Reports to Sean Wilson |
+| `employee` | `minjun.sanchez@example.com` | VP of Engineering, Sean Wilson's manager |
+
+The last two exist because Xiomara → Sean → Min-jun is one reporting chain:
+a training-status change on Xiomara notifies her and both of them, which is
+what makes the certification notifications demoable from the UI.
+
+The role column is the access claim the request carries, not a rung on the
+org chart — which is why Min-jun is a VP with the `employee` role. The two
+are deliberately independent (see `app/auth.py`).
+
+Accounts are keyed by **work email, and the employee id is looked up at
+login time** against whatever database the API is pointed at. `seed.py`
+draws names from a fixed RNG seed but ids from `uuid4`, so local SQLite and
+deployed Azure SQL hold the same people under different ids — one credential
+list works against both, and re-seeding either needs no code change. A right
+password for someone this database has never heard of returns 503 saying so,
+rather than a misleading 401.
+
 **Free-text search returns nothing locally, and that's expected.** The
 project has one Azure AI Search index and it belongs to the deployed app.
 `seed.py` generates the same synthetic people every run but fresh UUIDs, so
@@ -96,8 +134,9 @@ breaks search for everyone using the deployed app.
 
 Vite + React + TypeScript, in `frontend/`. Talks to the backend above over
 CORS at `http://127.0.0.1:8000`; dev-mode auth is sent via the same
-`X-Dev-Role` / `X-Dev-User-Id` / `X-Dev-Name` headers, switchable from an
-identity picker in the top bar (no real login yet).
+`X-Dev-Role` / `X-Dev-User-Id` / `X-Dev-Name` headers, obtained from the
+login form (see [Signing in](#signing-in)) and held in `sessionStorage` for
+the tab. Sign out from the account menu in the top bar.
 
 ```bash
 cd frontend
@@ -113,6 +152,7 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 |---|---|
 | `GET /health` | liveness check, used by the deploy pipeline |
 | `GET /auth/whoami` | resolves the caller's identity/role from the active auth mode |
+| `POST /auth/login` | dev-mode only. Demo credentials → `{id, role, name}`; 404s once Entra is configured (see [Signing in](#signing-in)) |
 | `GET /people` | filtered directory listing, permission-filtered per caller |
 | `GET /people/{id}` | one person's detail, restricted fields genuinely absent (not null) for callers without access |
 | `PATCH /people/{id}/bio` | self-service edit of your own "About" text |

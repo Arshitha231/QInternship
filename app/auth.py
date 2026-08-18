@@ -42,7 +42,10 @@ class AuthenticatedUser(BaseModel):
     email: str | None = None
 
 
-def _auth_mode() -> str:
+def auth_mode() -> str:
+    """Which provider get_current_user will use. Public because the demo
+    login shim (app/demo_auth.py) must refuse to run outside dev mode, and
+    that decision has to be read from the same place this module makes it."""
     mode = os.environ.get("AUTH_MODE")
     if mode:
         return mode
@@ -140,7 +143,7 @@ async def _authenticate_entra(request: Request) -> AuthenticatedUser:
 # --- Public dependency: every authenticated route depends on this ---------
 
 async def get_current_user(request: Request) -> AuthenticatedUser:
-    mode = _auth_mode()
+    mode = auth_mode()
     if mode == "dev":
         return await _authenticate_dev(request)
     if mode == "entra":

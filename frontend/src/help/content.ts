@@ -67,11 +67,12 @@ export const HELP_TOPICS: HelpTopic[] = [
   },
   {
     key: "identity",
-    title: "Identity switcher",
+    title: "Who you're signed in as",
     body:
-      "A demo affordance: switch between people and roles to see the directory exactly as they would. " +
-      "HR sees salary and continuity data, a manager sees their reports, an employee sees neither. " +
-      "The server decides all of it — switching here changes who you are, not what you're allowed to do.",
+      "Your name and the role your requests carry. Sign out from here and back in as someone else to " +
+      "see the directory exactly as they would: HR sees salary and continuity data, a manager sees " +
+      "their reports, an employee sees neither. The server decides all of it — who you sign in as " +
+      "changes who you are, not what you're allowed to do.",
     tourStep: 5,
   },
   {
@@ -93,8 +94,8 @@ export const HELP_TOPICS: HelpTopic[] = [
     title: "Sections",
     body:
       "Profile is search and people. Graphs draws the org four ways. Continuity (HR) and Review (IT) " +
-      "appear only for the roles that own them — which is why the tabs you see change when you switch " +
-      "identity.",
+      "appear only for the roles that own them — which is why the tabs you see change with who you " +
+      "sign in as.",
     tourStep: 7,
   },
   {
