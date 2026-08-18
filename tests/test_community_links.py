@@ -530,3 +530,125 @@ def test_access_request_titles_resolve_to_the_security_contact():
     for title in ("Identity & Access Analyst", "Identity & Endpoints Team Manager",
                   "Senior Compliance Analyst"):
         assert any(k in title.lower() for k in keywords), title
+
+
+# ---------------------------------------------------------------------------
+# 6. A link outlives the person it points at, but stops being rendered.
+#
+# Nothing deletes community_links when somebody is deactivated or restricted,
+# and nothing should — the row is the owner's own note about who to ask for
+# what, and it should come back intact if that person returns. But the link
+# is only a pointer, and the graph used to render one whose contact had since
+# become invisible: the frontend's per-contact profile lookup 404'd, and the
+# card fell back to printing the raw contact id with a green "available" dot.
+#
+# So the list filters on whether the contact is still visible to this caller,
+# using the same is_active + obligations pair every other read path uses.
+# ---------------------------------------------------------------------------
+
+def _mk_contact(db_session, id_, full_name, **overrides) -> Employee:
+    org_unit = db_session.query(OrgUnit).filter(OrgUnit.name == "Platform Engineering").one()
+    fields = dict(
+        id=id_, directory_object_id=None, full_name=full_name, preferred_name=None,
+        job_title="Engineer", org_unit_id=org_unit.id, office_id=None, manager_id=None,
+        work_email=f"{id_}@example.test", work_phone=None, slack_handle=None, timezone=None,
+        employment_type=EmploymentType.fte, hire_date=date(2021, 1, 1), cost_centre=None,
+        personal_mobile=None, availability_status=AvailabilityStatus.available,
+        away_until=None, delegate_id=None, bio=None, photo_url=None, is_active=True,
+    )
+    fields.update(overrides)
+    emp = Employee(**fields)
+    db_session.add(emp)
+    db_session.commit()
+    return emp
+
+
+async def test_link_to_a_deactivated_contact_is_omitted(client, db_session):
+    owner = _mk_contact(db_session, "cl-vis-owner-1", "Auben Keeper")
+    gone = _mk_contact(db_session, "cl-vis-gone", "Tobin Departed")
+    _mk_link(db_session, owner_employee_id=owner.id, contact_employee_id=gone.id,
+             source=CommunityLinkSource.personal, role_label="expenses")
+
+    before = await client.get("/community_links", headers=auth_headers("employee", owner.id))
+    assert [r["contact_employee_id"] for r in before.json()] == [gone.id]
+
+    gone.is_active = False
+    db_session.commit()
+
+    after = await client.get("/community_links", headers=auth_headers("employee", owner.id))
+    assert after.status_code == 200
+    assert after.json() == []
+
+
+async def test_link_to_a_restricted_contact_is_omitted(client, db_session):
+    owner = _mk_contact(db_session, "cl-vis-owner-2", "Brice Keeper")
+    hidden = _mk_contact(db_session, "cl-vis-hidden", "Wynne Unseen")
+    _mk_link(db_session, owner_employee_id=owner.id, contact_employee_id=hidden.id,
+             source=CommunityLinkSource.personal, role_label="payroll")
+
+    hidden.availability_status = AvailabilityStatus.restricted
+    db_session.commit()
+
+    resp = await client.get("/community_links", headers=auth_headers("employee", owner.id))
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_the_row_survives_and_the_link_returns_when_the_contact_does(client, db_session):
+    """Filtered at read time, not deleted — the distinction that makes this
+    safe. Reactivating the contact restores the owner's link untouched."""
+    owner = _mk_contact(db_session, "cl-vis-owner-3", "Cato Keeper")
+    contact = _mk_contact(db_session, "cl-vis-returner", "Ines Comeback")
+    link = _mk_link(db_session, owner_employee_id=owner.id, contact_employee_id=contact.id,
+                    source=CommunityLinkSource.personal, role_label="onboarding buddy")
+
+    contact.is_active = False
+    db_session.commit()
+    gone = await client.get("/community_links", headers=auth_headers("employee", owner.id))
+    assert gone.json() == []
+
+    contact.is_active = True
+    db_session.commit()
+
+    resp = await client.get("/community_links", headers=auth_headers("employee", owner.id))
+    rows = resp.json()
+    assert [r["id"] for r in rows] == [link.id]
+    assert rows[0]["role_label"] == "onboarding buddy"
+    assert db_session.get(CommunityLink, link.id) is not None
+
+
+async def test_hr_in_work_mode_still_sees_a_restricted_contact(client, db_session):
+    """The filter is the ordinary visibility rule, not a new one — so hr in
+    work mode keeps its exemption here exactly as it does on a profile."""
+    owner = _mk_contact(db_session, "cl-vis-hr-owner", "Delphine Keeper")
+    hidden = _mk_contact(db_session, "cl-vis-hr-hidden", "Marlowe Quiet",
+                         availability_status=AvailabilityStatus.restricted)
+    _mk_link(db_session, owner_employee_id=owner.id, contact_employee_id=hidden.id,
+             source=CommunityLinkSource.personal, role_label="investigations")
+
+    work = await client.get(
+        "/community_links", params={"view_mode": "work"}, headers=auth_headers("hr", owner.id))
+    assert [r["contact_employee_id"] for r in work.json()] == [hidden.id]
+
+    # ...and loses it in employee mode, same as everywhere else. This is the
+    # case a work-mode-only filter would have got wrong: the link list would
+    # return a contact that GET /people/{id} in the same mode refuses.
+    employee_mode = await client.get(
+        "/community_links", params={"view_mode": "employee"}, headers=auth_headers("hr", owner.id))
+    assert employee_mode.json() == []
+
+
+async def test_synthesized_manager_entry_drops_a_restricted_manager(client, db_session):
+    """The manager entry is derived from org data rather than stored, so it
+    needed the same check applied separately — it only tested is_active."""
+    boss = _mk_contact(db_session, "cl-vis-boss", "Clemence Uphill")
+    underling = _mk_contact(db_session, "cl-vis-underling", "Devan Downhill", manager_id=boss.id)
+
+    before = await client.get("/community_links", headers=auth_headers("employee", underling.id))
+    assert [r["role_label"] for r in before.json()] == ["manager"]
+
+    boss.availability_status = AvailabilityStatus.restricted
+    db_session.commit()
+
+    after = await client.get("/community_links", headers=auth_headers("employee", underling.id))
+    assert after.json() == []

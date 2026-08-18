@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, getOrgChart } from "../../api";
-import type { Identity, OrgChainNode, PersonDetail } from "../../types";
+import type { Identity, OrgChainNode, PersonDetail, ViewMode } from "../../types";
 import { NodeBox, useTreeConnectors, type TreeGroup } from "./treeShared";
 import { useZoomPan, ZoomPanFrame } from "../ZoomPanFrame";
 
@@ -14,12 +14,15 @@ import { useZoomPan, ZoomPanFrame } from "../ZoomPanFrame";
 
 interface Props {
   identity: Identity;
+  // Forwarded to getOrgChart: an hr/it caller previewing the ordinary view
+  // loses the downward chain, so this graph shows what they'd actually see.
+  viewMode: ViewMode;
   focusId: string;
   focusPerson: PersonDetail | null;
   onNavigate: (id: string) => void;
 }
 
-export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: Props) {
+export function DepartmentGraph({ identity, viewMode, focusId, focusPerson, onNavigate }: Props) {
   const [manager, setManager] = useState<OrgChainNode | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -37,8 +40,8 @@ export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: 
     setLoadingIds(new Set());
 
     Promise.all([
-      getOrgChart(identity, focusId, "up", 1),
-      getOrgChart(identity, focusId, "down", 1),
+      getOrgChart(identity, focusId, "up", viewMode, 1),
+      getOrgChart(identity, focusId, "down", viewMode, 1),
     ])
       .then(([up, down]) => {
         if (cancelled) return;
@@ -55,7 +58,7 @@ export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: 
     return () => {
       cancelled = true;
     };
-  }, [identity, focusId]);
+  }, [identity, viewMode, focusId]);
 
   function toggleExpand(id: string) {
     const wasExpanded = expandedIds.has(id);
@@ -67,7 +70,7 @@ export function DepartmentGraph({ identity, focusId, focusPerson, onNavigate }: 
     });
     if (!wasExpanded && !childrenCache[id]) {
       setLoadingIds((prev) => new Set(prev).add(id));
-      getOrgChart(identity, id, "down", 1)
+      getOrgChart(identity, id, "down", viewMode, 1)
         .then((children) => setChildrenCache((prev) => ({ ...prev, [id]: children })))
         .finally(() =>
           setLoadingIds((prev) => {

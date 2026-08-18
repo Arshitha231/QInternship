@@ -286,14 +286,22 @@ export function reactivateEmployee(
   });
 }
 
+// viewMode matters for direction="down": an hr/it caller previewing the
+// ordinary view loses the downward chain, exactly as they lose every other
+// privilege there. (A manager keeps their own team chart — they are pinned
+// to employee mode permanently and never had a work mode to give up; see
+// app.policy.is_previewing_ordinary_view.)
 export async function getOrgChart(
   identity: Identity,
   personId: string,
   direction: "up" | "down",
+  viewMode: ViewMode,
   depth = 10,
 ): Promise<OrgChainNode[]> {
   try {
-    return await request<OrgChainNode[]>(`/people/${personId}/org-chart?direction=${direction}&depth=${depth}`, identity);
+    return await request<OrgChainNode[]>(
+      `/people/${personId}/org-chart?direction=${direction}&depth=${depth}&view_mode=${viewMode}`,
+      identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return [];
     throw e;
@@ -328,12 +336,22 @@ export function unifiedSearch(
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
-// --- Staffing Continuity Intelligence — HR-only. Every call here 403s for
-// a non-"hr" identity; App.tsx never renders the calling UI at all for one.
+// --- Staffing Continuity Intelligence — HR in WORK mode only. Every call
+// here 403s for any other (role, view_mode); App.tsx never renders the
+// calling UI at all outside that pair.
+//
+// viewMode is a real argument, not decoration: employee mode is "what an
+// ordinary colleague sees", and work-authorization review dates are exactly
+// what an ordinary colleague must not see. The server decides (it collapses
+// every role to employee in that mode) — this just stops the UI asking for
+// something it will be refused.
 
-export function getContinuityOverview(identity: Identity, windowDays?: number): Promise<ContinuityOverview> {
-  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
-  return request<ContinuityOverview>(`/continuity/exposure${qs}`, identity);
+export function getContinuityOverview(
+  identity: Identity, viewMode: ViewMode, windowDays?: number,
+): Promise<ContinuityOverview> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (windowDays !== undefined) params.set("window_days", String(windowDays));
+  return request<ContinuityOverview>(`/continuity/exposure?${params}`, identity);
 }
 
 export interface ContinuityFilters {
@@ -347,21 +365,21 @@ export interface ContinuityFilters {
 }
 
 export function getEngagementExposure(
-  identity: Identity, filters: ContinuityFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: ContinuityFilters = {},
 ): Promise<EngagementExposure[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<EngagementExposure[]>(`/continuity/engagement-exposure${qs ? `?${qs}` : ""}`, identity);
+  return request<EngagementExposure[]>(`/continuity/engagement-exposure?${params}`, identity);
 }
 
 export async function getEmployeeContinuity(
-  identity: Identity, employeeId: string,
+  identity: Identity, employeeId: string, viewMode: ViewMode,
 ): Promise<EmployeeContinuityDetail | null> {
   try {
-    return await request<EmployeeContinuityDetail>(`/continuity/employees/${employeeId}`, identity);
+    return await request<EmployeeContinuityDetail>(
+      `/continuity/employees/${employeeId}?view_mode=${viewMode}`, identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
@@ -379,14 +397,13 @@ export interface HrReviewQueueFilters {
 }
 
 export function getHrReviewQueue(
-  identity: Identity, filters: HrReviewQueueFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: HrReviewQueueFilters = {},
 ): Promise<HrReviewQueueItem[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs ? `?${qs}` : ""}`, identity);
+  return request<HrReviewQueueItem[]>(`/continuity/review-queue?${params}`, identity);
 }
 
 // --- AI-assisted doc upload for IT — IT-only, work mode only. Every call
@@ -520,8 +537,14 @@ export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode
 // own graph; there is no person-id parameter anywhere below that could ask
 // for someone else's (see app/community_links.py's visibility guarantee).
 
-export function listCommunityLinks(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links", identity);
+// viewMode is forwarded because the server drops links whose contact is no
+// longer visible, using the same check getPerson applies — passing a
+// different mode to each would hand back a contact the profile lookup then
+// refuses, which is what used to render a bare id in the graph.
+export function listCommunityLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(`/community_links?view_mode=${viewMode}`, identity);
 }
 
 export function createCommunityLink(
@@ -560,28 +583,41 @@ export async function deleteCommunityLink(identity: Identity, linkId: number): P
 // Continuity's HR-only calls carry.
 
 export function listSuggestedOfficialLinks(
-  identity: Identity, officeId?: number,
+  identity: Identity, viewMode: ViewMode, officeId?: number,
 ): Promise<SuggestedOfficialLinkOut[]> {
-  const qs = officeId !== undefined ? `?office_id=${officeId}` : "";
-  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links${qs}`, identity);
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (officeId !== undefined) params.set("office_id", String(officeId));
+  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links?${params}`, identity);
 }
 
-export function generateSuggestedOfficialLinks(identity: Identity): Promise<SuggestedOfficialLinkOut[]> {
-  return request<SuggestedOfficialLinkOut[]>("/suggested_official_links/generate", identity, { method: "POST" });
+export function generateSuggestedOfficialLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut[]> {
+  return request<SuggestedOfficialLinkOut[]>(
+    `/suggested_official_links/generate?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function confirmSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/confirm`, identity, { method: "POST" });
+export function confirmSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/confirm?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function rejectSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/reject`, identity, { method: "POST" });
+export function rejectSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/reject?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
 // Mentor auto-assignment sweep for new hires -- unlike the office/role
 // suggestions above, this creates the official mentor link directly (no
 // confirm step); see app/community_links.py's auto_assign_mentors for why.
 // HR-only, same gate as the rest of this section.
-export function autoAssignMentors(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links/auto_assign_mentors", identity, { method: "POST" });
+export function autoAssignMentors(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(
+    `/community_links/auto_assign_mentors?view_mode=${viewMode}`, identity, { method: "POST" });
 }

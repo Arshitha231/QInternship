@@ -211,7 +211,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     if (subView !== "overview") return;
     let cancelled = false;
     setLoadingOverview(true);
-    getContinuityOverview(identity, windowDays).then((o) => {
+    getContinuityOverview(identity, viewMode, windowDays).then((o) => {
       if (!cancelled) {
         setOverview(o);
         setLoadingOverview(false);
@@ -220,13 +220,13 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     return () => {
       cancelled = true;
     };
-  }, [identity, subView, windowDays]);
+  }, [identity, viewMode, subView, windowDays]);
 
   useEffect(() => {
     if (subView !== "engagements") return;
     let cancelled = false;
     setLoadingEngagements(true);
-    getEngagementExposure(identity, filters).then((e) => {
+    getEngagementExposure(identity, viewMode, filters).then((e) => {
       if (!cancelled) {
         setEngagements(e);
         setLoadingEngagements(false);
@@ -235,14 +235,14 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     return () => {
       cancelled = true;
     };
-  }, [identity, subView, filters]);
+  }, [identity, viewMode, subView, filters]);
 
   useEffect(() => {
     if (subView !== "queue") return;
     let cancelled = false;
     setLoadingQueue(true);
     setSelectedPerson(null);
-    getHrReviewQueue(identity, { ...queueFilters, window_days: queueWindowDays }).then((q) => {
+    getHrReviewQueue(identity, viewMode, { ...queueFilters, window_days: queueWindowDays }).then((q) => {
       if (!cancelled) {
         setQueue(q);
         setLoadingQueue(false);
@@ -251,7 +251,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     return () => {
       cancelled = true;
     };
-  }, [identity, subView, queueWindowDays, queueFilters]);
+  }, [identity, viewMode, subView, queueWindowDays, queueFilters]);
 
   useEffect(() => {
     if (!lookupQuery.trim()) {
@@ -385,7 +385,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
             <ul className="reports-list">
               {lookupResults.map((p) => (
                 <li key={p.id}>
-                  <button onClick={() => getEmployeeContinuity(identity, p.id).then(setSelectedPerson)}>
+                  <button onClick={() => getEmployeeContinuity(identity, p.id, viewMode).then(setSelectedPerson)}>
                     {p.full_name}
                     <span className="sub">{p.job_title}</span>
                   </button>
@@ -478,7 +478,7 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
                   <tr
                     key={item.employee.id}
                     className="continuity-queue-row"
-                    onClick={() => getEmployeeContinuity(identity, item.employee.id).then(setSelectedPerson)}
+                    onClick={() => getEmployeeContinuity(identity, item.employee.id, viewMode).then(setSelectedPerson)}
                   >
                     <td>{item.employee.full_name}</td>
                     <td>{item.current_record.authorization_type}</td>

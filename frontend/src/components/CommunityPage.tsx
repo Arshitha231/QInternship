@@ -25,7 +25,7 @@ function errorMessage(e: unknown, fallback: string): string {
 // not offering a form to a wall (same discipline as ReviewPage's IT gate).
 // ---------------------------------------------------------------------------
 
-function SuggestionReview({ identity }: { identity: Identity }) {
+function SuggestionReview({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
   const [suggestions, setSuggestions] = useState<SuggestedOfficialLinkOut[] | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -34,19 +34,19 @@ function SuggestionReview({ identity }: { identity: Identity }) {
 
   useEffect(() => {
     let cancelled = false;
-    listSuggestedOfficialLinks(identity).then((rows) => {
+    listSuggestedOfficialLinks(identity, viewMode).then((rows) => {
       if (!cancelled) setSuggestions(rows);
     });
     return () => {
       cancelled = true;
     };
-  }, [identity, refreshToken]);
+  }, [identity, viewMode, refreshToken]);
 
   async function generate() {
     setGenerating(true);
     setError(null);
     try {
-      await generateSuggestedOfficialLinks(identity);
+      await generateSuggestedOfficialLinks(identity, viewMode);
       setRefreshToken((t) => t + 1);
     } catch (e) {
       setError(errorMessage(e, "Couldn't generate suggestions — try again."));
@@ -55,11 +55,13 @@ function SuggestionReview({ identity }: { identity: Identity }) {
     }
   }
 
-  async function act(id: number, action: (identity: Identity, id: number) => Promise<unknown>) {
+  async function act(
+    id: number, action: (identity: Identity, id: number, viewMode: ViewMode) => Promise<unknown>,
+  ) {
     setBusyId(id);
     setError(null);
     try {
-      await action(identity, id);
+      await action(identity, id, viewMode);
       setRefreshToken((t) => t + 1);
     } catch (e) {
       setError(errorMessage(e, "Couldn't update — try again."));
@@ -126,7 +128,7 @@ function SuggestionReview({ identity }: { identity: Identity }) {
 // shape every other official-link kind uses).
 // ---------------------------------------------------------------------------
 
-function MentorSweep({ identity }: { identity: Identity }) {
+function MentorSweep({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<{ count: number } | null>(null);
@@ -135,7 +137,7 @@ function MentorSweep({ identity }: { identity: Identity }) {
     setRunning(true);
     setError(null);
     try {
-      const created = await autoAssignMentors(identity);
+      const created = await autoAssignMentors(identity, viewMode);
       setLastRun({ count: created.length });
     } catch (e) {
       setError(errorMessage(e, "Couldn't run the mentor sweep — try again."));
@@ -186,8 +188,17 @@ export function CommunityPage({
 
       <CommunityGraphCanvas identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} />
 
-      {identity.role === "hr" && <MentorSweep identity={identity} />}
-      {identity.role === "hr" && <SuggestionReview identity={identity} />}
+      {/* HR bootstrapping surfaces, so work mode only — an ordinary
+          colleague has no suggestion queue to review or sweep to run, and
+          the server refuses these calls in employee mode
+          (app.community_links._authorize_hr). Same shape as the Continuity,
+          Review and Admin tabs. */}
+      {identity.role === "hr" && viewMode === "work" && (
+        <>
+          <MentorSweep identity={identity} viewMode={viewMode} />
+          <SuggestionReview identity={identity} viewMode={viewMode} />
+        </>
+      )}
     </div>
   );
 }
