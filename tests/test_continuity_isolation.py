@@ -150,3 +150,70 @@ async def test_continuity_exposure_route_succeeds_for_hr(client):
 async def test_continuity_employee_route_404s_for_unknown_person(client):
     resp = await client.get("/continuity/employees/does-not-exist", headers=auth_headers("hr"))
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# ...and 403s for hr itself in EMPLOYEE mode.
+#
+# The gate used to be caller.role alone, so an hr caller previewing employee
+# mode kept full continuity access — work-authorization review dates and
+# per-engagement exposure, which is exactly the data that mode exists to
+# demonstrate an ordinary colleague cannot see. The tab was visible too, but
+# the tab was never the control: these are the checks that are.
+# ---------------------------------------------------------------------------
+
+CONTINUITY_ROUTES = [
+    "/continuity/exposure",
+    "/continuity/engagement-exposure",
+    "/continuity/review-queue",
+    f"/continuity/employees/{SUBJECT_ID}",
+]
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_continuity_routes_forbidden_for_hr_in_employee_mode(client, path):
+    resp = await client.get(path, params={"view_mode": "employee"}, headers=auth_headers("hr"))
+    assert resp.status_code == 403, f"{path} leaked continuity data in employee mode"
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_continuity_routes_still_work_for_hr_in_work_mode(client, path):
+    """Explicit work mode, and the default when the parameter is omitted —
+    hr/it default to work mode server-side (resolve_view_mode), and silently
+    narrowing that would look like data loss on a page that worked before."""
+    explicit = await client.get(path, params={"view_mode": "work"}, headers=auth_headers("hr"))
+    assert explicit.status_code == 200, explicit.text
+
+    defaulted = await client.get(path, headers=auth_headers("hr"))
+    assert defaulted.status_code == 200, defaulted.text
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_only_an_explicit_employee_mode_closes_continuity(client, path):
+    """An unrecognised view_mode resolves to WORK for hr, exactly as omitting
+    it does — resolve_view_mode's documented rule for the roles that are
+    allowed to choose, applied identically on every route in the app. Pinned
+    here so this endpoint's behaviour is stated rather than assumed: only the
+    literal "employee" narrows, and nothing about a malformed parameter is
+    special-cased for continuity.
+
+    (The "malformed can only narrow" half of resolve_view_mode is about the
+    role gate — a caller outside WORK_MODE_ROLES gets employee mode however
+    they ask, which is what the non-hr 403 tests above already cover.)"""
+    resp = await client.get(path, params={"view_mode": "wOrk; --"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200, resp.text
+
+
+async def test_service_layer_refuses_employee_mode_without_going_through_http(db_session):
+    """The route check is a duplicate, not the enforcement — app.continuity's
+    own functions have to refuse too, since the tool-calling layer and any
+    future caller don't come through FastAPI."""
+    from app.auth import AuthenticatedUser
+    from app.continuity import ContinuityForbidden, get_org_exposure
+
+    hr = AuthenticatedUser(id="hr-continuity-vm", role="hr")
+    with pytest.raises(ContinuityForbidden):
+        get_org_exposure(db_session, hr, view_mode="employee")
+
+    # Same caller, work mode: allowed.
+    assert get_org_exposure(db_session, hr, view_mode="work") is not None

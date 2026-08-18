@@ -328,12 +328,22 @@ export function unifiedSearch(
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
-// --- Staffing Continuity Intelligence — HR-only. Every call here 403s for
-// a non-"hr" identity; App.tsx never renders the calling UI at all for one.
+// --- Staffing Continuity Intelligence — HR in WORK mode only. Every call
+// here 403s for any other (role, view_mode); App.tsx never renders the
+// calling UI at all outside that pair.
+//
+// viewMode is a real argument, not decoration: employee mode is "what an
+// ordinary colleague sees", and work-authorization review dates are exactly
+// what an ordinary colleague must not see. The server decides (it collapses
+// every role to employee in that mode) — this just stops the UI asking for
+// something it will be refused.
 
-export function getContinuityOverview(identity: Identity, windowDays?: number): Promise<ContinuityOverview> {
-  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
-  return request<ContinuityOverview>(`/continuity/exposure${qs}`, identity);
+export function getContinuityOverview(
+  identity: Identity, viewMode: ViewMode, windowDays?: number,
+): Promise<ContinuityOverview> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (windowDays !== undefined) params.set("window_days", String(windowDays));
+  return request<ContinuityOverview>(`/continuity/exposure?${params}`, identity);
 }
 
 export interface ContinuityFilters {
@@ -347,21 +357,21 @@ export interface ContinuityFilters {
 }
 
 export function getEngagementExposure(
-  identity: Identity, filters: ContinuityFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: ContinuityFilters = {},
 ): Promise<EngagementExposure[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<EngagementExposure[]>(`/continuity/engagement-exposure${qs ? `?${qs}` : ""}`, identity);
+  return request<EngagementExposure[]>(`/continuity/engagement-exposure?${params}`, identity);
 }
 
 export async function getEmployeeContinuity(
-  identity: Identity, employeeId: string,
+  identity: Identity, employeeId: string, viewMode: ViewMode,
 ): Promise<EmployeeContinuityDetail | null> {
   try {
-    return await request<EmployeeContinuityDetail>(`/continuity/employees/${employeeId}`, identity);
+    return await request<EmployeeContinuityDetail>(
+      `/continuity/employees/${employeeId}?view_mode=${viewMode}`, identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
@@ -379,14 +389,13 @@ export interface HrReviewQueueFilters {
 }
 
 export function getHrReviewQueue(
-  identity: Identity, filters: HrReviewQueueFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: HrReviewQueueFilters = {},
 ): Promise<HrReviewQueueItem[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs ? `?${qs}` : ""}`, identity);
+  return request<HrReviewQueueItem[]>(`/continuity/review-queue?${params}`, identity);
 }
 
 // --- AI-assisted doc upload for IT — IT-only, work mode only. Every call

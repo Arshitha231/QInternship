@@ -16,11 +16,16 @@ of responsibilities ARCHITECTURE_2.md §10 lays out.
 
 Same shape as app/directory_tools.py: small functions, one AuditLog row per
 public call via a local _write_audit, typed Pydantic returns. No ABAC —
-continuity's gate is the simple binary caller.role == "hr", checked in
-every public function here (not only at the route layer — ARCHITECTURE_2.md
+continuity's gate is the simple binary "hr in work mode", checked in every
+public function here (not only at the route layer — ARCHITECTURE_2.md
 invariant #3) and *again* at the route layer in app/main.py for the HTTP
 status shape, matching the existing double-check pattern at
 /notifications/date-milestones and /people/{id}/training/{code}.
+
+The view_mode half of that gate is not cosmetic. Employee mode is the "what
+an ordinary colleague sees" lens, and this module's output — upcoming
+work-authorization review dates, per-engagement delivery exposure — is
+exactly what an ordinary colleague must not see. See _require_hr.
 
 Deliberately outside app/query_plan.py/app/policy.py entirely — this table
 is never joined into find_people/PeopleQuery, so it's structurally
@@ -48,6 +53,7 @@ from app.models.enums import SkillCategory, SkillLevel, VerificationStatus
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.skill import Skill
+from app.permissions import ViewMode, effective_role
 from app.schemas import (
     AuthorizationRecordOut, BackupCandidate, ContinuityOverview, DeliveryDependency,
     EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, PersonRef,
@@ -62,12 +68,27 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 class ContinuityForbidden(Exception):
-    """Raised by every public function in this module for a non-hr caller."""
+    """Raised by every public function in this module for a caller who isn't
+    HR in work mode."""
 
 
-def _require_hr(caller: AuthenticatedUser) -> None:
-    if caller.role != "hr":
-        raise ContinuityForbidden("Continuity data is an HR-only view")
+def _require_hr(caller: AuthenticatedUser, view_mode: ViewMode = "work") -> None:
+    """HR in WORK mode, not merely an HR role.
+
+    Employee mode is "what an ordinary colleague sees", and it is not a
+    display preference — every other surface in this app collapses the
+    caller to an ordinary employee there (app.permissions.effective_role),
+    including HR's own exemption for restricted records. Continuity used to
+    check `caller.role` alone, which meant an HR caller previewing employee
+    mode still saw work-authorization review dates and per-engagement
+    exposure: exactly the data the mode exists to demonstrate is hidden.
+
+    Routed through effective_role rather than an inline `view_mode ==
+    "employee"` so this cannot drift from the collapse the rest of the
+    pipeline performs.
+    """
+    if effective_role(caller.role, view_mode) != "hr":
+        raise ContinuityForbidden("Continuity data is an HR-only view, in work mode")
 
 
 def _write_audit(db: Session, caller: AuthenticatedUser, action: str, target: str,
@@ -650,8 +671,11 @@ def _list_review_queue_items(
 # --- Public functions -- each checks caller.role == "hr", each writes ----
 # --- exactly one AuditLog row via _write_audit ----------------------------
 
-def get_org_exposure(db: Session, caller: AuthenticatedUser, window_days: int | None = None) -> ContinuityOverview:
-    _require_hr(caller)
+def get_org_exposure(
+    db: Session, caller: AuthenticatedUser, window_days: int | None = None,
+    view_mode: ViewMode = "work",
+) -> ContinuityOverview:
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     engagements = _list_engagement_exposures(db, cfg, today, window_days)
@@ -675,8 +699,9 @@ def get_engagement_exposure(
     db: Session, caller: AuthenticatedUser, *, exposure: str | None = None, client: str | None = None,
     project: str | None = None, office: str | None = None, org_unit: str | None = None,
     dependency_type: str | None = None, window_days: int | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[EngagementExposure]:
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     results = _list_engagement_exposures(
@@ -697,13 +722,14 @@ def get_hr_review_queue(
     authorization_type: str | None = None, exposure: str | None = None,
     next_review_from: date | None = None, next_review_to: date | None = None,
     engagements_min: int | None = None, engagements_max: int | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[HrReviewQueueItem]:
     """The proactive "who is nearing a review date" list -- every employee
     with a current, HR-verified record and a scheduled review, whether or
     not it has any client-engagement consequence. Complements
     get_engagement_exposure, which only ever surfaces the subset whose
     review does intersect something."""
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     items = _list_review_queue_items(
@@ -729,8 +755,10 @@ def get_hr_review_queue(
     return items
 
 
-def get_employee_continuity(db: Session, caller: AuthenticatedUser, employee_id: str) -> EmployeeContinuityDetail | None:
-    _require_hr(caller)
+def get_employee_continuity(
+    db: Session, caller: AuthenticatedUser, employee_id: str, view_mode: ViewMode = "work",
+) -> EmployeeContinuityDetail | None:
+    _require_hr(caller, view_mode)
     employee = db.get(Employee, employee_id)
     result: EmployeeContinuityDetail | None = None
     try:

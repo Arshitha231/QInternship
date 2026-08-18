@@ -183,7 +183,7 @@ app/
                        (embeddings + keyword) fused with RRF. Confidential projects are
                        never embedded, so no query can reach one
   project_skills.py   which skills, at what minimum level, a project's delivery needs
-  continuity.py       HR-only staffing continuity: work-authorization review dates against
+  continuity.py       staffing continuity, hr + WORK mode only: work-authorization dates against
                        client engagements, severity from versioned config. No model calls
   community_links.py  each employee's private "who to contact for what" graph; official
                        links are HR-confirmed, personal ones are their own
@@ -250,7 +250,7 @@ frontend/src/
                                 applies the checked ones and clears the doc, an Undo on
                                 anything already accepted, and a ✕ to discard a whole
                                 wrong-file upload
-    ContinuityPage.tsx          HR-only staffing continuity views
+    ContinuityPage.tsx          staffing continuity views; hr in work mode only
     CommunityPage.tsx, CommunityGraphCanvas.tsx   the personal "who to ask" graph
     HelpMenu.tsx, HelpOverlay.tsx   the guided tour and click-to-learn overlay
     GraphPage.tsx               tab switcher for the three graph views below
@@ -693,6 +693,16 @@ Three things are worth knowing before changing any of this:
   left role-aware leaks the caller's privilege back into a view that is
   supposed to be anonymous. The sharp edge: **HR loses its restricted-record
   exemption in employee mode**, so `restricted-1` 404s for them there too.
+- **Whole surfaces disappear in employee mode, not just fields.** Continuity
+  (HR), Review (IT) and Admin (HR) are work-mode surfaces: an ordinary
+  colleague has no upcoming work-authorization review dates, no document
+  review queue, no create-employee form, so neither does anyone previewing
+  that lens. Continuity is the one that had to be retrofitted — its gate read
+  `caller.role` alone, which let an HR caller keep full access to
+  authorization review dates while claiming to be looking at the ordinary
+  view. It routes through `effective_role` now, in the service functions and
+  again at the route layer, so hiding the tab is the cosmetic half of a check
+  that exists on the server.
 - **ABAC survives employee mode, deliberately.** Own-profile and
   direct-manager grants (personal_mobile, own salary/DOB, training status up
   the chain) key on the caller's *identity*, never their role, so they return

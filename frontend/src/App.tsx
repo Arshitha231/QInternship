@@ -169,13 +169,18 @@ export default function App() {
         onViewModeChange={(next) => {
           setViewMode(next);
           // Review is IT's WORK-mode surface specifically (it edits real
-          // records) -- it doesn't exist in employee mode, same as
-          // Continuity doesn't exist for a non-hr identity. If it was open
+          // records) -- it doesn't exist in employee mode. If it was open
           // when the toggle switched away from work mode, there'd be no tab
           // left to click back out of it.
           if (next !== "work" && mode === "review") setMode("profile");
           // Admin is HR's work-mode surface for the same reason.
           if (next !== "work" && mode === "admin") setMode("profile");
+          // So is Continuity: employee mode is "what an ordinary colleague
+          // sees", and work-authorization review dates are precisely what an
+          // ordinary colleague does not see. The server refuses these calls
+          // in employee mode (app.continuity._require_hr) -- this only stops
+          // the UI from asking.
+          if (next !== "work" && mode === "continuity") setMode("profile");
         }}
         onIdentityChange={(next) => {
           setIdentity(next);
@@ -235,7 +240,7 @@ export default function App() {
         >
           Graphs
         </button>
-        {identity.role === "hr" && (
+        {identity.role === "hr" && viewMode === "work" && (
           <button
             role="tab"
             aria-selected={mode === "continuity"}
@@ -327,7 +332,7 @@ export default function App() {
             }}
           />
           </div>
-        ) : mode === "continuity" && identity.role === "hr" ? (
+        ) : mode === "continuity" && identity.role === "hr" && viewMode === "work" ? (
           <div data-help="continuity"><ContinuityPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
           <div data-help="review"><ReviewPage identity={identity} viewMode={viewMode} /></div>
@@ -351,7 +356,7 @@ export default function App() {
         availableModes={[
           "profile",
           "graphs",
-          ...(identity.role === "hr" ? (["continuity"] as const) : []),
+          ...(identity.role === "hr" && viewMode === "work" ? (["continuity"] as const) : []),
           ...(identity.role === "it" && viewMode === "work" ? (["review"] as const) : []),
         ]}
         onExit={() => setHelp("off")}

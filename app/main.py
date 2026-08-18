@@ -36,7 +36,7 @@ from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.people import update_own_name_pronunciation as update_own_name_pronunciation_service
-from app.permissions import resolve_view_mode
+from app.permissions import ViewMode, effective_role, resolve_view_mode
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
 from app.project_skills import set_required_skills as set_required_skills_service
@@ -809,20 +809,37 @@ def set_required_skills_route(
     return result
 
 
+def _require_continuity_access(user: AuthenticatedUser, view_mode: str | None) -> ViewMode:
+    """The route-layer half of continuity's gate, in one place for all four
+    endpoints — they had four copies of the same `if user.role != "hr"`, and
+    the view_mode half needed adding to every one of them.
+
+    Returns the resolved mode so the caller passes the *server's* decision
+    down to the service, never the raw query parameter: resolve_view_mode
+    pins an unrecognised value to the narrower lens rather than rejecting
+    it, so a malformed `?view_mode=` can only ever close this view, never
+    open it.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    if effective_role(user.role, mode) != "hr":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view, in work mode")
+    return mode
+
+
 @app.get("/continuity/exposure", response_model=ContinuityOverview)
 def continuity_exposure_route(
     window_days: int | None = Query(None, description="Lookahead window in days. Defaults to the configured value."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ContinuityOverview:
-    """Organization-wide continuity summary. HR-only — see app/continuity.py's
-    module docstring for why this route-level check duplicates the one
-    app.continuity.get_org_exposure already does itself (same double-check
-    pattern as /notifications/date-milestones and /people/{id}/training/{code}
-    above)."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
-    return get_org_exposure_service(db, user, window_days=window_days)
+    """Organization-wide continuity summary. HR in work mode only — see
+    app/continuity.py's module docstring for why this route-level check
+    duplicates the one app.continuity.get_org_exposure already does itself
+    (same double-check pattern as /notifications/date-milestones and
+    /people/{id}/training/{code} above)."""
+    mode = _require_continuity_access(user, view_mode)
+    return get_org_exposure_service(db, user, window_days=window_days, view_mode=mode)
 
 
 @app.get("/continuity/engagement-exposure", response_model=list[EngagementExposure])
@@ -834,16 +851,17 @@ def continuity_engagement_exposure_route(
     org_unit: str | None = None,
     dependency_type: str | None = None,
     window_days: int | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[EngagementExposure]:
     """Filterable list of client engagements with continuity exposure.
-    HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
     return get_engagement_exposure_service(
         db, user, exposure=exposure, client=client, project=project,
         office=office, org_unit=org_unit, dependency_type=dependency_type, window_days=window_days,
+        view_mode=mode,
     )
 
 
@@ -856,6 +874,7 @@ def continuity_review_queue_route(
     engagements_min: int | None = None,
     engagements_max: int | None = None,
     window_days: int | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[HrReviewQueueItem]:
@@ -863,29 +882,28 @@ def continuity_review_queue_route(
     with a current, HR-verified record and a scheduled review, whether or
     not it has any client-engagement consequence. Complements
     /continuity/engagement-exposure, which only ever surfaces the subset
-    whose review does intersect something. HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    whose review does intersect something. HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
     return get_hr_review_queue_service(
         db, user, window_days=window_days, authorization_type=authorization_type, exposure=exposure,
         next_review_from=next_review_from, next_review_to=next_review_to,
-        engagements_min=engagements_min, engagements_max=engagements_max,
+        engagements_min=engagements_min, engagements_max=engagements_max, view_mode=mode,
     )
 
 
 @app.get("/continuity/employees/{employee_id}", response_model=EmployeeContinuityDetail)
 def continuity_employee_route(
     employee_id: str,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> EmployeeContinuityDetail:
     """HR drill-down: one employee's work-authorization history and their
     client-engagement exposure entries, including engagements where the
     review doesn't intersect (exposure="none") — unlike the org-wide list,
-    nothing here is filtered out. HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
-    result = get_employee_continuity_service(db, user, employee_id)
+    nothing here is filtered out. HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
+    result = get_employee_continuity_service(db, user, employee_id, view_mode=mode)
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
