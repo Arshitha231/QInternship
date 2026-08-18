@@ -841,5 +841,9 @@ def _project_history(
         # see this", which is no longer true for anyone; the only remaining
         # question is whether there's anything on file, and null answers it.
         item_kwargs["project_desc"] = proj.description
+        # Same reasoning, same "set even when empty" rule — a member with no
+        # contribution text on file (never accepted one, or it predates the
+        # doc-review pipeline) reads as null, not as a missing key.
+        item_kwargs["contribution"] = ep.contribution
         items.append(ProjectHistoryItem(**item_kwargs))
     return items
