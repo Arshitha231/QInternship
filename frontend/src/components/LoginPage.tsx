@@ -24,10 +24,9 @@ export function LoginPage({ onLogin }: Props) {
     try {
       onLogin(await login(email, password));
     } catch (err) {
-      // The server distinguishes bad credentials (401) from valid ones whose
-      // person is absent from the connected database (503) -- the latter
-      // names its own fix and is worth showing whole. A failed fetch means
-      // no backend at all, which the browser reports only as "Failed to fetch".
+      // The server's message, shown as-is. A failed fetch is different: it
+      // means no backend at all, which the browser reports only as the
+      // uselessly generic "Failed to fetch".
       setError(
         err instanceof ApiError
           ? err.message

@@ -87,33 +87,59 @@ flow (`app/demo_auth.py` says so at length). The route 404s as soon as
 `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` are set, because signing in is then
 Entra's job and these credentials must not be a second way in.
 
-Every account uses the same password, `orghub2026`, overridable with
-`DEMO_LOGIN_PASSWORD` in `.env`.
+**Any active employee can sign in**, with their work email and one shared
+password: `orghub2026`, overridable with `DEMO_LOGIN_PASSWORD` in `.env`. So
+"can you show me someone else's view?" is answerable with any of the ~545
+seeded people, not just a shortlist. A deactivated employee cannot sign in.
 
-| Role | Email | Who they are |
+These four are the ones worth demoing, one per role:
+
+| Role | Email | What they get |
 |---|---|---|
-| `hr` | `naomi.lewis@example.com` | Director of HR Operations — salary fields, Continuity, Admin, work/employee toggle |
-| `it` | `shaun.iyer@example.com` | Director of IT Operations — Review queue, work/employee toggle, no salary access |
-| `manager` | `sean.wilson@example.com` | Director of Platform Engineering — real direct reports, so the downward org chart renders |
-| `employee` | `joshua.liu@example.com` | Senior Infrastructure Engineer — plain IC, the restricted view |
-| `employee` | `xiomara.mensah@example.com` | Reports to Sean Wilson |
-| `employee` | `minjun.sanchez@example.com` | VP of Engineering, Sean Wilson's manager |
+| `hr` | `naomi.lewis@example.com` | Salary fields, Continuity, Admin, work/employee toggle |
+| `it` | `shaun.iyer@example.com` | Review queue, work/employee toggle, no salary access |
+| `manager` | `sean.wilson@example.com` | Real direct reports, so the downward org chart renders |
+| `employee` | `joshua.liu@example.com` | Plain IC — the restricted view |
 
-The last two exist because Xiomara → Sean → Min-jun is one reporting chain:
-a training-status change on Xiomara notifies her and both of them, which is
-what makes the certification notifications demoable from the UI.
+`xiomara.mensah@example.com` and `minjun.sanchez@example.com` are worth
+knowing too: Xiomara → Sean → Min-jun is one reporting chain, so a
+training-status change on Xiomara notifies all three, which is what makes
+the certification notifications demoable from the UI.
 
-The role column is the access claim the request carries, not a rung on the
-org chart — which is why Min-jun is a VP with the `employee` role. The two
-are deliberately independent (see `app/auth.py`).
+#### Where the role comes from
 
-Accounts are keyed by **work email, and the employee id is looked up at
-login time** against whatever database the API is pointed at. `seed.py`
-draws names from a fixed RNG seed but ids from `uuid4`, so local SQLite and
-deployed Azure SQL hold the same people under different ids — one credential
-list works against both, and re-seeding either needs no code change. A right
-password for someone this database has never heard of returns 503 saying so,
-rather than a misleading 401.
+Role is not a column on `Employee` and deliberately never will be — it is a
+per-request claim that production takes from an Entra app-role assignment
+(`app/auth.py`). The shim has no claim to read, so it derives one from the
+org tree, the same signal `config.hr_org_unit_name()` already uses to decide
+who counts as HR for notification sweeps. In order:
+
+| Rule | Role | Seeded count |
+|---|---|---|
+| In the `IT` division or below (`IT_ORG_UNIT_NAME`) | `it` | 30 |
+| In `HR Operations` or below (`HR_ORG_UNIT_NAME`) | `hr` | 18 |
+| Has at least one **active** direct report | `manager` | 70 |
+| Everyone else | `employee` | 427 |
+
+IT and HR outrank manager because directors in those units manage people
+too, and being HR's director is the more specific fact about them. Reports
+count only while active, so managing one person who has since been
+deactivated doesn't leave someone holding a manager's view of an empty team.
+Both unit names fail closed: a name matching no unit grants nothing.
+
+This is why signing in as a VP can yield `manager` rather than something
+grander — the directory role is an access claim, not a rung on the org chart.
+
+#### One credential list, both databases
+
+Accounts are keyed by **work email, and the employee id is looked up at login
+time** against whatever database the API is pointed at. `seed.py` draws names
+from a fixed RNG seed but ids from `uuid4`, so local SQLite and deployed
+Azure SQL hold the same people under different ids — one credential list
+works against both, and re-seeding either needs no code change.
+
+Wrong password, unknown email and deactivated employee all return the same
+401 with the same message, on purpose.
 
 **Free-text search returns nothing locally, and that's expected.** The
 project has one Azure AI Search index and it belongs to the deployed app.
@@ -152,7 +178,7 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 |---|---|
 | `GET /health` | liveness check, used by the deploy pipeline |
 | `GET /auth/whoami` | resolves the caller's identity/role from the active auth mode |
-| `POST /auth/login` | dev-mode only. Demo credentials → `{id, role, name}`; 404s once Entra is configured (see [Signing in](#signing-in)) |
+| `POST /auth/login` | dev-mode only. Any active employee's work email + the shared password → `{id, role, name}`, role derived from the org tree; 404s once Entra is configured (see [Signing in](#signing-in)) |
 | `GET /people` | filtered directory listing, permission-filtered per caller |
 | `GET /people/{id}` | one person's detail, restricted fields genuinely absent (not null) for callers without access |
 | `PATCH /people/{id}/bio` | self-service edit of your own "About" text |

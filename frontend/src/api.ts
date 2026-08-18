@@ -66,10 +66,10 @@ export async function login(email: string, password: string): Promise<Identity> 
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    // The backend distinguishes "wrong credentials" (401) from "right
-    // credentials, but this database has never heard of that person" (503,
-    // i.e. it needs re-seeding). Passing its message straight through is
-    // the whole point -- that second case is unguessable from the form.
+    // Pass the server's own message through rather than mapping status codes
+    // here: a wrong password, an unknown email and a deactivated employee all
+    // come back as the same 401, and that sameness is deliberate (see
+    // app/demo_auth.py's DemoLoginDenied).
     const detail = typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`;
     throw new ApiError(res.status, detail, body?.detail);
   }
