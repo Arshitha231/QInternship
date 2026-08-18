@@ -326,6 +326,7 @@ button { font: inherit; }
 
 .profile-header { display: flex; gap: 18px; align-items: flex-start; }
 .profile-header .avatar { width: 76px; height: 76px; font-size: 26px; }
+.profile-hr-actions { display: flex; flex-direction: column; gap: 8px; }
 .p-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
 .p-name { font-size: 21px; font-weight: 500; letter-spacing: -0.01em; margin: 0; }
 .pronunciation-btn {
@@ -420,6 +421,23 @@ button { font: inherit; }
 .notif-dot.celebrate { background: var(--purple-100); color: var(--purple-800); }
 .notif-body { margin: 0; font-size: 13px; line-height: 1.45; }
 .notif-meta { margin: 3px 0 0; font-size: 11.5px; color: var(--muted); }
+
+/* ---------- pending approvals (maker-checker for restrict/deactivate) --- */
+.pending-approvals { margin: 0 0 16px; }
+.pending-approvals-toggle {
+  background: var(--amber-100); color: var(--amber); border: 0; border-radius: var(--radius);
+  padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.pending-approvals-toggle:hover { filter: brightness(0.96); }
+.pending-approvals-list {
+  list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px;
+}
+.pending-approvals-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px; font-size: 13px;
+}
+.pending-approvals-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
 .timeline { list-style: none; margin: 0; padding: 0 0 0 20px; position: relative; }
 .timeline::before { content: ""; position: absolute; left: 4px; top: 7px; bottom: 9px; width: 1px; background: var(--border); }

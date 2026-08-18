@@ -175,6 +175,7 @@ REGISTRY: dict[str, FieldSpec] = {
 IGNORED_COLUMNS: frozenset[str] = frozenset({
     "directory_object_id",  # Entra/SCIM external id — internal plumbing, never queried or displayed
     "is_active",             # soft-delete flag — already filtered at retrieval, never caller-facing
+    "deactivated_at",         # internal bookkeeping for app.writes.deactivate_employee, not caller-facing
     "created_at",             # internal audit metadata, not API-facing
     "updated_at",             # internal audit metadata, not API-facing
     "timezone",               # superseded by the computed "effective_timezone" registry entry

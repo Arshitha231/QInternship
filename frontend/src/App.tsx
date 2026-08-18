@@ -5,6 +5,8 @@ import { UnifiedResults } from "./components/UnifiedResults";
 import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { ContinuityPage } from "./components/ContinuityPage";
+import { PendingApprovals } from "./components/PendingApprovals";
+import { PeopleAdminPage } from "./components/PeopleAdminPage";
 import { ReviewPage } from "./components/ReviewPage";
 import { HelpMenu } from "./components/HelpMenu";
 import { HelpOverlay } from "./components/HelpOverlay";
@@ -15,7 +17,7 @@ import { DEV_IDENTITIES } from "./identities";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
-type Mode = "profile" | "graphs" | "continuity" | "review";
+type Mode = "profile" | "graphs" | "continuity" | "review" | "admin";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -172,6 +174,8 @@ export default function App() {
           // when the toggle switched away from work mode, there'd be no tab
           // left to click back out of it.
           if (next !== "work" && mode === "review") setMode("profile");
+          // Admin is HR's work-mode surface for the same reason.
+          if (next !== "work" && mode === "admin") setMode("profile");
         }}
         onIdentityChange={(next) => {
           setIdentity(next);
@@ -188,6 +192,7 @@ export default function App() {
           // out of it.
           if (next.role !== "hr" && mode === "continuity") setMode("profile");
           if (next.role !== "it" && mode === "review") setMode("profile");
+          if (next.role !== "hr" && mode === "admin") setMode("profile");
         }}
         onOpenPerson={(id, name) => {
           resetProfile(id, name);
@@ -202,6 +207,8 @@ export default function App() {
           />
         }
       />
+
+      <PendingApprovals identity={identity} viewMode={viewMode} />
 
       <div className="tabs" role="tablist" aria-label="Section" data-help="tabs">
         <button
@@ -252,6 +259,19 @@ export default function App() {
             }}
           >
             Review
+          </button>
+        )}
+        {identity.role === "hr" && viewMode === "work" && (
+          <button
+            role="tab"
+            aria-selected={mode === "admin"}
+            className={`tab ${mode === "admin" ? "active" : ""}`}
+            onClick={() => {
+              setMode("admin");
+              setQuery("");
+            }}
+          >
+            Admin
           </button>
         )}
       </div>
@@ -311,6 +331,8 @@ export default function App() {
           <div data-help="continuity"><ContinuityPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
           <div data-help="review"><ReviewPage identity={identity} viewMode={viewMode} /></div>
+        ) : mode === "admin" && identity.role === "hr" && viewMode === "work" ? (
+          <div data-help="admin"><PeopleAdminPage identity={identity} viewMode={viewMode} /></div>
         ) : null}
       </main>
 
