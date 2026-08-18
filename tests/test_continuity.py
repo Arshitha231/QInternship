@@ -33,7 +33,9 @@ from app.continuity import (
     _get_relevant_client_assignments,
     _list_review_queue_items,
     _meets_level,
+    _redundancy_source,
     _review_intersects_assignment,
+    _severity_for_dependency,
     _severity_for_redundancy,
     get_employee_continuity,
     get_engagement_exposure,
@@ -355,6 +357,75 @@ def test_low_dependency_has_three_org_backups(fx, db_session):
         db_session, "skill", fx.skill_common.name, fx.project.id, fx.low.id)
     assert org_backup == 3
     assert len(candidates) == 3
+
+
+def test_away_org_backup_is_excluded_from_org_backup_count_and_candidates(fx, db_session):
+    # One of fx.low's three org-wide skill_common backups goes away --
+    # counting them as redeployable overstates it. org_backup_count and
+    # the candidate list must both drop; there's no project_backup_count
+    # here to begin with, so it stays 0.
+    away_backup = fx.low_backups[0]
+    away_backup.availability_status = AvailabilityStatus.away
+    db_session.commit()
+
+    project_backup, org_backup, candidates = _find_internal_backups(
+        db_session, "skill", fx.skill_common.name, fx.project.id, fx.low.id)
+    assert project_backup == 0
+    assert org_backup == 2
+    assert away_backup.id not in {c.id for c in candidates}
+
+
+def test_away_project_member_still_counts_toward_project_backup_count(fx, db_session):
+    # fx.project_mate is ON fx.project, the same engagement as fx.medium --
+    # being away doesn't erase that structural, on-paper redundancy, a
+    # different question from org-wide redeployability. Only the org-wide
+    # partition filters on availability, not this one.
+    fx.project_mate.availability_status = AvailabilityStatus.away
+    db_session.commit()
+
+    project_backup, org_backup, _candidates = _find_internal_backups(
+        db_session, "skill", fx.skill_shared.name, fx.project.id, fx.medium.id)
+    assert project_backup == 1
+    assert org_backup == 1
+
+
+def test_redundancy_source_boundaries():
+    # Pure function, no DB needed -- mirrors _severity_for_dependency's own
+    # branching exactly, since severity's "low" for both project>0 and
+    # org>0-with-project=0 is precisely the distinction this field exists
+    # to separate back out.
+    assert _redundancy_source(0, 0) == "none"
+    assert _redundancy_source(0, 1) == "org"
+    assert _redundancy_source(0, 3) == "org"
+    assert _redundancy_source(1, 0) == "project"
+    assert _redundancy_source(1, 3) == "project"  # project coverage wins regardless of org count
+
+
+def test_redundancy_source_on_real_dependencies_matches_the_fixture_shapes(fx, db_session):
+    # Same three fixtures test_review_queue_includes_every_intersecting_severity
+    # already pins at the severity level -- confirms the new field lines up
+    # with what those "high"/"medium"/"low" results actually mean underneath,
+    # and that severity itself is unchanged by this field's addition.
+    high_assignment = _get_relevant_client_assignments(db_session, fx.high.id, TODAY)[0]
+    high_deps, _ = _compute_delivery_dependencies(db_session, fx.high, fx.project, high_assignment)
+    narrow_dep = next(d for d in high_deps if d.name == fx.skill_narrow.name)
+    assert narrow_dep.redundancy_source == "none"  # (0, 0) -- the genuine single-point-of-failure case
+
+    medium_assignment = _get_relevant_client_assignments(db_session, fx.medium.id, TODAY)[0]
+    medium_deps, _ = _compute_delivery_dependencies(db_session, fx.medium, fx.project, medium_assignment)
+    shared_dep = next(d for d in medium_deps if d.name == fx.skill_shared.name)
+    assert shared_dep.redundancy_source == "project"  # fx.project_mate is on the same engagement
+
+    low_assignment = _get_relevant_client_assignments(db_session, fx.low.id, TODAY)[0]
+    low_deps, _ = _compute_delivery_dependencies(db_session, fx.low, fx.project, low_assignment)
+    common_dep = next(d for d in low_deps if d.name == fx.skill_common.name)
+    assert common_dep.redundancy_source == "org"  # 0 on-project, 3 org-wide -- the case Option B distinguishes
+
+    # And severity itself is untouched -- "project" and "org" both still
+    # land on "low", exactly as before this field existed.
+    for dep in (shared_dep, common_dep):
+        assert _severity_for_dependency(dep, CFG) == "low"
+    assert _severity_for_dependency(narrow_dep, CFG) == "high"
 
 
 def test_backup_candidates_never_say_replace(fx, db_session):

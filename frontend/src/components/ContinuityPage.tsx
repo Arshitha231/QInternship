@@ -81,7 +81,13 @@ function EngagementCard({ engagement }: { engagement: EngagementExposure }) {
                     <tr key={i}>
                       <td>{d.name}</td>
                       <td>{d.employee.full_name}</td>
-                      <td>{d.project_backup_count > 0 ? `${d.project_backup_count} on this engagement` : "Single-person"}</td>
+                      <td>
+                        {d.redundancy_source === "project"
+                          ? `${d.project_backup_count} on this engagement`
+                          : d.redundancy_source === "org"
+                            ? "Single-person — relies on redeployment"
+                            : "Single-person — no backup identified"}
+                      </td>
                       <td>{d.org_backup_count > 0 ? `${d.org_backup_count} identified` : "None identified"}</td>
                       <td>
                         <span

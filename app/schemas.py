@@ -450,6 +450,15 @@ class DeliveryDependency(BaseModel):
     employee: PersonRef
     project_backup_count: int  # others already on this engagement with the same dependency
     org_backup_count: int      # others anywhere else in the org, excluding project members
+    # Which pool this dependency's redundancy actually comes from --
+    # orthogonal to `exposure` on the containing EngagementExposure, which
+    # can land on the same severity band ("low") for two situations this
+    # field tells apart: "project" (project_backup_count > 0, someone is
+    # already here) reads very differently to HR than "org"
+    # (project_backup_count == 0 but org_backup_count > 0, nobody here
+    # today and a redeployment hasn't happened yet). "none" means neither
+    # -- this is exactly the "high" severity case.
+    redundancy_source: Literal["project", "org", "none"]
     # "declared": a real recorded fact -- either a ProjectSkillRequirement
     # row (app/project_skills.py) the employee meets, or the project_role
     # dependency (employee_projects.role is always ground truth).

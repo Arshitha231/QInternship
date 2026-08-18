@@ -44,7 +44,7 @@ from app.config import continuity_thresholds_path
 from app.models import (
     AuditLog, Employee, EmployeeProject, EmployeeSkill, Project, ProjectSkillRequirement, WorkAuthorizationRecord,
 )
-from app.models.enums import SkillCategory, SkillLevel, VerificationStatus
+from app.models.enums import AvailabilityStatus, SkillCategory, SkillLevel, VerificationStatus
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.skill import Skill
@@ -233,10 +233,26 @@ def _split_backup_holders(db: Session, holder_ids: list[str], project_id: int) -
     backup search surfaces (design doc §14: "look outside the
     engagement") -- severity is keyed on org_backup_count specifically,
     since someone already committed to the project isn't a redeployable
-    backup in the reassignment sense."""
+    backup in the reassignment sense.
+
+    The org-wide partition additionally excludes anyone currently away --
+    counting them as redeployable overstates it, and they're the same
+    people the backup candidate list would otherwise surface to HR as a
+    "potential match." Scoped to org-wide only: someone already on the
+    project who happens to be away still represents real, on-paper
+    project-level redundancy, a different question from redeployability,
+    and project_backup_count is left alone.
+    """
     members = _project_member_ids(db, project_id)
     on_project = [h for h in holder_ids if h in members]
     elsewhere = [h for h in holder_ids if h not in members]
+    if elsewhere:
+        away_ids = {
+            r[0] for r in db.query(Employee.id)
+            .filter(Employee.id.in_(elsewhere), Employee.availability_status == AvailabilityStatus.away)
+            .all()
+        }
+        elsewhere = [h for h in elsewhere if h not in away_ids]
     return len(on_project), len(elsewhere), elsewhere
 
 
@@ -289,6 +305,20 @@ def _project_required_skills(db: Session, project_id: int) -> dict[int, SkillLev
         .all()
     )
     return {r.skill_id: r.minimum_level for r in rows}
+
+
+def _redundancy_source(project_backup_count: int, org_backup_count: int) -> str:
+    """Which pool a dependency's redundancy actually comes from -- the same
+    project_backup_count > 0 check _severity_for_dependency uses to decide
+    severity, but exposed as its own value rather than collapsed into
+    "low": severity alone can't tell HR whether that "low" means someone
+    is already here (project) or nobody is and a redeployment from
+    elsewhere hasn't happened yet (org)."""
+    if project_backup_count > 0:
+        return "project"
+    if org_backup_count > 0:
+        return "org"
+    return "none"
 
 
 def _compute_delivery_dependencies(
@@ -346,6 +376,7 @@ def _compute_delivery_dependencies(
         dependencies.append(DeliveryDependency(
             type="skill", name=skill.name, project_id=project.id, employee=person_ref,
             project_backup_count=project_backup_count, org_backup_count=org_backup_count,
+            redundancy_source=_redundancy_source(project_backup_count, org_backup_count),
             source=skill_source,
         ))
         backups[skill.name] = candidates
@@ -355,6 +386,7 @@ def _compute_delivery_dependencies(
     dependencies.append(DeliveryDependency(
         type="project_role", name=assignment.role, project_id=project.id, employee=person_ref,
         project_backup_count=project_backup_count, org_backup_count=org_backup_count,
+        redundancy_source=_redundancy_source(project_backup_count, org_backup_count),
         source="declared",
     ))
     backups[assignment.role] = candidates
@@ -369,8 +401,12 @@ def _severity_for_dependency(dep: DeliveryDependency, cfg: ThresholdConfig) -> s
     redundancy" and the dependency is low-risk regardless of org-wide
     backup count -- the org-wide search only matters for dependencies that
     are single-person AT THE PROJECT LEVEL, which is exactly when design
-    doc §14 says to "look outside the engagement" in the first place."""
-    if dep.project_backup_count > 0:
+    doc §14 says to "look outside the engagement" in the first place.
+
+    Checks dep.redundancy_source rather than re-deriving project_backup_count
+    > 0 here too -- one source of truth for the same distinction, not two
+    conditions that could drift apart."""
+    if dep.redundancy_source == "project":
         return "low"
     return _severity_for_redundancy(dep.org_backup_count, cfg)
 

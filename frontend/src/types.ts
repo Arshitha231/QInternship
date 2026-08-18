@@ -200,6 +200,12 @@ export interface DeliveryDependency {
   employee: PersonRef;
   project_backup_count: number;
   org_backup_count: number;
+  // Which pool this dependency's redundancy comes from -- orthogonal to
+  // the containing engagement's exposure severity, which can land on
+  // "low" for both "project" and "org". "project": someone is already on
+  // this engagement. "org": nobody here today, org_backup_count > 0
+  // elsewhere. "none": neither.
+  redundancy_source: "project" | "org" | "none";
   // "declared": a real recorded fact -- either a required-skill entry
   // (GET/PUT /projects/{id}/required-skills) this person meets, or the
   // project_role dependency (always a recorded fact). "inferred": no
