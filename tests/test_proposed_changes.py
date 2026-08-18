@@ -15,6 +15,7 @@ deployment configured — see conftest), so nothing here touches a model API.
 """
 import io
 import json
+from datetime import date
 
 import pytest
 
@@ -552,6 +553,263 @@ async def test_correct_stays_pending_and_updates_proposed_value(client, project_
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "pending"
     assert resp.json()["proposed_value"]["project"] == "Project Nightingale Phase 2"
+
+
+# ---------------------------------------------------------------------------
+# Undo: reverse an accept()/edit() while the source document is still
+# under review.
+# ---------------------------------------------------------------------------
+
+async def _undo(client, proposal_id, role="it", view_mode="work"):
+    return await client.post(
+        f"/proposed_changes/{proposal_id}/undo", params={"view_mode": view_mode},
+        headers=auth_headers(role, "it-reviewer-1"))
+
+
+# A dedicated document + skill name for the two tests below, deliberately
+# distinct from PROJECT_DOC_TEXT (which most other tests in this file also
+# accept skills from, against the same shared session-scoped database — see
+# conftest.py). A name this specific can't collide with anything an earlier
+# or later test in the suite committed, so "was this skill freshly created
+# by MY accept()" stays a fact these tests can rely on regardless of run
+# order, instead of a guess about what already happened to extract-alex.
+UNDO_SKILL_DOC_TEXT = """Weekly status report
+
+Uma Kestrel worked on Project Undo Test Alpha. Piloted a rollback tool using Zephyrion Toolkit.
+"""
+
+
+async def _undo_skill_doc(client):
+    resp = await _upload(client, UNDO_SKILL_DOC_TEXT, filename="undo-skill-fixture.docx")
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["doc_id"]
+    subjects = await _subjects(client, doc_id)
+    subject = next(s for s in subjects if s["extracted_name"] == "Uma Kestrel")
+    await _resolve(client, subject["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, doc_id, "extract-alex", "skill"))[0]
+    return skill_id
+
+
+async def test_undo_skill_removes_a_newly_created_skill(client, db_session):
+    skill_id = await _undo_skill_doc(client)
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    skill_name = accept_resp.json()["proposed_value"]["skill"]
+
+    db_session.expire_all()
+    from app.models import Skill
+    row = (
+        db_session.query(EmployeeSkill).join(Skill, EmployeeSkill.skill_id == Skill.id)
+        .filter(EmployeeSkill.employee_id == "extract-alex", Skill.name == skill_name).first()
+    )
+    assert row is not None  # accept() created it
+
+    undo_resp = await _undo(client, skill_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+    assert undo_resp.json()["status"] == "pending"
+
+    db_session.expire_all()
+    row = (
+        db_session.query(EmployeeSkill).join(Skill, EmployeeSkill.skill_id == Skill.id)
+        .filter(EmployeeSkill.employee_id == "extract-alex", Skill.name == skill_name).first()
+    )
+    assert row is None  # undo() removed exactly what accept() created
+    assert db_session.get(ProposedChange, skill_id).status is ProposedChangeStatus.pending
+
+
+async def test_undo_skill_never_removes_one_that_already_existed(client, db_session):
+    """Two proposals could plausibly target the same (employee, skill) —
+    two documents both mentioning Alex knows Terraform, say. The second
+    accept() no-ops (never downgrades a level already held); undoing IT
+    must not delete a skill the first, still-accepted proposal is
+    responsible for."""
+    skill_id = await _undo_skill_doc(client)
+    skill_name = json.loads(db_session.get(ProposedChange, skill_id).proposed_value)["skill"]
+
+    from app.models import Skill
+    skill = db_session.query(Skill).filter(Skill.name == skill_name).first()
+    if skill is None:
+        from app.models.enums import SkillCategory
+        skill = Skill(name=skill_name, category=SkillCategory.technical, canonical_id=None)
+        db_session.add(skill)
+        db_session.commit()
+    from app.models.enums import SkillLevel, SkillSource
+    db_session.add(EmployeeSkill(
+        employee_id="extract-alex", skill_id=skill.id, level=SkillLevel.working, source=SkillSource.confirmed,
+    ))
+    db_session.commit()
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+
+    undo_resp = await _undo(client, skill_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    row = db_session.query(EmployeeSkill).filter(
+        EmployeeSkill.employee_id == "extract-alex", EmployeeSkill.skill_id == skill.id).first()
+    assert row is not None
+    assert row.level is SkillLevel.working  # the pre-existing, higher-level row survives untouched
+
+
+async def _seed_project(db_session, name, owner_id):
+    """Find-or-create, same shape as app.proposals._get_or_create_project —
+    the test database is session-scoped (see conftest.py), so a project
+    named "Project Nightingale" almost certainly already exists by the
+    time any one of these tests runs, from an earlier test's own accept().
+    Reusing it (rather than blind-inserting a duplicate) is what keeps
+    _get_or_create_project's own `.first()` lookup pointed at the same row
+    this test just set up, instead of an ambiguous earlier one."""
+    from app.models import Employee, Project
+    from app.models.enums import ProjectClassification, ProjectType
+
+    project = db_session.query(Project).filter(Project.name.ilike(name)).first()
+    if project is not None:
+        return project
+    owner = db_session.get(Employee, owner_id)
+    project = Project(
+        name=name, type=ProjectType.project, description=None,
+        owning_unit_id=owner.org_unit_id, owner_id=owner_id,
+        classification=ProjectClassification.internal, is_client_engagement=False,
+    )
+    db_session.add(project)
+    db_session.commit()
+    db_session.refresh(project)
+    return project
+
+
+async def _seed_membership(db_session, employee_id, project_id, **fields):
+    """Find-or-create the membership row too, same reasoning as
+    _seed_project — an earlier test in this session may have already put
+    extract-alex on Project Nightingale. Overwrites `fields` onto whichever
+    row it finds/creates, so each test still controls its own "previous"
+    state regardless of what an earlier test left behind."""
+    membership = (
+        db_session.query(EmployeeProject)
+        .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == project_id)
+        .first()
+    )
+    if membership is None:
+        membership = EmployeeProject(
+            employee_id=employee_id, project_id=project_id,
+            role="Contributor", start_date=date(2020, 1, 1),
+        )
+        db_session.add(membership)
+    for key, val in fields.items():
+        setattr(membership, key, val)
+    db_session.commit()
+    db_session.refresh(membership)
+    return membership
+
+
+async def test_undo_contribution_restores_previous_text(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    contribution_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "contribution"))[0]
+    project_name = json.loads(db_session.get(ProposedChange, contribution_id).proposed_value)["project"]
+    project = await _seed_project(db_session, project_name, "extract-alex")
+    await _seed_membership(db_session, "extract-alex", project.id, contribution="ORIGINAL CONTRIBUTION")
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{contribution_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.contribution != "ORIGINAL CONTRIBUTION"
+
+    undo_resp = await _undo(client, contribution_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.contribution == "ORIGINAL CONTRIBUTION"
+
+
+async def test_undo_project_entry_restores_previous_role(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    entry_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "project_entry"))[0]
+    project_name = json.loads(db_session.get(ProposedChange, entry_id).proposed_value)["project"]
+    project = await _seed_project(db_session, project_name, "extract-alex")
+    await _seed_membership(db_session, "extract-alex", project.id, role="Legacy Role")
+
+    accept_resp = await client.post(
+        f"/proposed_changes/{entry_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert accept_resp.status_code == 200, accept_resp.text
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.role != "Legacy Role"
+
+    undo_resp = await _undo(client, entry_id)
+    assert undo_resp.status_code == 200, undo_resp.text
+
+    db_session.expire_all()
+    membership = db_session.query(EmployeeProject).filter(
+        EmployeeProject.employee_id == "extract-alex", EmployeeProject.project_id == project.id).first()
+    assert membership.role == "Legacy Role"
+
+
+async def test_undo_refuses_after_document_finalized(client, project_doc, db_session):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+    await client.post(
+        f"/docs/{project_doc['doc_id']}/finalize", params={"view_mode": "work"},
+        json={"accept_ids": []}, headers=auth_headers("it"))
+
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+    assert "finalized" in resp.json()["detail"]
+
+    db_session.expire_all()
+    assert db_session.get(ProposedChange, skill_id).status is ProposedChangeStatus.accepted
+
+
+async def test_undo_refuses_on_rejected_row(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    await client.post(
+        f"/proposed_changes/{skill_id}/reject", params={"view_mode": "work"}, headers=auth_headers("it"))
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+
+
+async def test_undo_refuses_on_still_pending_row(client, project_doc):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+
+    resp = await _undo(client, skill_id)
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("role", ["employee", "manager", "hr"])
+async def test_undo_is_it_only(client, project_doc, role):
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    await _resolve(client, alex["id"], employee_id="extract-alex")
+    skill_id = (await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex", "skill"))[0]
+    await client.post(
+        f"/proposed_changes/{skill_id}/accept", params={"view_mode": "work"}, headers=auth_headers("it"))
+
+    resp = await _undo(client, skill_id, role=role)
+    assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------

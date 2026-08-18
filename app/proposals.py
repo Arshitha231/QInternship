@@ -386,11 +386,12 @@ def accept(
         raise ProposalNotActionable(f"employee {proposal.employee_id} is not an active record")
 
     value = json.loads(proposal.proposed_value)
-    _commit(db, proposal.employee_id, proposal.change_type, value)
+    effect = _commit(db, proposal.employee_id, proposal.change_type, value)
 
     proposal.status = ProposedChangeStatus.accepted
     proposal.reviewed_by = caller.id
     proposal.reviewed_at = datetime.now()
+    proposal.undo_state = json.dumps(effect)
     db.commit()
     db.refresh(proposal)
 
@@ -425,13 +426,14 @@ def edit(
     if employee is None or not employee.is_active:
         raise ProposalNotActionable(f"employee {proposal.employee_id} is not an active record")
 
-    _commit(db, proposal.employee_id, proposal.change_type, edited_value)
+    effect = _commit(db, proposal.employee_id, proposal.change_type, edited_value)
 
     # The edited value replaces proposed_value permanently — the record of
     # what was committed is the edited version, not a copy the AI proposed
     # and a human overrode invisibly. What the AI originally said is still
     # recoverable from the audit trail's history if ever needed.
     proposal.proposed_value = json.dumps(edited_value)
+    proposal.undo_state = json.dumps(effect)
     proposal.status = ProposedChangeStatus.edited
     proposal.reviewed_by = caller.id
     proposal.reviewed_at = datetime.now()
@@ -442,6 +444,74 @@ def edit(
 
     _audit(db, caller, "edit_proposed_change", f"proposed_change_id={proposal.id}",
            [proposal.change_type.value], source=AI_EXTRACTION_SOURCE)
+    return proposal
+
+
+# ---------------------------------------------------------------------------
+# POST /proposed_changes/{id}/undo — reverse an accept()/edit(), while the
+# source document is still under review.
+# ---------------------------------------------------------------------------
+
+def undo(
+    db: Session, caller: AuthenticatedUser, proposal_id: int, view_mode: ViewMode
+) -> ProposedChange:
+    """Flips an accepted/edited proposal back to pending and reverses
+    exactly what its stored undo_state says was written — never re-reads
+    proposed_value to figure out what to undo, since for an edited row
+    that's the reviewer's typed value, not necessarily what _commit() saw
+    at the time it ran (a later proposal could have moved the same field
+    again since).
+
+    Only reachable while the source document hasn't been finalized yet —
+    the same gate app.proposals.correct() already applies, for the mirror-
+    image reason: finalize_document scrubs the document's own text and
+    treats that as the review session's real close. An accepted change on
+    a finalized document is meant to be done, not a draft indefinitely
+    reopenable from a review screen that no longer even shows that
+    document (see app/components/ReviewPage.tsx — a finalized document's
+    rows aren't rendered as interactive ChangeRows at all past that point).
+
+    A row accepted/edited before this column existed carries no
+    undo_state — refused outright rather than guessed at, the same
+    never-re-derive-it principle undo_state exists to satisfy in the
+    first place.
+    """
+    _authorize(caller, view_mode)
+    proposal = db.get(ProposedChange, proposal_id)
+    if proposal is None:
+        raise ProposalNotFound(str(proposal_id))
+    if proposal.status not in (ProposedChangeStatus.accepted, ProposedChangeStatus.edited):
+        raise ProposalNotActionable(
+            f"proposed change {proposal_id} is {proposal.status.value} — only an accepted "
+            f"or edited change can be undone"
+        )
+    _authorize_commit(caller, view_mode, proposal.change_type)
+
+    doc = db.get(UploadedDoc, proposal.source_doc_id)
+    if doc is not None and doc.content_scrubbed_at is not None:
+        raise ProposalNotActionable(
+            f"document {doc.id} was finalized at {doc.content_scrubbed_at} — its accepted "
+            f"changes can no longer be undone from here"
+        )
+    if not proposal.undo_state:
+        raise ProposalNotActionable(
+            f"proposed change {proposal_id} has no recorded undo state to reverse "
+            f"(it predates this feature)"
+        )
+
+    effect = json.loads(proposal.undo_state)
+    _reverse_commit(db, proposal.employee_id, effect)
+
+    proposal.status = ProposedChangeStatus.pending
+    proposal.reviewed_by = None
+    proposal.reviewed_at = None
+    proposal.undo_state = None
+    db.commit()
+    db.refresh(proposal)
+
+    reindex_employee_id(db, proposal.employee_id)
+
+    _audit(db, caller, "undo_proposed_change", f"proposed_change_id={proposal.id}", [proposal.change_type.value])
     return proposal
 
 
@@ -500,7 +570,7 @@ def _parse_date(value) -> date | None:
         return None
 
 
-def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
+def _commit_skill(db: Session, employee_id: str, value: dict) -> dict:
     """Skills land as `self`-sourced at `Learning`, never higher.
 
     A document saying somebody used Terraform is evidence they touched it,
@@ -508,6 +578,14 @@ def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
     the directory already has for exactly this distinction. Anything
     stronger would let an uploaded document manufacture expertise that
     find_mentor then recommends people to.
+
+    Returns the effect actually applied — {"kind": "skill", "created": bool,
+    "skill_id": int} — for app.proposals.undo() to reverse later.
+    "created" is False when the employee already held this skill (never
+    downgraded, so nothing here was actually written); undo() must never
+    delete a skill row it didn't create, since a duplicate proposal from a
+    second document could easily target the same (employee, skill) pair
+    after the first one already committed it.
     """
     skill_name = (value.get("skill") or "").strip()
     if not skill_name:
@@ -529,30 +607,53 @@ def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
         .first()
     )
     if existing is not None:
-        return  # never downgrade a level somebody already holds
+        return {"kind": "skill", "created": False, "skill_id": skill_id}  # never downgrade a level somebody already holds
 
     db.add(EmployeeSkill(
         employee_id=employee_id, skill_id=skill_id,
         level=SkillLevel.learning, source=SkillSource.self_reported, verified_at=None,
     ))
+    return {"kind": "skill", "created": True, "skill_id": skill_id}
 
 
-def _commit_contribution(db: Session, employee_id: str, value: dict) -> None:
+def _commit_contribution(db: Session, employee_id: str, value: dict) -> dict:
+    """Returns {"kind": "contribution", "project_id": int, "previous":
+    str | None} — the contribution text this write overwrote (None if the
+    membership had none, including a membership this same call just
+    created), for undo() to restore. The membership row itself is never
+    deleted on undo, even if this call is what created it: a project_entry
+    proposal for the same (employee, project) may have since set the role/
+    dates on that same row, and deleting it would destroy that unrelated,
+    still-accepted change too. Reverting just the contribution field is
+    what "remove the specific field it wrote" means for a shared row.
+    """
     project_name = (value.get("project") or "").strip()
     contribution = (value.get("contribution") or "").strip()
     if not project_name or not contribution:
         raise ProposalNotActionable("proposed contribution is missing a project or text")
     project = _get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
+    previous = membership.contribution
     membership.contribution = contribution
+    return {"kind": "contribution", "project_id": project.id, "previous": previous}
 
 
-def _commit_project_entry(db: Session, employee_id: str, value: dict) -> None:
+def _commit_project_entry(db: Session, employee_id: str, value: dict) -> dict:
+    """Returns {"kind": "project_entry", "project_id": int, "previous":
+    {"role", "start_date", "end_date"}} — the role/dates this write
+    overwrote, for undo() to restore. Same "revert the field, never delete
+    the shared row" reasoning as _commit_contribution above.
+    """
     project_name = (value.get("project") or "").strip()
     if not project_name:
         raise ProposalNotActionable("proposed project entry has no project name")
     project = _get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
+    previous = {
+        "role": membership.role,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
     if value.get("role"):
         membership.role = str(value["role"])[:150]
     start = _parse_date(value.get("start_date"))
@@ -561,15 +662,66 @@ def _commit_project_entry(db: Session, employee_id: str, value: dict) -> None:
     end = _parse_date(value.get("end_date"))
     if end is not None:
         membership.end_date = end
+    return {"kind": "project_entry", "project_id": project.id, "previous": previous}
 
 
-def _commit(db: Session, employee_id: str, change_type: ChangeType, value: dict) -> None:
+def _commit(db: Session, employee_id: str, change_type: ChangeType, value: dict) -> dict:
     if change_type is ChangeType.skill:
-        _commit_skill(db, employee_id, value)
+        return _commit_skill(db, employee_id, value)
     elif change_type is ChangeType.contribution:
-        _commit_contribution(db, employee_id, value)
+        return _commit_contribution(db, employee_id, value)
     else:
-        _commit_project_entry(db, employee_id, value)
+        return _commit_project_entry(db, employee_id, value)
+
+
+def _reverse_commit(db: Session, employee_id: str, effect: dict) -> None:
+    """Reverses exactly what _commit() recorded, from its own returned
+    effect dict — see undo() for why this never re-derives what to undo
+    from the proposal's current proposed_value instead.
+
+    Never deletes an EmployeeProject row (see _commit_contribution's and
+    _commit_project_entry's own docstrings for why a shared membership row
+    can't be safely deleted just because THIS proposal happened to create
+    it) — only an EmployeeSkill row, and only when this exact proposal is
+    the one that created it.
+    """
+    kind = effect.get("kind")
+    if kind == "skill":
+        if effect.get("created"):
+            row = (
+                db.query(EmployeeSkill)
+                .filter(EmployeeSkill.employee_id == employee_id, EmployeeSkill.skill_id == effect["skill_id"])
+                .first()
+            )
+            if row is not None:
+                db.delete(row)
+        return  # created=False: this proposal never wrote a row, nothing to reverse
+    if kind == "contribution":
+        membership = (
+            db.query(EmployeeProject)
+            .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == effect["project_id"])
+            .first()
+        )
+        if membership is not None:
+            membership.contribution = effect.get("previous")
+        return
+    if kind == "project_entry":
+        membership = (
+            db.query(EmployeeProject)
+            .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == effect["project_id"])
+            .first()
+        )
+        if membership is not None:
+            previous = effect.get("previous") or {}
+            membership.role = previous.get("role") or membership.role
+            membership.start_date = _parse_date(previous.get("start_date"))
+            membership.end_date = _parse_date(previous.get("end_date"))
+        return
+    # Deliberately not a silent no-op — same "raise on an obligation shape
+    # you don't recognize" discipline app/search_client.py's
+    # _apply_required_filter uses: an undo_state kind this function doesn't
+    # know how to reverse should fail loudly, not pretend to have undone it.
+    raise ProposalNotActionable(f"don't know how to undo effect kind {kind!r}")
 
 
 # ---------------------------------------------------------------------------

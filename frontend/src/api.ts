@@ -291,6 +291,11 @@ export const editProposedChange = (
 export const rejectProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
   proposedChangeAction(identity, id, "reject", viewMode);
 
+// Only valid on an accepted/edited row, and only while its source document
+// hasn't been finalized yet — see app/proposals.py's undo().
+export const undoProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
+  proposedChangeAction(identity, id, "undo", viewMode);
+
 export const reassignProposedChange = (
   identity: Identity, id: number, employeeId: string, viewMode: ViewMode,
 ) => proposedChangeAction(identity, id, "reassign", viewMode, { employee_id: employeeId });

@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import {
   acceptProposedChange, ApiError, editProposedChange, findPeople, finalizeDocument,
   listDocSubjectMatches, listProposedChanges, listUploadedDocs, reassignProposedChange,
-  rejectProposedChange, resolveDocSubjectMatch, uploadDoc,
+  rejectProposedChange, resolveDocSubjectMatch, undoProposedChange, uploadDoc,
 } from "../api";
+import { X } from "../icons";
 import type {
   DocSubjectMatchOut, Identity, PersonSummary, ProposedChangeGroup, ProposedChangeOut,
   UploadDocResult, UploadedDocSummary, ViewMode,
@@ -277,6 +278,11 @@ function ChangeRow({
   // list_proposals returns every status, not just pending, precisely so a
   // reviewer can see what happened to a row after acting on it.
   if (change.status !== "pending") {
+    // Undo only makes sense for a row that actually wrote something —
+    // reject() never touched a real table, so there's nothing for undo to
+    // reverse. The backend enforces the same distinction (undo() 409s on a
+    // rejected row); this is just not offering a button that would 409.
+    const undoable = change.status === "accepted" || change.status === "edited";
     return (
       <li className="review-change-row review-change-row-done">
         <span className={`pill review-status-pill review-status-${change.status}`}>
@@ -287,6 +293,17 @@ function ChangeRow({
             <span className="pill review-type-pill">{CHANGE_TYPE_LABEL[change.change_type]}</span>
           </div>
           <ChangeDiff original={change.original_value} proposed={change.proposed_value} />
+          {error && <p className="bio-error">{error}</p>}
+          {undoable && (
+            <div className="review-change-actions">
+              <button
+                className="btn btn-danger-outline" disabled={busy}
+                onClick={() => run(() => undoProposedChange(identity, change.id, viewMode), "Couldn't undo — try again.")}
+              >
+                {busy ? "Undoing…" : "Undo"}
+              </button>
+            </div>
+          )}
         </div>
       </li>
     );
@@ -461,6 +478,30 @@ function DocumentReviewCard({
     }
   }
 
+  // The "wrong file" button — dismisses every suggestion this document
+  // proposed and clears its content, in one click, with no need to reason
+  // about checkboxes first. Same backend call handleUpdate makes with
+  // nothing selected (finalizeDocument's accept_ids=[] IS "discard
+  // everything"); this just skips straight to it instead of asking the
+  // reviewer to first uncheck things that were never checked.
+  async function handleDiscard() {
+    if (!window.confirm(
+      `Discard "${doc.filename}"? Every suggestion it made will be dismissed and its content permanently cleared. This can't be undone.`,
+    )) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await finalizeDocument(identity, doc.id, [], viewMode);
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't discard this document — try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedCount = [...selected].filter((id) => pendingSet.has(id)).length;
   const dismissCount = pendingIds.length - selectedCount;
 
@@ -468,7 +509,16 @@ function DocumentReviewCard({
     <div className="card review-document-card">
       <div className="card-head">
         <h3>{doc.filename}</h3>
-        <span className="continuity-meta">Doc #{doc.id}</span>
+        <div className="review-document-head-actions">
+          <span className="continuity-meta">Doc #{doc.id}</span>
+          <button
+            type="button" className="icon-btn review-discard-btn" disabled={busy}
+            onClick={handleDiscard} title="Discard this document — dismiss every suggestion and clear its content"
+            aria-label="Discard this document"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
       {unresolvedSubjects.length > 0 && (

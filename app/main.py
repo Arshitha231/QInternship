@@ -60,6 +60,7 @@ from app.proposals import list_subjects
 from app.proposals import reassign as reassign_proposal
 from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
+from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
@@ -813,6 +814,20 @@ def reject_proposed_change_route(
     (PATCH /employees/{id}, PUT /projects/{id}/description)."""
     return _review_action(
         reject_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
+
+
+@app.post("/proposed_changes/{proposal_id}/undo")
+def undo_proposed_change_route(
+    proposal_id: int,
+    view_mode: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Flip an accepted/edited proposal back to pending and reverse exactly
+    what it wrote — only while its source document hasn't been finalized
+    yet (see app.proposals.undo)."""
+    return _review_action(
+        undo_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))
 
 
 @app.post("/proposed_changes/bulk_accept")

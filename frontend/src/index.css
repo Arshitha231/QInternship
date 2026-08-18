@@ -722,6 +722,14 @@ button { font: inherit; }
 .review-document-card { background: var(--page); }
 .review-document-card .review-employee-group:first-of-type { border-top: none; }
 
+.review-document-head-actions { display: flex; align-items: center; gap: 10px; }
+.review-discard-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  padding: 3px; border-radius: 6px; display: flex;
+}
+.review-discard-btn:hover:not(:disabled) { background: var(--red-100); color: var(--red); }
+.review-discard-btn:disabled { opacity: 0.5; cursor: default; }
+
 .review-finalize-row {
   display: flex; align-items: center; justify-content: space-between; gap: 14px;
   margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
