@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  ApiError, createEmployee, listDeactivatedEmployees, listOffices, listOrgUnits, reactivateEmployee,
+  ApiError, listDeactivatedEmployees, listOffices, listOrgUnits, reactivateEmployee,
+  requestEmployeeCreation,
 } from "../api";
 import type { CreateEmployeeFields, DeactivatedEmployee } from "../api";
 import type { Identity, OfficeOut, OrgUnitOut, PersonSummary, ViewMode } from "../types";
@@ -8,8 +9,14 @@ import { EditField } from "./ProfilePage";
 import { EmployeeSearchPicker } from "./ReviewPage";
 
 // HR-only, work mode only — see App.tsx's tab gating and
-// app.writes.create_employee's own "create_employee" EDITABLE capability,
+// app.writes.request_creation's own "create_employee" EDITABLE capability,
 // the actual server-side enforcement this UI only mirrors.
+//
+// Submitting does not create anybody: it stages a request for the HR user's
+// own manager to approve, exactly like restricting or deactivating someone.
+// The copy below is deliberate about that — an HR user who thinks they just
+// added a starter, and doesn't chase the approval, has a new hire with no
+// directory entry on day one.
 
 type FormState = {
   full_name: string;
@@ -19,6 +26,8 @@ type FormState = {
   office_id: string;
   manager_id: string;
   manager_name: string;
+  mentor_id: string;
+  mentor_name: string;
   work_email: string;
   work_phone: string;
   employment_type: "fte" | "contractor" | "intern";
@@ -27,7 +36,8 @@ type FormState = {
 
 const EMPTY_FORM: FormState = {
   full_name: "", preferred_name: "", job_title: "", org_unit_id: "", office_id: "",
-  manager_id: "", manager_name: "", work_email: "", work_phone: "", employment_type: "fte", hire_date: "",
+  manager_id: "", manager_name: "", mentor_id: "", mentor_name: "",
+  work_email: "", work_phone: "", employment_type: "fte", hire_date: "",
 };
 
 function unitLabel(unit: OrgUnitOut): string {
@@ -48,7 +58,7 @@ export function PeopleAdminPage({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ id: string; full_name: string } | null>(null);
+  const [staged, setStaged] = useState<{ full_name: string; approver_name: string | null } | null>(null);
 
   const [deactivated, setDeactivated] = useState<DeactivatedEmployee[] | null>(null);
   const [reactivatingId, setReactivatingId] = useState<string | null>(null);
@@ -126,14 +136,15 @@ export function PeopleAdminPage({
       if (form.preferred_name.trim()) fields.preferred_name = form.preferred_name.trim();
       if (form.office_id) fields.office_id = Number(form.office_id);
       if (form.manager_id) fields.manager_id = form.manager_id;
+      if (form.mentor_id) fields.mentor_id = form.mentor_id;
       if (form.work_phone.trim()) fields.work_phone = form.work_phone.trim();
       if (form.hire_date) fields.hire_date = form.hire_date;
 
-      const result = await createEmployee(identity, fields, viewMode);
-      setCreated({ id: result.id, full_name: result.full_name });
+      const result = await requestEmployeeCreation(identity, fields, viewMode);
+      setStaged({ full_name: result.target_name, approver_name: result.approver_name });
       setForm(EMPTY_FORM);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Couldn't create this employee — try again.");
+      setError(e instanceof ApiError ? e.message : "Couldn't send this for approval — try again.");
     } finally {
       setSaving(false);
     }
@@ -145,12 +156,16 @@ export function PeopleAdminPage({
         <h2>Add an employee</h2>
         <p className="continuity-meta">
           Full name, job title, org unit, and work email are required. Everything else — salary, date of
-          birth, cost centre, and so on — can be filled in from their profile afterward.
+          birth, cost centre, and so on — can be filled in from their profile afterward. Adding someone
+          needs a second pair of eyes, so this goes to your manager for approval before the profile
+          exists.
         </p>
 
-        {created && (
+        {staged && (
           <p className="review-upload-summary">
-            <strong>{created.full_name}</strong> was created.
+            <strong>{staged.full_name}</strong> was sent for approval
+            {staged.approver_name ? <> to <strong>{staged.approver_name}</strong></> : null}. The profile
+            is created once they approve it.
           </p>
         )}
         {error && <p className="bio-error">{error}</p>}
@@ -227,11 +242,39 @@ export function PeopleAdminPage({
               />
             )}
           </EditField>
+          {/* Not a field on the person — this becomes an official link in
+              the new hire's own community graph on approval. Left blank,
+              app.community_links.auto_assign_mentors' sweep will pick
+              somebody for them later; naming one here is HR overriding
+              that guess with a real decision. */}
+          <EditField label="Mentor">
+            {form.mentor_name ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span>{form.mentor_name}</span>
+                <button type="button" className="link-btn" onClick={() => { set("mentor_id", ""); set("mentor_name", ""); }}>
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <EmployeeSearchPicker
+                identity={identity} viewMode={viewMode}
+                placeholder="Do they have a mentor? (optional)"
+                onSelect={(p: PersonSummary) => { set("mentor_id", p.id); set("mentor_name", p.full_name); }}
+              />
+            )}
+          </EditField>
         </div>
+
+        {form.mentor_name && (
+          <p className="continuity-meta" style={{ marginTop: 12 }}>
+            {form.mentor_name} will appear in their community graph as their mentor. If you leave this
+            blank, one gets suggested automatically during their first few weeks.
+          </p>
+        )}
 
         <div className="bio-actions" style={{ marginTop: 16 }}>
           <button className="btn btn-primary" disabled={saving} onClick={handleSubmit}>
-            {saving ? "Creating…" : "Create employee"}
+            {saving ? "Sending…" : "Send for approval"}
           </button>
         </div>
       </section>

@@ -3,13 +3,31 @@ import { ApiError, approveActionRequest, listPendingApprovals, rejectActionReque
 import type { ActionRequestResult } from "../api";
 import type { Identity, ViewMode } from "../types";
 
-// Restrict/deactivate are maker-checker now (see app.writes.request_
-// restriction/request_deactivation) — whoever the REQUESTER's reporting
-// chain names as approver sees their pending requests here, regardless of
-// which role header they're currently using. Deliberately not gated to
-// "hr" at all: the approver is resolved by identity, not role (see
+// Restrict/deactivate/create are maker-checker (see app.writes' three
+// request_* functions) — whoever the REQUESTER's reporting chain names as
+// approver sees their pending requests here, regardless of which role
+// header they're currently using. Deliberately not gated to "hr" at all:
+// the approver is resolved by identity, not role (see
 // app.writes.list_my_pending_approvals), so an "employee"-role identity
 // who happens to manage an HR person still needs to see this.
+
+// What each action does to the person named, in the approver's words rather
+// than the enum's. "create" reads as an addition, not a mutation, because
+// approving it is the thing that brings the profile into existence.
+const ACTION_VERB: Record<string, string> = {
+  restrict: "hide the profile of",
+  deactivate: "deactivate",
+  create: "add",
+};
+
+// The consequence of approving, spelled out. An approver seeing one of
+// these for the first time shouldn't have to know what the directory means
+// by "restricted" to decide.
+const ACTION_EFFECT: Record<string, string> = {
+  restrict: "Their profile becomes invisible to everyone except HR.",
+  deactivate: "They're removed from the directory, search, and every graph.",
+  create: "A new profile is created and becomes visible to everyone.",
+};
 
 export function PendingApprovals({ identity, viewMode }: { identity: Identity; viewMode: ViewMode }) {
   const [requests, setRequests] = useState<ActionRequestResult[]>([]);
@@ -74,8 +92,15 @@ export function PendingApprovals({ identity, viewMode }: { identity: Identity; v
           {requests.map((r) => (
             <li key={r.request_id} className="pending-approvals-item">
               <span>
-                <strong>{r.requested_by}</strong> requested to <strong>{r.action_type}</strong>{" "}
+                {/* Names throughout, never ids — this is read by a person
+                    deciding whether to approve, and target_id is null
+                    anyway for a create (nobody exists to have an id yet). */}
+                <strong>{r.requested_by_name}</strong> requested to{" "}
+                {ACTION_VERB[r.action_type] ?? r.action_type}{" "}
                 <strong>{r.target_name}</strong>
+                {ACTION_EFFECT[r.action_type] && (
+                  <span className="pending-approvals-effect">{ACTION_EFFECT[r.action_type]}</span>
+                )}
               </span>
               <div className="pending-approvals-actions">
                 <button

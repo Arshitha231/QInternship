@@ -111,6 +111,32 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 | `GET /search` | **the unified search+ask surface.** Classifies `q` deterministically (trailing `?` or an interrogative opener) into `direct` (plain filtered results) or `assisted` (also runs the tool-calling layer and returns an `overview` with a prose answer + citations + reasoning trace) |
 | `POST /ask` | the older direct entry point to the tool-calling layer; `/search` is what the frontend actually uses now, this is kept as a lower-level API |
 
+Employee lifecycle — all hr-only, work mode. See **HR employee lifecycle** below:
+
+| Route | Purpose |
+|---|---|
+| `PATCH /employees/{id}` | hr-only internal-field edit (salary, title, `manager_id`, …). Refuses `availability_status: restricted` — that one transition is maker-checker, see below |
+| `POST /employees` | **stages** a request to add an employee; creates nobody. Returns 202 with a pending request, not 201 with a person. Small required set (name, title, org unit, work email, employment type) plus an optional mentor; everything else is a follow-up PATCH |
+| `POST /employees/{id}/restrict` | **stages** a request to hide a profile; restricts nothing until approved |
+| `POST /employees/{id}/deactivate` | **stages** a request to soft-delete; 409s up front while the target still manages anyone active |
+| `POST /employees/{id}/reactivate` | reverses a deactivation. Single-actor and immediate — the control is on the destructive direction, not the undo |
+| `GET /employees/deactivated` | the only read path that surfaces `is_active=false` records at all; every other one treats them as nonexistent |
+| `GET /employee_action_requests` | pending restrict/deactivate/create requests **this caller is the approver for**. Identity-scoped, not role-scoped |
+| `POST /employee_action_requests/{id}/approve` \| `/reject` | only the request's own resolved approver may call these — 403 for anyone else, whatever role they hold |
+| `GET /org_units`, `GET /offices` | flat lookups behind the create-employee pickers. Any authenticated caller: both are already `BASE_FIELDS` on every profile |
+
+Document extraction and review — all it-only, work mode. See **Document extraction and review** below:
+
+| Route | Purpose |
+|---|---|
+| `POST /docs/upload` | parse a .docx/.pdf, stage what it says as `pending` proposed changes |
+| `GET /uploaded_docs` | every uploaded document + live pending/unresolved counts, finalized ones included |
+| `GET /doc_subject_matches`, `POST /doc_subject_matches/{id}/resolve` | who a document mentions, and confirming which employee that is |
+| `GET /proposed_changes` | the review queue, grouped by employee |
+| `POST /proposed_changes/{id}/accept` \| `edit` \| `reassign` \| `correct` \| `reject` | per-field review actions; only `accept`/`edit` ever write to a real table |
+| `POST /proposed_changes/{id}/undo` | reverses an accept/edit, while the source document is still under review |
+| `POST /docs/{id}/finalize` | the "Update" action: accept the listed ids, dismiss the rest, then clear the document's own text for good |
+
 ## Project structure
 
 ```
@@ -134,6 +160,34 @@ app/
     service.py          joins expectations to reported status; records status changes
   people.py           find_people / get_person + the full filter pipeline, language-family
                        and skill-miss fallbacks for "no exact match" queries
+  writes.py           every write path plus the employee lifecycle: update_employee,
+                       create_employee, the restrict/deactivate maker-checker
+                       (request → _resolve_approver → approve/reject), reactivate,
+                       and list_deactivated_employees — see HR employee lifecycle below
+  proposals.py        the IT review workflow over extracted changes: resolve_subject,
+                       accept / edit / reassign / correct / reject, undo, and
+                       finalize_document (accept some, dismiss the rest, scrub the doc)
+  doc_extraction.py   .docx/.pdf → classify → typed extraction calls → staged rows.
+                       Python orchestrates the sequence; the model only answers one
+                       question per call and never writes
+  registry.py         one source of truth for every field the API can select, filter
+                       or sort on, and how sensitive it is. Fails startup if a DB column
+                       has no entry and no explicit ignore
+  policy.py           the policy engine every PeopleQuery passes through. Returns a
+                       PolicyDecision (approved fields + mandatory obligations), not a boolean
+  query_plan.py       the typed shape a filter-based people request takes (PeopleQuery)
+  query_compiler.py   PeopleQuery + PolicyDecision → a read-only, parameterized SQLAlchemy
+                       query: approved columns only, values never interpolated
+  vocabulary.py       validates a plan and snaps loose values onto real vocabulary
+  project_search.py   Mode 3: semantic project search + the project→employee hop, hybrid
+                       (embeddings + keyword) fused with RRF. Confidential projects are
+                       never embedded, so no query can reach one
+  project_skills.py   which skills, at what minimum level, a project's delivery needs
+  continuity.py       HR-only staffing continuity: work-authorization review dates against
+                       client engagements, severity from versioned config. No model calls
+  community_links.py  each employee's private "who to contact for what" graph; official
+                       links are HR-confirmed, personal ones are their own
+  search_reindex.py   rule 6: every write to an indexed field re-indexes
   org_chart.py        recursive org chart (both directions), cycle-guarded
   directory_tools.py  the 7-function tool-calling allowlist (find_people, get_person,
                        get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity)
@@ -148,7 +202,10 @@ app/
   schemas.py           Pydantic response models (PersonSummary, PersonDetail, OrgChainNode, …)
   models/               Employee, OrgUnit, Office, Skill, EmployeeSkill, Project,
                         EmployeeProject, EmployeeCertification, AuditLog,
-                        TrainingCourse, EmployeeCourseStatus, CourseRequirement, Notification
+                        TrainingCourse, EmployeeCourseStatus, CourseRequirement, Notification,
+                        UploadedDoc, DocSubjectMatch, ProposedChange, CommunityLink,
+                        WorkAuthorizationRecord, ProjectSkillRequirement, ProjectEmbedding,
+                        EmployeeActionRequest (staged restrict/deactivate awaiting approval)
 alembic/              migrations (SQLite locally, Azure SQL in deployment — same DDL)
 seed.py               synthetic data generator + constraint verification summary.
                        Starts by DELETING every employee/project/skill/org unit —
@@ -177,7 +234,25 @@ frontend/src/
     AIOverview.tsx              the AI-answer panel for assisted mode: prose + citation
                                 links + collapsed-by-default reasoning trace
     PersonCard.tsx, ProfilePage.tsx   result cards; full profile page (not a slide-over),
-                                URL-routed at /profile/:id
+                                URL-routed at /profile/:id. Carries HR's per-person
+                                lifecycle controls: Edit / Restrict / Deactivate, the
+                                "pending approval from X" state, and the inline
+                                reassignment picker when direct reports block a deactivation
+    PendingApprovals.tsx        the banner for whoever has restrict/deactivate requests
+                                waiting on them. Identity-scoped, deliberately NOT
+                                role-gated: the approver is whoever the requester's
+                                chain names, whatever role header they happen to carry
+    PeopleAdminPage.tsx         the HR-only Admin tab: create an employee, and the
+                                deactivated-employees list (the one place they can be
+                                found and put back)
+    ReviewPage.tsx              IT's document review: one card per uploaded document,
+                                checkbox-selectable suggestions, one Update button that
+                                applies the checked ones and clears the doc, an Undo on
+                                anything already accepted, and a ✕ to discard a whole
+                                wrong-file upload
+    ContinuityPage.tsx          HR-only staffing continuity views
+    CommunityPage.tsx, CommunityGraphCanvas.tsx   the personal "who to ask" graph
+    HelpMenu.tsx, HelpOverlay.tsx   the guided tour and click-to-learn overlay
     GraphPage.tsx               tab switcher for the three graph views below
     graphs/
       DepartmentGraph.tsx        org hierarchy: manager above, direct reports below,
@@ -577,6 +652,22 @@ from a broken sweep.
    `propose_project_update` calls that land in `proposed_changes` as
    `pending`; only an IT reviewer's explicit accept moves content into
    `EmployeeProject` / `EmployeeSkill`, and only then is it searchable.
+10. Nothing is deleted, only marked. Employees deactivate (`is_active`),
+    documents are scrubbed but keep their row, rejected proposals are kept.
+    Every table here is referenced by id from somewhere that has to outlive
+    it — audit rows, past project membership, notifications.
+11. Changing who exists takes two people. Restricting a profile,
+    deactivating an employee and **adding** one all stage an
+    `EmployeeActionRequest` for the **requester's own** manager to approve;
+    the requester cannot approve their own. Approval is gated by identity
+    (`caller.id == approver_id`), never by role — see HR employee lifecycle.
+    The reversals (unrestrict, reactivate) stay single-actor: the control
+    belongs on the direction that changes the roster, and a reactivation can
+    only restore somebody this same control already approved removing.
+12. A staged request is text, never a half-built row. A pending create keeps
+    its proposed employee in `employee_action_requests.payload` as JSON
+    rather than an `employees` row with `is_active=false`, so no query that
+    forgets to exclude it can surface a person nobody approved.
 
 ## Roles and view modes
 
@@ -609,6 +700,172 @@ Three things are worth knowing before changing any of this:
   what the identity guarantee requires. An employee can still see their own
   salary; they still cannot edit it.
 
+## HR employee lifecycle
+
+Creating people, removing them, and hiding one person's profile from
+everyone. All hr-only, work mode, gated by the same `app/permissions.py`
+EDITABLE table every other write goes through.
+
+### Hiding a profile was already enforced — nothing could set it
+
+`AvailabilityStatus` has had a third value, `restricted`, since the original
+schema, and `is_record_visible` has always honoured it: a restricted person is
+absent from search, from the org chart, from project-membership results, from
+AI answer citations, and from **their own manager's** view. Only `hr` in work
+mode is exempt, and even HR loses that exemption while previewing employee
+mode. What was missing was any way to turn it on — `availability_status`
+wasn't in EDITABLE and wasn't in the PATCH schema, so the only restricted
+records that ever existed were seeded that way.
+
+That gap is now closed, but not through the generic PATCH: `POST
+/employees/{id}/restrict` stages an approval request instead (below).
+`PATCH /employees/{id}` explicitly **refuses** `availability_status:
+restricted` and says to use that route. `available`/`away` stay ordinary
+PATCHable values — only the transition *into* restricted is controlled.
+
+### Deleting is deactivating
+
+`employees.is_active` has always been documented as the only intended delete
+("Soft delete only. Records are never hard-deleted") and nothing ever wrote it.
+`POST /employees/{id}/deactivate` does, alongside a new `deactivated_at`.
+
+Hard deletion isn't offered: `audit_log`, `employee_projects`,
+`proposed_changes`, `notifications` and anyone's `manager_id` all reference
+employees by id with no cascade, so a real `DELETE` would either fail or
+silently orphan history.
+
+**Deactivation is blocked while the target still manages anyone active.** HR
+reassigns those reports first — which is why `manager_id` is now editable, it
+wasn't before — rather than leaving the org chart pointing at someone who's
+gone. The 409 names exactly who's blocking it, so the UI can offer a picker per
+person instead of making HR go find them. Delegate references are different:
+`delegate` means "who's covering while I'm away", so those are cleared
+automatically rather than blocking — a cleanup, not a decision.
+
+`POST /employees/{id}/reactivate` reverses it, single-actor and immediate. It
+deliberately does **not** restore the delegate references deactivation
+cleared: those pointed at the target being available to cover for someone
+else, not at their own employment, and silently recreating a relationship
+nobody asked for would be guessing.
+
+### Two people, not one
+
+Restricting, deactivating and creating are **maker-checker**. The POST stages
+an `EmployeeActionRequest` and notifies an approver; nothing is applied until
+that approver acts. The requester cannot approve their own request.
+
+The approver is resolved from the **requester's own reporting chain** — not
+the target's — because the control is "one person shouldn't be able to do this
+alone", which is about the actor, not about who they're acting on:
+
+1. their manager, if active and not `away`;
+2. if that manager is `away`, their `delegate` — the field already means
+   "who's covering for me", so this is exactly its use;
+3. if the delegate is also away or inactive, keep walking up.
+
+Bounded by `org_chart.MAX_DEPTH`, the same cycle guard every other chain walk
+uses. If the whole chain is exhausted with nobody reachable, the request is
+**refused (422)** rather than staged with a null approver nobody could ever
+action.
+
+The approver is stamped on the row **once, at request time**, and never
+re-derived when the approval arrives — otherwise a reorg mid-approval would
+silently move who was authorised to decide.
+
+Approval is gated by **identity, not role**: `caller.id == request.approver_id`.
+Whoever the chain names is who decides, whatever role header they're carrying —
+so `GET /employee_action_requests` has no role gate either, and a
+`manager`-role identity who happens to manage an HR person sees their requests
+normally. A different HR identity gets a 403.
+
+Preconditions are re-checked at approval time, not just at request time: an
+approval can sit pending while the org moves under it. Someone can acquire
+direct reports in that window; a proposed hire's email address can be taken by
+somebody else, or their chosen manager or mentor can leave.
+
+### Finding someone after you've deactivated them
+
+`is_active=false` is a stronger gate than `restricted` — `get_person` returns
+nothing for **every** caller, HR included. That made `reactivate` correct but
+unreachable: nothing could find the id to call it with.
+
+`GET /employees/deactivated` is the one deliberate carve-out, gated by the
+same `deactivate_employee` capability deactivating took — the people who can
+put someone back are exactly the people who could have taken them out. It's
+narrow on purpose (identity and placement, nothing else): the question it
+answers is "who did we deactivate, when, and should they come back", not "show
+me their record". Newest departure first, with `deactivated_at IS NULL` rows
+last — anyone seeded inactive, or deactivated before that column existed, is
+still a deactivated employee, and this is the only view that can see them.
+
+Capped rather than paginated: the set grows for the life of the company while
+the thing it serves is short-horizon (undo a mistake, reinstate a recent
+leaver). A genuine "search every former employee" need would want a query
+parameter, not a bigger cap.
+
+### Creating
+
+`POST /employees` takes a deliberately small required set — full name, job
+title, org unit, work email, employment type — plus optional placement
+(office, manager, preferred name, work phone, hire date, defaulting to today)
+and an optional mentor. Everything `update_employee` already covers (salary,
+DOB, cost centre, LinkedIn) is a follow-up PATCH rather than a duplicated
+field list here: a new hire's identity and where they sit is what onboarding
+needs on day one, and the rest fills in as it becomes known.
+
+**Creating is maker-checker too**, on the same machinery as restrict and
+deactivate — the route returns **202 with a pending request**, not 201 with a
+person. Adding someone is what mints a real identity in the directory, and a
+fabricated one isn't cheaply undone: deactivating it later leaves the record,
+its audit trail, and anything already linked to it in place. (`reactivate`
+stays single-actor, and genuinely is the low-risk direction — it can only
+restore somebody the two-person control already approved removing.)
+
+`create` is the one action type with **no target employee**, since the person
+doesn't exist until the approval lands. That shapes three things:
+
+- `employee_action_requests.target_employee_id` is nullable, and the proposed
+  fields sit in a new `payload` column as JSON. Deliberately inert text, not a
+  half-built `employees` row with `is_active=false`: a real row would be
+  reachable by every query that forgets to exclude it — search indexing, the
+  org chart, the deactivated-employees list, the `work_email` uniqueness
+  check. Keeping it as text means "proposed" and "employed" cannot be confused
+  by any code path that doesn't deliberately open the column.
+- Every "who is this about" surface reads through `request_subject_name`,
+  which falls back to the payload's name. The approval queue can therefore
+  name a person who has no id yet.
+- On approval the request's `target_employee_id` is backfilled with the id it
+  just created, so the audit trail can get from "who approved this" to "who
+  exists because of it".
+
+Validation (`work_email` uniqueness; the org unit, office, manager and mentor
+existing and being active) runs **twice** — once when the request is staged,
+so HR gets immediate feedback and an approver is never handed something that
+cannot apply, and again at approval, because the world moves while a request
+sits pending. Someone else can take the email address; the chosen manager or
+mentor can leave. Either way the whole action is refused (409), never applied
+half-way.
+
+#### The mentor question
+
+The create form asks whether the new hire has a mentor. `mentor_id` is the one
+field that isn't an `employees` column at all — "who shows this person the
+ropes" is a relationship, not an attribute of them — so on approval it becomes
+an **official `community_links` row owned by the new hire**, byte-identical to
+what `auto_assign_mentors` would have created: `role_label: "mentor"`,
+`is_mentor_link: true`, office and department stamped.
+
+Matching that shape exactly is load-bearing, not tidiness. `_eligible_new_hires`
+excludes anyone who already has a mentor link, so an HR-chosen mentor
+automatically suppresses the sweep for that person — HR's real decision
+overrides the algorithm's guess instead of being topped up with a second
+mentor beside it. And because it's `official` rather than `personal`, the new
+hire can't delete it, and it ages into a personal link on the same
+`mentor_link_duration_days` clock as every other mentor link.
+
+Leaving the field blank keeps today's behaviour: the sweep picks somebody
+during their first few weeks.
+
 ## Document extraction and review
 
 `POST /docs/upload` (IT, work mode) parses a .docx/.pdf, stores the extracted
@@ -622,14 +879,64 @@ rather than a coin flip.
 Review is IT-only, work mode: `GET /proposed_changes?doc_id=` (grouped by
 employee, unresolved first), then `accept` (commits + re-indexes + audits with
 `source=ai_extraction`), `reassign` (re-points it, stays pending), `correct`
-(back through the function-calling loop, stays pending), or `DELETE` (rejects;
-the row is kept, not deleted — a rejected proposal is the most useful row in
-the table when extraction quality is next reviewed). IT's fallback for
-anything it won't accept is the manual edit endpoints.
+(back through the function-calling loop, stays pending), or `reject` (the row
+is kept, not deleted — a rejected proposal is the most useful row in the table
+when extraction quality is next reviewed). IT's fallback for anything it won't
+accept is the manual edit endpoints.
 
 Accepted skills land as `Learning` / `self`-sourced, never higher: a document
 saying somebody used Terraform is evidence they touched it, not that they are
 an expert `find_mentor` should be recommending.
+
+### One document at a time, then the document goes
+
+The review screen is one card per uploaded document, not a page-wide queue:
+check the suggestions you want, click **Update**, and that document is done.
+`POST /docs/{id}/finalize` accepts the checked ids, **rejects everything else
+still pending for that document** — an unchecked suggestion is a declined one,
+not a skipped one — and then clears the document's own `extracted_text` and
+stamps `content_scrubbed_at`.
+
+The `uploaded_docs` row itself survives that scrub, deliberately:
+`proposed_changes` and `doc_subject_matches` both hold a non-nullable FK into
+it, and every decided row is kept as its own audit trail. So what goes is the
+document's *content*, not the record that it existed —
+`content_scrubbed_at` is what distinguishes "emptied on purpose after review"
+from "nothing parsed out of it in the first place".
+
+Two consequences worth knowing:
+
+- **`correct` stops working on a finalized document**, since re-extraction has
+  nothing left to read. `edit` still does — it commits the reviewer's own typed
+  value and never consults the source text.
+- **A subject nobody resolved keeps its rows pending** through a finalize.
+  Those proposals have no `employee_id` yet, so finalize can't act on them
+  either way; resolving that person later still works, because
+  `accept`/`edit`/`reject` never read the document's text.
+
+### Undoing an accept
+
+`POST /proposed_changes/{id}/undo` flips an `accepted`/`edited` row back to
+`pending` and reverses exactly what it wrote — from an effect recorded at
+commit time (`undo_state`), never re-derived afterwards, because for an edited
+row the current `proposed_value` is the reviewer's own text rather than what
+`_commit` actually saw.
+
+What it reverses is deliberately asymmetric:
+
+- an `EmployeeSkill` row is deleted **only if that exact proposal created it** —
+  a second document proposing a skill someone already holds is a no-op on
+  accept, and undoing it must not delete the first proposal's work;
+- an `EmployeeProject` row is **never** deleted, only the field this proposal
+  set is restored. The membership row is shared: a `project_entry` proposal may
+  have set the role on the same row a `contribution` proposal set the text on,
+  and deleting it would destroy an unrelated, still-accepted change.
+
+Only reachable while the source document hasn't been finalized — the same gate
+`correct` uses, for the mirror-image reason. There's also a **✕ on each
+document card** for the "I uploaded the wrong file" case: it's the same
+finalize call with nothing selected, so everything is dismissed and the content
+cleared in one click, without having to reason about checkboxes first.
 
 ## Build order
 
@@ -664,3 +971,17 @@ an expert `find_mentor` should be recommending.
       pre-existing `update_own_bio`, which never re-indexed
 - [x] 18. Document upload → typed-call extraction → IT review workflow
       (`uploaded_docs`, `proposed_changes`; see Document extraction and review)
+- [x] 19. Review reshaped around the document rather than the queue: pick the
+      suggestions you want, one Update applies them and dismisses the rest,
+      then the document's own text is cleared (`content_scrubbed_at`). Plus
+      `undo` on an accepted change and a one-click discard for a wrong upload
+- [x] 20. `EmployeeProject.contribution` actually exposed on `GET /people/{id}` —
+      accept() had always committed it, but `ProjectHistoryItem` had no field
+      for it, so it was invisible on every profile however it got there
+- [x] 21. HR employee lifecycle: create, deactivate (soft, blocked on active
+      direct reports), restrict, reactivate, and the deactivated-employee
+      browse view that makes reactivate reachable at all
+- [x] 22. Maker-checker on the two irreversible ones: restrict and deactivate
+      stage a request for the requester's own manager (delegate-first when
+      away, escalating up the chain) and apply only on approval
+      (see HR employee lifecycle)
