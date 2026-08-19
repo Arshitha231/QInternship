@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +22,9 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
+from app import config
+from app.auth import AuthenticatedUser, assert_dev_auth_is_intentional, get_current_user
+from app.certifications import LocalStatusWritesDisabled, RecordCourseStatusDenied, UnknownCourse, record_course_status
 from app.community_links import LinkDenied, LinkNotFound, SuggestionDenied, SuggestionNotActionable, SuggestionNotFound
 from app.community_links import auto_assign_mentors as auto_assign_mentors_service
 from app.community_links import confirm_suggested_official_link as confirm_suggested_official_link_service
@@ -32,16 +35,29 @@ from app.community_links import list_community_links as list_community_links_ser
 from app.community_links import list_suggested_official_links as list_suggested_official_links_service
 from app.community_links import reject_suggested_official_link as reject_suggested_official_link_service
 from app.community_links import update_personal_link as update_personal_link_service
+from app.continuity import AuthorizationRecordNotActionable, AuthorizationRecordNotFound
+from app.continuity import acknowledge_hr_review as acknowledge_hr_review_service
+from app.continuity import confirm_authorization_record as confirm_authorization_record_service
 from app.continuity import get_employee_continuity as get_employee_continuity_service
 from app.continuity import get_engagement_exposure as get_engagement_exposure_service
 from app.continuity import get_hr_review_queue as get_hr_review_queue_service
 from app.continuity import get_org_exposure as get_org_exposure_service
+from app.continuity import reject_authorization_record as reject_authorization_record_service
+from app.continuity import submit_authorization_record as submit_authorization_record_service
 from app.db import engine, get_db
+from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
 from app.models import DocSubjectMatch, Employee, Office, OrgUnit, TrainingCourse
-from app.models.enums import CourseStatus, display_status
-from app.notifications import notifications_for, notify_date_milestones
+from app.models.enums import CourseStatus, SkillCategory, SkillLevel, display_status
+from app.notifications import (
+    NotifyDateMilestonesDenied, NotifyHrReviewsDenied, notifications_for, notify_date_milestones,
+    notify_upcoming_hr_reviews,
+)
 from app.org_chart import get_org_chain as get_org_chain_service
+from app.own_skills import SkillAlreadyHeld, SkillCategoryMismatch, SkillNotHeld
+from app.own_skills import add_own_skill as add_own_skill_service
+from app.own_skills import remove_own_skill as remove_own_skill_service
+from app.own_skills import update_own_skill as update_own_skill_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
@@ -74,6 +90,7 @@ from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
+    AuthorizationRecordOut,
     BulkProposalRequest,
     CommunityLinkOut,
     ContinuityOverview,
@@ -99,10 +116,14 @@ from app.schemas import (
     RecordCourseStatusRequest,
     RejectActionRequestBody,
     ResolveSubjectRequest,
+    SubmitAuthorizationRecordRequest,
     SuggestedOfficialLinkOut,
+    AddOwnSkillRequest,
     UpdateBioRequest,
+    UpdateOwnSkillRequest,
     UpdateCommunityLinkRequest,
     UpdateEmployeeRequest,
+    UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
 )
 from app.tool_calling import answer as answer_service
@@ -126,7 +147,9 @@ from app.writes import reject_action_request as reject_action_request_service
 from app.writes import request_deactivation as request_deactivation_service
 from app.writes import request_restriction as request_restriction_service
 from app.writes import set_project_description as set_project_description_service
+from app.writes import remove_project_history as remove_project_history_service
 from app.writes import update_employee as update_employee_service
+from app.writes import upsert_project_history as upsert_project_history_service
 
 try:
     # Setup Metrics
@@ -160,6 +183,11 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # adding employee.home_address must add a registry entry (or a
     # justified ignore) before it can ever become queryable, not after.
     assert_registry_covers_schema(engine)
+    # Same shape: fails loudly if AUTH_MODE fell back to "dev" by omission
+    # rather than by a deliberate ALLOW_DEV_AUTH=1 / AUTH_MODE=dev choice —
+    # see assert_dev_auth_is_intentional's docstring for why that fallback
+    # is a full auth bypass, not a degraded feature.
+    assert_dev_auth_is_intentional()
     yield
 
 app = FastAPI(
@@ -321,6 +349,111 @@ def update_name_pronunciation_route(
     if person_id != user.id:
         raise HTTPException(status_code=403, detail="You can only edit your own profile")
     result = update_own_name_pronunciation_service(db, user, person_id, body.name_pronunciation.strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+# --- Self-service skills and languages -------------------------------------
+# Same identity gate as /bio and /pronunciation above, and for the same
+# reason: a skill somebody claims about themselves is theirs to state, and
+# app/own_skills.py stamps every write here `self`-sourced so a reader can
+# tell a self-claim from a verified one. Not routed through
+# app.permissions' EDITABLE table — see app/own_skills.py's docstring for
+# why identity, not role, is the right gate for an own-record write.
+#
+# One endpoint family covers both cards: a language is a skills row with
+# category=language (app/own_skills.py), so the Languages card posts
+# category="language" and everything else is identical.
+#
+# All three answer with the caller's full PersonDetail rather than the row
+# that changed — including DELETE, which is why it's a 200 with a body
+# instead of the 204 DELETE /people/{id}/projects/{project_id} returns. An
+# add doesn't always land in the card that submitted it (category belongs
+# to the skill), so the response has to be able to show where it went, and
+# the caller is looking at their own profile page anyway.
+
+
+def _require_self(person_id: str, user: AuthenticatedUser) -> None:
+    if person_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own profile")
+
+
+@app.post("/people/{person_id}/skills", status_code=201,
+          response_model=PersonDetail, response_model_exclude_unset=True)
+def add_own_skill_route(
+    person_id: str,
+    body: AddOwnSkillRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Add a skill or language to your own profile.
+
+    An unrecognised name creates it; a name matching an existing skill
+    case-insensitively (or as a known synonym) attaches to that one. 409 if
+    you already hold it — changing a level is PATCH, not a second add.
+    """
+    _require_self(person_id, user)
+    try:
+        result = add_own_skill_service(
+            db, user, person_id, body.skill.strip(),
+            SkillCategory(body.category), SkillLevel(body.level),
+        )
+    except SkillCategoryMismatch as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SkillAlreadyHeld as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have {exc.args[0]} on your profile — edit its level instead.",
+        ) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.patch("/people/{person_id}/skills", response_model=PersonDetail, response_model_exclude_unset=True)
+def update_own_skill_route(
+    person_id: str,
+    body: UpdateOwnSkillRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Change the level of a skill or language already on your own profile.
+
+    The skill is named in the BODY, not the path: real skill names contain
+    slashes ("CI/CD", "Agile/Scrum"), and a percent-encoded slash is decoded
+    back into a path separator before routing ever sees it, so a
+    name-in-path endpoint would 404 on exactly those entries.
+    """
+    _require_self(person_id, user)
+    try:
+        result = update_own_skill_service(db, user, person_id, body.skill.strip(), SkillLevel(body.level))
+    except SkillNotHeld as exc:
+        raise HTTPException(status_code=404, detail=f"{exc.args[0]} isn't on your profile.") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.delete("/people/{person_id}/skills", response_model=PersonDetail, response_model_exclude_unset=True)
+def remove_own_skill_route(
+    person_id: str,
+    skill: str = Query(..., min_length=1, description="Name of the skill or language to remove."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Remove a skill or language from your own profile.
+
+    Named in the query string for the same slash reason PATCH names it in
+    the body — a query value may legally contain "/" once decoded, a path
+    segment may not. Only your holding of the skill goes; the skill itself
+    stays for everyone else who has it.
+    """
+    _require_self(person_id, user)
+    try:
+        result = remove_own_skill_service(db, user, person_id, skill.strip())
+    except SkillNotHeld as exc:
+        raise HTTPException(status_code=404, detail=f"{exc.args[0]} isn't on your profile.") from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
@@ -656,6 +789,70 @@ def clear_project_description_route(
     return {"project_id": project.id, "project_name": project.name, "project_desc": None}
 
 
+@app.put("/people/{person_id}/projects/{project_id}")
+def upsert_project_history_route(
+    person_id: str,
+    project_id: int,
+    body: UpsertProjectHistoryRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """IT, work mode: add or correct anyone's project history — except
+    their own (see app/writes.py's _refuse_own_record).
+
+    PUT rather than POST/PATCH because (person_id, project_id) fully
+    identifies the membership: the same call creates it or edits it, and
+    repeating it converges on the same row rather than stacking duplicates.
+    Only the keys actually supplied are written, so this is not a
+    replace-the-whole-row PUT — `{"end_date": null}` clears the end date,
+    omitting it leaves it alone.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    changes = body.model_dump(exclude_unset=True)
+    try:
+        membership = upsert_project_history_service(
+            db, user, person_id, project_id, changes, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Employee or project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "employee_id": membership.employee_id,
+        "project_id": membership.project_id,
+        "role": membership.role,
+        "contribution": membership.contribution,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
+
+
+@app.delete("/people/{person_id}/projects/{project_id}", status_code=204)
+def remove_project_history_route(
+    person_id: str,
+    project_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    """IT, work mode: remove anyone's project membership — except their own.
+
+    Removes the membership, not the project: the Project row and everyone
+    else staffed on it are untouched, same scoping reasoning as
+    DELETE /projects/{id}/description above.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        remove_project_history_service(db, user, person_id, project_id, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Project membership not found") from exc
+    return Response(status_code=204)
+
+
 @app.get("/people/{person_id}/org-chart", response_model=list[OrgChainNode])
 def get_org_chart_route(
     person_id: str,
@@ -732,7 +929,7 @@ def record_training_status_route(
 
     try:
         row, notifications = record_course_status(
-            db, employee=employee, course_code=course_code,
+            db, caller=user, employee=employee, course_code=course_code,
             status=CourseStatus(body.status),
             attempted_on=body.attempted_on, completed_on=body.completed_on,
         )
@@ -740,6 +937,8 @@ def record_training_status_route(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except UnknownCourse as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RecordCourseStatusDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     # The four-value status echoes back here — this endpoint's caller is hr
     # and already sent it. It stays out of every profile response.
@@ -776,7 +975,10 @@ def run_date_milestones_route(
         raise HTTPException(status_code=403, detail="Running the date sweep is an HR action")
 
     on_date = on or date.today()
-    created = notify_date_milestones(db, on_date)
+    try:
+        created = notify_date_milestones(db, user, on_date)
+    except NotifyDateMilestonesDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     db.commit()
 
     by_kind: dict[str, int] = {}
@@ -786,6 +988,36 @@ def run_date_milestones_route(
         "date": on_date.isoformat(),
         "notifications_sent": len(created),
         "by_kind": by_kind,
+    }
+
+
+@app.post("/notifications/hr-review-reminders", status_code=201)
+def run_hr_review_reminders_route(
+    on: date | None = Query(None, description="Date to sweep, YYYY-MM-DD. Defaults to today."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Sweep for work-authorization reviews due soon, notifying HR.
+
+    Same shape as POST /notifications/date-milestones — a sweep, not an
+    event, for the same reason (nothing changes in the database when a
+    review date approaches). Only ever reminds about a record HR hasn't
+    silenced via POST /continuity/review-queue/{record_id}/acknowledge —
+    see app.notifications.notify_upcoming_hr_reviews. HR-only.
+    """
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="Running the HR-review sweep is an HR action")
+
+    on_date = on or date.today()
+    try:
+        created = notify_upcoming_hr_reviews(db, user, on_date)
+    except NotifyHrReviewsDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    db.commit()
+
+    return {
+        "date": on_date.isoformat(),
+        "notifications_sent": len(created),
     }
 
 
@@ -908,9 +1140,132 @@ def continuity_employee_route(
     return result
 
 
+@app.post(
+    "/continuity/employees/{employee_id}/authorization-records", status_code=201,
+    response_model=AuthorizationRecordOut,
+)
+def submit_authorization_record_route(
+    employee_id: str,
+    body: SubmitAuthorizationRecordRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """Enter a new work-authorization record as pending_verification. It has
+    no effect on continuity analysis or the HR review queue until POST
+    .../confirm verifies it — see app/continuity.py's write-path section.
+    HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
+    try:
+        return submit_authorization_record_service(
+            db, user, employee_id, authorization_type=body.authorization_type,
+            effective_from=body.effective_from, effective_until=body.effective_until,
+            next_hr_review_date=body.next_hr_review_date,
+            source_document_type=body.source_document_type, internal_notes=body.internal_notes,
+            view_mode=mode,
+        )
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Person not found") from exc
+
+
+@app.post(
+    "/continuity/authorization-records/{record_id}/confirm", response_model=AuthorizationRecordOut,
+)
+def confirm_authorization_record_route(
+    record_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """The verification gate: makes a pending record current, superseding
+    whichever record was current before it. HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
+    try:
+        return confirm_authorization_record_service(db, user, record_id, view_mode=mode)
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Authorization record not found") from exc
+    except AuthorizationRecordNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/continuity/authorization-records/{record_id}/reject", response_model=AuthorizationRecordOut,
+)
+def reject_authorization_record_route(
+    record_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """Reject a pending submission. Kept, not deleted — see
+    app.continuity.reject_authorization_record. HR in work mode only."""
+    mode = _require_continuity_access(user, view_mode)
+    try:
+        return reject_authorization_record_service(db, user, record_id, view_mode=mode)
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Authorization record not found") from exc
+    except AuthorizationRecordNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/continuity/review-queue/{record_id}/acknowledge", response_model=AuthorizationRecordOut,
+)
+def acknowledge_hr_review_route(
+    record_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthorizationRecordOut:
+    """Silence the upcoming-review reminder for this record's current due
+    date. Lighter than POST .../confirm: it never changes
+    next_hr_review_date, verification_status, or is_current, and the record
+    keeps appearing in GET /continuity/review-queue regardless — this only
+    stops app/notifications.py's sweep from nagging about it. HR in work
+    mode only."""
+    mode = _require_continuity_access(user, view_mode)
+    try:
+        return acknowledge_hr_review_service(db, user, record_id, view_mode=mode)
+    except AuthorizationRecordNotFound as exc:
+        raise HTTPException(status_code=404, detail="Authorization record not found") from exc
+    except AuthorizationRecordNotActionable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # Doc upload -> AI extraction -> IT review.
 # ---------------------------------------------------------------------------
+
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_upload_capped(file: UploadFile) -> bytes:
+    """Read an UploadFile in chunks, aborting once config.max_upload_bytes()
+    is exceeded.
+
+    Reads via file.read() unbounded pull the whole body into memory before
+    anything can check its size — for a request-triggered parse path
+    (python-docx unzips the whole file, pypdf walks every page), an
+    oversized or crafted upload turns straight into a memory/CPU hit in the
+    request thread. Chunking keeps the checked total bounded regardless of
+    what the client claims in Content-Length.
+    """
+    limit = config.max_upload_bytes()
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds the {limit // (1024 * 1024)} MB upload limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @app.post("/docs/upload", status_code=201)
 async def upload_doc_route(
@@ -932,7 +1287,7 @@ async def upload_doc_route(
         raise HTTPException(
             status_code=403, detail="Uploading documents for extraction is an IT action in work mode")
 
-    data = await file.read()
+    data = await _read_upload_capped(file)
     if not data:
         raise HTTPException(status_code=422, detail="Empty file")
 
@@ -1383,8 +1738,13 @@ def ask(
     """Natural-language entry point to the seven-function tool-calling
     layer. The model only ever emits a function name + arguments; every
     result here comes from the same permission-filtered service functions
-    the structured endpoints above use — nothing bypasses the pipeline."""
-    return answer_service(db, user, body.message, resolve_view_mode(user.role, body.view_mode))
+    the structured endpoints above use — nothing bypasses the pipeline.
+
+    body.history carries this browser session's prior turns as plans
+    (tool + arguments), never results -- see schemas.HistoryTurn. Held by
+    the client for follow-up chat; nothing here persists it server-side."""
+    return answer_service(
+        db, user, body.message, resolve_view_mode(user.role, body.view_mode), body.history)
 
 
 # Built frontend (frontend/dist, produced by the CI/CD deploy job's frontend

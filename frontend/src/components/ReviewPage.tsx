@@ -160,19 +160,42 @@ function SubjectCard({
 
       {subject.candidates.length > 0 ? (
         <ul className="review-candidate-list">
-          {subject.candidates.map((c) => (
-            <li key={c.employee_id}>
-              <div>
-                <p className="job">{c.full_name}</p>
-                <p className="job-meta">
-                  {Math.round(c.confidence * 100)}% confidence · {humanizeMatchReason(c.match_reason)}
-                </p>
-              </div>
-              <button className="btn btn-primary" disabled={busy} onClick={() => confirm(c.employee_id)}>
-                Confirm
-              </button>
-            </li>
-          ))}
+          {subject.candidates.map((c) => {
+            // Who they are in the directory, which is the only thing that
+            // separates two same-named candidates — the document said the
+            // same words about both, so full_name and confidence are
+            // identical for them by construction.
+            const identity = [c.job_title, c.org_unit, c.office].filter(Boolean).join(" · ");
+            const deactivated = c.is_active === false;
+            return (
+              <li key={c.employee_id}>
+                <div>
+                  <p className="job">{c.full_name}</p>
+                  {identity && <p className="job-meta">{identity}</p>}
+                  {/* "confidence" overstated this: the score is a fixed
+                      weight per evidence type (app/doc_extraction.py's
+                      _SCORE_* constants), not a probability that this is
+                      the right person. Two same-named candidates both
+                      score 0.30 for the same reason, and reading that as
+                      "30% likely" when one of two must be right is
+                      actively wrong. */}
+                  <p className="job-meta">
+                    Evidence: {humanizeMatchReason(c.match_reason)} ({Math.round(c.confidence * 100)}%)
+                    {deactivated && " · no longer active"}
+                  </p>
+                </div>
+                <button
+                  className="btn btn-primary" disabled={busy || deactivated}
+                  onClick={() => confirm(c.employee_id)}
+                  // resolve_subject refuses a non-active employee, so this
+                  // would 409 rather than do anything.
+                  title={deactivated ? "This employee is no longer active" : undefined}
+                >
+                  Confirm
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <p className="continuity-meta">No plausible match found in the directory.</p>

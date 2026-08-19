@@ -37,6 +37,12 @@ class SkillOut(BaseModel):
 
 
 class ProjectHistoryItem(BaseModel):
+    # Which EmployeeProject row this is, so a caller who may EDIT project
+    # history can address it (PUT/DELETE /people/{id}/projects/{project_id}).
+    # Not gated: the project's NAME is already here for anyone who can see
+    # project_history at all, and an opaque row id discloses strictly less
+    # than the name it sits next to.
+    project_id: int
     project_name: str
     project_type: str
     role: str
@@ -353,11 +359,35 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
+class HistoryTurn(BaseModel):
+    """One prior turn of a follow-up conversation, as returned by a
+    previous /ask call -- a PLAN, never a result, matching the same rule
+    saved sessions use (Conversational Assistant plan §2, "store the
+    questions, not the answers"). `tool_call`/`arguments` are replayed
+    through the ordinary enforce()-gated dispatcher fresh on every new
+    turn (see tool_calling._history_messages) rather than trusted as
+    given, so a value the client could tamper with never reaches the
+    model's context unverified. `assistant_text` is carried as-is only
+    for a turn that had no tool call (a clarifying question, an
+    out-of-scope reply) -- connective language with no factual claim
+    about a person, so nothing there needs re-checking."""
+
+    message: str
+    tool_call: str | None = None
+    arguments: dict | None = None
+    assistant_text: str | None = None
+
+
 class AskRequest(BaseModel):
     message: str
     # "work" | "employee". Resolved server-side by resolve_view_mode, so an
     # employee-role caller sending "work" is still answered in employee mode.
     view_mode: str | None = None
+    # Held client-side for the length of the browser session, not
+    # persisted server-side -- follow-up chat (phase 1), not saved
+    # sessions (phase 2). Bounded to the last few turns by
+    # tool_calling.MAX_HISTORY_TURNS regardless of how long the list is.
+    history: list[HistoryTurn] = Field(default_factory=list)
 
 
 class RecordCourseStatusRequest(BaseModel):
@@ -387,6 +417,64 @@ class UpdateNamePronunciationRequest(BaseModel):
     # UpdateBioRequest: a full-replace PATCH, so an empty string is how the
     # owner clears a respelling they no longer want on file.
     name_pronunciation: str = Field(max_length=200)
+
+
+# --- Self-service skills and languages (app/own_skills.py) -----------------
+# One table behind both, split by category at render time, so these two
+# request models serve the Skills card and the Languages card alike. Skill
+# names are matched case-insensitively and through synonyms server-side, so
+# the client never has to send a canonical spelling.
+
+SkillLevelName = Literal["Learning", "Working", "Expert"]
+
+
+class AddOwnSkillRequest(BaseModel):
+    # 150 to match Skill.name's column width — an unrecognised name creates
+    # the skills row, so this is the one request that can actually reach it.
+    skill: str = Field(min_length=1, max_length=150)
+    # Which card this came from, and therefore where a BRAND-NEW skill gets
+    # filed. Ignored for a name that already exists — category belongs to
+    # the skill, not to one person's holding of it — except that crossing
+    # the Skills/Languages split is refused outright rather than silently
+    # re-filed. See app/own_skills.py's SkillCategoryMismatch.
+    category: Literal["technical", "domain", "language"] = "technical"
+    level: SkillLevelName
+
+
+class UpdateOwnSkillRequest(BaseModel):
+    """Re-level a skill already held. Level is the only editable part: the
+    name identifies the row, and category isn't a property of one person's
+    holding. Correcting a name is a remove plus an add."""
+
+    skill: str = Field(min_length=1, max_length=150)
+    level: SkillLevelName
+
+
+class UpsertProjectHistoryRequest(BaseModel):
+    """IT's direct edit of one person's membership of one project.
+
+    Same wire contract as UpdateEmployeeRequest: every field optional, the
+    route sends only the keys actually supplied, and an explicit null
+    clears. `{"end_date": null}` is how a project becomes current again,
+    which must stay distinguishable from omitting end_date entirely.
+
+    Creating a membership through this same model needs role and
+    start_date, since both are NOT NULL on EmployeeProject -- that is
+    enforced in app/writes.py rather than here, because whether this call
+    creates or patches depends on whether the row already exists, which the
+    wire shape cannot know.
+
+    employee_id and project_id are deliberately absent: they identify the
+    row (they are in the path), and moving a membership between people or
+    projects is a delete plus a create, not a field edit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str | None = Field(default=None, max_length=150)
+    contribution: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class UpdateEmployeeRequest(BaseModel):
@@ -591,6 +679,15 @@ class DeliveryDependency(BaseModel):
     employee: PersonRef
     project_backup_count: int  # others already on this engagement with the same dependency
     org_backup_count: int      # others anywhere else in the org, excluding project members
+    # Which pool this dependency's redundancy actually comes from --
+    # orthogonal to `exposure` on the containing EngagementExposure, which
+    # can land on the same severity band ("low") for two situations this
+    # field tells apart: "project" (project_backup_count > 0, someone is
+    # already here) reads very differently to HR than "org"
+    # (project_backup_count == 0 but org_backup_count > 0, nobody here
+    # today and a redeployment hasn't happened yet). "none" means neither
+    # -- this is exactly the "high" severity case.
+    redundancy_source: Literal["project", "org", "none"]
     # "declared": a real recorded fact -- either a ProjectSkillRequirement
     # row (app/project_skills.py) the employee meets, or the project_role
     # dependency (employee_projects.role is always ground truth).
@@ -664,6 +761,25 @@ class AuthorizationRecordOut(BaseModel):
     verification_status: str
     is_current: bool
     verified_at: datetime | None
+    hr_review_acknowledged_at: datetime | None
+    hr_review_acknowledged_by: str | None
+
+
+class SubmitAuthorizationRecordRequest(BaseModel):
+    """Body of POST /continuity/employees/{id}/authorization-records. Enters
+    a new record as pending_verification — it never becomes current on its
+    own; see POST .../confirm."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    authorization_type: Literal[
+        "citizen", "permanent_resident", "cpt", "opt", "stem_opt", "h1b", "l1", "other",
+    ]
+    effective_from: date
+    effective_until: date | None = None
+    next_hr_review_date: date | None = None
+    source_document_type: str | None = None
+    internal_notes: str | None = None
 
 
 class HrReviewQueueItem(BaseModel):
@@ -704,6 +820,21 @@ class CommunityLinkOut(BaseModel):
     department_id: int | None = None
     is_mentor_link: bool
     created_at: datetime
+
+    # --- resolved canonical roles (app/community_roles.py) ---------------
+    # One of CANONICAL_ROLES for a resolved role; null for a personal link,
+    # whose label is whatever the owner typed. The frontend keys its caption
+    # and icon off this rather than parsing role_label.
+    role_key: str | None = None
+    contact_office_name: str | None = None
+    contact_office_city: str | None = None
+    # Whole kilometres from the owner's office to the contact's, and whether
+    # that means this role was answered from another location because the
+    # owner's own office has nobody in it. Both null/false for roles that
+    # don't widen geographically (mentor, technical expert, project contact)
+    # and for personal links.
+    distance_km: int | None = None
+    is_remote_fallback: bool = False
 
 
 class CreateCommunityLinkRequest(BaseModel):

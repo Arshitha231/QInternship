@@ -1,8 +1,8 @@
 import type {
-  BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
-  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OfficeOut, OrgChainNode, OrgUnitOut,
-  PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
-  UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
+  AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview,
+  DocSubjectMatchOut, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut,
+  OfficeOut, OrgChainNode, OrgUnitOut, PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut,
+  UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -133,6 +133,77 @@ export function updateOwnNamePronunciation(identity: Identity, namePronunciation
   });
 }
 
+// --- Self-service skills and languages -----------------------------------
+// Own profile only (app/main.py's _require_self), whatever role the caller
+// holds — the same identity gate updateOwnBio goes through, not the
+// role-keyed EDITABLE table the HR/IT writes below use.
+//
+// A language is a skills row with category="language", so one set of calls
+// serves both cards; `category` only decides where a BRAND-NEW name gets
+// filed, and a name that already exists on the other side of the
+// Skills/Languages split is a 422 rather than being quietly refiled.
+//
+// All three resolve to the caller's full PersonDetail, so ProfilePage can
+// replace `skills` and `languages` from the response instead of refetching
+// — the server's answer is where the entry actually landed, which for an
+// add is not always the card that submitted it.
+
+export type SkillLevelName = "Learning" | "Working" | "Expert";
+export type SkillCategoryName = "technical" | "domain" | "language";
+
+// Bespoke fetch rather than request<T>, same reason requestEmployeeAction
+// below has one: these routes send a real explanation in `detail` ("French
+// is a language skill, not technical…", "You already have X on your
+// profile…") and the generic helper discards it in favour of the status
+// line, which is exactly the text a person editing their own profile
+// should never be shown.
+async function skillRequest(
+  identity: Identity, path: string, init: RequestInit,
+): Promise<PersonDetail> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...headers(identity), ...(init.headers ?? {}) },
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    // 422 from pydantic is an array of field errors, not a string — fall
+    // back to the status line there rather than rendering "[object Object]".
+    const detail = typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail, body?.detail);
+  }
+  return body as PersonDetail;
+}
+
+export function addOwnSkill(
+  identity: Identity, skill: string, category: SkillCategoryName, level: SkillLevelName,
+): Promise<PersonDetail> {
+  return skillRequest(identity, `/people/${identity.id}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill, category, level }),
+  });
+}
+
+export function updateOwnSkill(
+  identity: Identity, skill: string, level: SkillLevelName,
+): Promise<PersonDetail> {
+  return skillRequest(identity, `/people/${identity.id}/skills`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill, level }),
+  });
+}
+
+// Name goes in the query string, not the path: real skill names contain
+// slashes ("CI/CD", "Agile/Scrum") and a percent-encoded slash is decoded
+// back into a path separator before the server routes it.
+export function removeOwnSkill(identity: Identity, skill: string): Promise<PersonDetail> {
+  return skillRequest(
+    identity, `/people/${identity.id}/skills?skill=${encodeURIComponent(skill)}`, { method: "DELETE" },
+  );
+}
+
 // HR, work mode, any employee but themselves — see app/writes.py's
 // update_employee for the actual enforcement; this call succeeding or not
 // is the server's decision, not something checked here. `changes` should
@@ -148,6 +219,64 @@ export function updateEmployee(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(changes),
   });
+}
+
+// --- IT, work mode: edit anyone's project history except their own -------
+// Both calls 403 for any non-"it" identity, in employee mode, and on the
+// caller's OWN record (app/writes.py's _refuse_own_record) — ProfilePage
+// only renders the controls when all three already hold, but that is a
+// convenience, not the enforcement.
+
+// The subset of an EmployeeProject row this path may write. Dates are ISO
+// (YYYY-MM-DD) rather than the month strings the READ side returns:
+// ProjectHistoryItem deliberately publishes month precision only, so a
+// month picked in the UI becomes the 1st of that month here rather than
+// this pretending to round-trip a day it was never told.
+export interface ProjectHistoryChanges {
+  role?: string;
+  contribution?: string | null;
+  start_date?: string;
+  end_date?: string | null;
+}
+
+export interface ProjectHistoryRow {
+  employee_id: string;
+  project_id: number;
+  role: string;
+  contribution: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+// Creates the membership if it doesn't exist, patches it if it does —
+// (person, project) identifies the row, so this is safe to repeat. Only
+// the keys present are written; an explicit null clears (end_date: null is
+// how a project becomes current again), while an omitted key is left
+// alone. Same diff-before-calling contract as updateEmployee above.
+export function upsertProjectHistory(
+  identity: Identity, personId: string, projectId: number,
+  changes: ProjectHistoryChanges, viewMode: ViewMode,
+): Promise<ProjectHistoryRow> {
+  return request<ProjectHistoryRow>(
+    `/people/${personId}/projects/${projectId}?view_mode=${viewMode}`, identity, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+}
+
+// 204, no body — hence the bare fetch rather than request<T>, same shape
+// deleteCommunityLink uses.
+export async function removeProjectHistory(
+  identity: Identity, personId: string, projectId: number, viewMode: ViewMode,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/people/${personId}/projects/${projectId}?view_mode=${viewMode}`,
+    { method: "DELETE", headers: headers(identity) },
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  }
 }
 
 // The plain summary app/main.py's _employee_action_result returns —
@@ -369,6 +498,23 @@ export function unifiedSearch(
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
+// --- Follow-up chat (POST /ask). `history` is this browser session's prior
+// turns, held in memory only (see AskHistoryTurn) — nothing here persists a
+// conversation server-side. Every call, first turn or fifth, goes through
+// the same seven-function tool-calling layer /search's "ask a question"
+// examples already point at; this just keeps the conversation going instead
+// of discarding it once a response comes back.
+export function askAssistant(
+  identity: Identity, message: string, viewMode: ViewMode, history: AskHistoryTurn[], signal?: AbortSignal,
+): Promise<AskResponse> {
+  return request<AskResponse>("/ask", identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, view_mode: viewMode, history }),
+    signal,
+  });
+}
+
 // --- Staffing Continuity Intelligence — HR in WORK mode only. Every call
 // here 403s for any other (role, view_mode); App.tsx never renders the
 // calling UI at all outside that pair.
@@ -437,6 +583,52 @@ export function getHrReviewQueue(
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
   return request<HrReviewQueueItem[]>(`/continuity/review-queue?${params}`, identity);
+}
+
+// Silences the reminder sweep for this record's current due date only — not
+// the same as performing the review (see AuthorizationRecordOut's comment).
+export function acknowledgeHrReview(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/review-queue/${recordId}/acknowledge`, identity, {
+    method: "POST",
+  });
+}
+
+// Write path for WorkAuthorizationRecord itself — submit / confirm / reject.
+// Enters pending_verification; has no effect on continuity analysis or the
+// review queue until confirmed (app/continuity.py's write-path section).
+export interface SubmitAuthorizationRecordBody {
+  authorization_type: string;
+  effective_from: string;
+  effective_until?: string | null;
+  next_hr_review_date?: string | null;
+  source_document_type?: string | null;
+  internal_notes?: string | null;
+}
+
+export function submitAuthorizationRecord(
+  identity: Identity, employeeId: string, body: SubmitAuthorizationRecordBody,
+): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/employees/${employeeId}/authorization-records`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// The verification gate: makes a pending record current, superseding
+// whichever record was current before it — the action that changes what
+// continuity computes.
+export function confirmAuthorizationRecord(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/authorization-records/${recordId}/confirm`, identity, {
+    method: "POST",
+  });
+}
+
+// Reject a pending submission. Kept, not deleted.
+export function rejectAuthorizationRecord(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/authorization-records/${recordId}/reject`, identity, {
+    method: "POST",
+  });
 }
 
 // --- AI-assisted doc upload for IT — IT-only, work mode only. Every call

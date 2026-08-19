@@ -363,13 +363,34 @@ def anniversary_message(subject: Employee, years: int) -> str:
             f"{years} year{'s' if years != 1 else ''} at Quadrant today.")
 
 
-def notify_date_milestones(db: Session, on_date: date | None = None) -> list[Notification]:
+class NotifyDateMilestonesDenied(Exception):
+    """Caller's role may not run the date-milestone sweep.
+
+    Checked here, not just in the route, for the same reason app.writes'
+    module docstring gives: a rule that lives only in a FastAPI decorator
+    applies only to callers who happen to come through FastAPI. This project
+    has no scheduler yet (see the module docstring above); when one exists,
+    it calls this function directly and must construct a `caller` identity
+    of its own — a system identity with role="hr", matching the "system"
+    actor_id this function's own audit rows already use — rather than
+    inheriting whatever enforcement a route happened to add around it.
+    """
+
+
+def notify_date_milestones(
+    db: Session, caller: AuthenticatedUser, on_date: date | None = None
+) -> list[Notification]:
     """Birthdays and milestone service anniversaries falling on `on_date`.
 
     Idempotent: re-running for the same date sends nothing further, so a
     retried cron or a restarted container can't produce a second birthday
     message. Caller commits.
     """
+    if caller.role != "hr":
+        raise NotifyDateMilestonesDenied(
+            f"role '{caller.role}' may not run the date-milestone sweep (hr only)"
+        )
+
     on_date = on_date or date.today()
     created: list[Notification] = []
 
@@ -454,6 +475,110 @@ def _write_date_audit(db: Session, on_date: date, birthdays: int, anniversaries:
         actor_id="system", action="notify_date_milestones",
         query_text=f"on_date={on_date.isoformat()}",
         result_count=birthdays + anniversaries,
+        fields_returned=json.dumps(["recipient_id", "kind", "body", "event_key"]),
+        timestamp=datetime.now(),
+    ))
+
+
+# ---------------------------------------------------------------------------
+# HR-review-due sweep, to HR. Same shape as the date-driven triggers above —
+# a sweep rather than an event, needs the same external caller (no scheduler
+# in this project), must be safe to run twice — but the "who's due" query is
+# app.continuity's, not this module's own: this is delivery, not analysis,
+# so there is exactly one due-soon definition and app/continuity.py owns it.
+# ---------------------------------------------------------------------------
+
+class NotifyHrReviewsDenied(Exception):
+    """Caller's role may not run the HR-review sweep. Same double-check
+    reasoning as NotifyDateMilestonesDenied just above."""
+
+
+def notify_upcoming_hr_reviews(
+    db: Session, caller: AuthenticatedUser, on_date: date | None = None
+) -> list[Notification]:
+    """Work-authorization reviews due within the window, to HR.
+
+    Only the write path this sweep depends on makes it safe to run daily:
+    unacknowledged_only=True (app.continuity._due_review_records) drops any
+    record HR has already silenced via acknowledge_hr_review, which is the
+    entire reason that action had to exist first. Everything still due and
+    unacknowledged notifies again — event_key is scoped to `on_date`, not
+    just the record (unlike birthday's date-only key, which only recurs
+    annually), so the same record produces one notification per HR
+    recipient per day for as long as it stays due and unacknowledged, and
+    zero once either happens.
+
+    Body deliberately says only that a review is due — never
+    authorization_type or a date, matching app.continuity._write_audit's own
+    "never a raw authorization type or date" discipline, extended here to a
+    surface that's read far more widely than an audit row. Caller commits.
+    """
+    if caller.role != "hr":
+        raise NotifyHrReviewsDenied(
+            f"role '{caller.role}' may not run the HR-review sweep (hr only)"
+        )
+
+    on_date = on_date or date.today()
+    created: list[Notification] = []
+
+    recipients = hr_recipients(db)
+    if not recipients:
+        _write_hr_review_audit(db, on_date, 0)
+        return created
+
+    # Local import, same reasoning as hr_recipients' import of
+    # _org_unit_and_descendant_ids just above: the one place this module
+    # reaches into another domain module's internals rather than
+    # duplicating its query.
+    from app.continuity import _due_review_records, _load_thresholds
+
+    cfg = _load_thresholds()
+    due = _due_review_records(db, cfg, on_date, unacknowledged_only=True)
+
+    already_sent: set[tuple[str, str]] = {
+        (row.recipient_id, row.event_key)
+        for row in db.execute(
+            select(Notification.recipient_id, Notification.event_key)
+            .where(Notification.event_key.like(f"hr-review:{on_date.isoformat()}:%"))
+        ).all()
+    }
+
+    records_notified = 0
+    for record, employee, _days_until in due:
+        event_key = f"hr-review:{on_date.isoformat()}:{record.id}"
+        body = f"{employee.full_name} has an upcoming HR review."
+        sent_any = False
+        for recipient in recipients:
+            # An HR person doesn't need a nudge about their own review —
+            # mirrors the birthday sweep's self-skip above.
+            if recipient.id == employee.id:
+                continue
+            if (recipient.id, event_key) in already_sent:
+                continue
+            sent = _send(
+                db, recipient=recipient, subject=employee, kind=NotificationKind.hr_review_reminder,
+                body=body, event_key=event_key,
+                # No requires_field: same reasoning as the birthday sweep —
+                # the body names the person and reveals nothing that sits
+                # behind a field permission (and never authorization_type,
+                # which isn't a directory field at all).
+                requires_field=None,
+            )
+            if sent is not None:
+                created.append(sent)
+                sent_any = True
+        if sent_any:
+            records_notified += 1
+
+    _write_hr_review_audit(db, on_date, records_notified)
+    return created
+
+
+def _write_hr_review_audit(db: Session, on_date: date, records_notified: int) -> None:
+    db.add(AuditLog(
+        actor_id="system", action="notify_upcoming_hr_reviews",
+        query_text=f"on_date={on_date.isoformat()}",
+        result_count=records_notified,
         fields_returned=json.dumps(["recipient_id", "kind", "body", "event_key"]),
         timestamp=datetime.now(),
     ))
