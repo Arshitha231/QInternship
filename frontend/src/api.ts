@@ -265,6 +265,32 @@ export function upsertProjectHistory(
     });
 }
 
+// Adds a person to a project named by hand. An unrecognised name creates
+// the project; a name matching an existing one (case-insensitively) joins
+// it. 409 if they are already on that project — "add" never silently
+// overwrites an existing role and dates.
+export interface AddProjectHistoryFields {
+  project_name: string;
+  role: string;
+  start_date: string;
+  end_date?: string | null;
+  contribution?: string | null;
+  // The PROJECT's shared description, seen by everyone on it — not this
+  // person's own contribution. Only sent when actually filled in.
+  project_desc?: string | null;
+}
+
+export function addProjectHistory(
+  identity: Identity, personId: string, fields: AddProjectHistoryFields, viewMode: ViewMode,
+): Promise<ProjectHistoryRow> {
+  return request<ProjectHistoryRow>(
+    `/people/${personId}/projects?view_mode=${viewMode}`, identity, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fields),
+    });
+}
+
 // 204, no body — hence the bare fetch rather than request<T>, same shape
 // deleteCommunityLink uses.
 export async function removeProjectHistory(
