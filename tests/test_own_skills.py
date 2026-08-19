@@ -31,6 +31,45 @@ from tests.conftest import auth_headers
 ALL_ROLES = ["employee", "manager", "hr", "it"]
 
 
+@pytest.fixture(autouse=True)
+def _leave_the_shared_vocabulary_as_found(db_session):
+    """Undo this module's skill writes after every test.
+
+    The test database is seeded once per session and shared (see
+    tests/conftest.py), which was fine while every write test in the suite
+    touched only rows it had created. These tests don't: they attach
+    EXISTING, shared skills — Terraform, French, Power BI — to throwaway
+    people, and tests/test_query_compiler.py asserts a CLOSED SET of who
+    holds those ("nobody UNEXPECTED shows up", in its own words). A leaked
+    holding is precisely the regression that assertion exists to catch, so
+    the fix belongs here rather than in its bounds.
+
+    Removed by employee-id prefix rather than by tracking each write:
+    every person this module creates is named "ownskill-*", so the filter
+    stays correct as tests are added without anyone having to remember to
+    register a teardown. Skills invented along the way (test_unknown_skill_
+    name_is_created_under_the_requested_category, and the domain fixture)
+    go too — they'd otherwise widen the vocabulary that
+    app/text_filters.py reads free text against.
+
+    The employees themselves stay, matching what the other write-test
+    modules already leave behind; it's the SKILL rows that other tests
+    make assertions about.
+    """
+    skills_before = {row.id for row in db_session.query(Skill).all()}
+    yield
+    db_session.query(EmployeeSkill).filter(
+        EmployeeSkill.employee_id.like("ownskill-%")
+    ).delete(synchronize_session=False)
+    invented = [row for row in db_session.query(Skill).all() if row.id not in skills_before]
+    for row in invented:
+        db_session.query(EmployeeSkill).filter(
+            EmployeeSkill.skill_id == row.id
+        ).delete(synchronize_session=False)
+        db_session.delete(row)
+    db_session.commit()
+
+
 def _mkemp(db_session, id_, full_name, **overrides) -> Employee:
     """Throwaway employee per test — never a shared conftest fixture
     person, since the test database is session-scoped and every test here
