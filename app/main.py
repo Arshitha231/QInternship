@@ -567,17 +567,19 @@ def create_employee_route(
 
 
 def _action_request_result(db: Session, request) -> dict:
-    target = db.get(Employee, request.target_employee_id)
     approver = db.get(Employee, request.approver_id) if request.approver_id else None
+    requester = db.get(Employee, request.requested_by) if request.requested_by else None
+    
     return {
         "request_id": request.id,
         "action_type": request.action_type.value,
         "status": request.status.value,
         "target_id": request.target_employee_id,
-        "target_name": target.full_name if target else request.target_employee_id,
+        "target_name": request_subject_name(db, request),
         "approver_id": request.approver_id,
         "approver_name": approver.full_name if approver else None,
         "requested_by": request.requested_by,
+        "requested_by_name": requester.full_name if requester else request.requested_by,
         "created_at": request.created_at,
         "resolved_at": request.resolved_at,
         "rejection_reason": request.rejection_reason,
