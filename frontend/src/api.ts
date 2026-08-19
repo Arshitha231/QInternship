@@ -133,6 +133,77 @@ export function updateOwnNamePronunciation(identity: Identity, namePronunciation
   });
 }
 
+// --- Self-service skills and languages -----------------------------------
+// Own profile only (app/main.py's _require_self), whatever role the caller
+// holds — the same identity gate updateOwnBio goes through, not the
+// role-keyed EDITABLE table the HR/IT writes below use.
+//
+// A language is a skills row with category="language", so one set of calls
+// serves both cards; `category` only decides where a BRAND-NEW name gets
+// filed, and a name that already exists on the other side of the
+// Skills/Languages split is a 422 rather than being quietly refiled.
+//
+// All three resolve to the caller's full PersonDetail, so ProfilePage can
+// replace `skills` and `languages` from the response instead of refetching
+// — the server's answer is where the entry actually landed, which for an
+// add is not always the card that submitted it.
+
+export type SkillLevelName = "Learning" | "Working" | "Expert";
+export type SkillCategoryName = "technical" | "domain" | "language";
+
+// Bespoke fetch rather than request<T>, same reason requestEmployeeAction
+// below has one: these routes send a real explanation in `detail` ("French
+// is a language skill, not technical…", "You already have X on your
+// profile…") and the generic helper discards it in favour of the status
+// line, which is exactly the text a person editing their own profile
+// should never be shown.
+async function skillRequest(
+  identity: Identity, path: string, init: RequestInit,
+): Promise<PersonDetail> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...headers(identity), ...(init.headers ?? {}) },
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    // 422 from pydantic is an array of field errors, not a string — fall
+    // back to the status line there rather than rendering "[object Object]".
+    const detail = typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail, body?.detail);
+  }
+  return body as PersonDetail;
+}
+
+export function addOwnSkill(
+  identity: Identity, skill: string, category: SkillCategoryName, level: SkillLevelName,
+): Promise<PersonDetail> {
+  return skillRequest(identity, `/people/${identity.id}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill, category, level }),
+  });
+}
+
+export function updateOwnSkill(
+  identity: Identity, skill: string, level: SkillLevelName,
+): Promise<PersonDetail> {
+  return skillRequest(identity, `/people/${identity.id}/skills`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill, level }),
+  });
+}
+
+// Name goes in the query string, not the path: real skill names contain
+// slashes ("CI/CD", "Agile/Scrum") and a percent-encoded slash is decoded
+// back into a path separator before the server routes it.
+export function removeOwnSkill(identity: Identity, skill: string): Promise<PersonDetail> {
+  return skillRequest(
+    identity, `/people/${identity.id}/skills?skill=${encodeURIComponent(skill)}`, { method: "DELETE" },
+  );
+}
+
 // HR, work mode, any employee but themselves — see app/writes.py's
 // update_employee for the actual enforcement; this call succeeding or not
 // is the server's decision, not something checked here. `changes` should

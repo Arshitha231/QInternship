@@ -395,6 +395,37 @@ class UpdateNamePronunciationRequest(BaseModel):
     name_pronunciation: str = Field(max_length=200)
 
 
+# --- Self-service skills and languages (app/own_skills.py) -----------------
+# One table behind both, split by category at render time, so these two
+# request models serve the Skills card and the Languages card alike. Skill
+# names are matched case-insensitively and through synonyms server-side, so
+# the client never has to send a canonical spelling.
+
+SkillLevelName = Literal["Learning", "Working", "Expert"]
+
+
+class AddOwnSkillRequest(BaseModel):
+    # 150 to match Skill.name's column width — an unrecognised name creates
+    # the skills row, so this is the one request that can actually reach it.
+    skill: str = Field(min_length=1, max_length=150)
+    # Which card this came from, and therefore where a BRAND-NEW skill gets
+    # filed. Ignored for a name that already exists — category belongs to
+    # the skill, not to one person's holding of it — except that crossing
+    # the Skills/Languages split is refused outright rather than silently
+    # re-filed. See app/own_skills.py's SkillCategoryMismatch.
+    category: Literal["technical", "domain", "language"] = "technical"
+    level: SkillLevelName
+
+
+class UpdateOwnSkillRequest(BaseModel):
+    """Re-level a skill already held. Level is the only editable part: the
+    name identifies the row, and category isn't a property of one person's
+    holding. Correcting a name is a remove plus an add."""
+
+    skill: str = Field(min_length=1, max_length=150)
+    level: SkillLevelName
+
+
 class UpsertProjectHistoryRequest(BaseModel):
     """IT's direct edit of one person's membership of one project.
 
