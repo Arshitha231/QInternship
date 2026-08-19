@@ -3,6 +3,7 @@ most and get their own tests rather than being implied by the others —
 zero-token for direct mode, and citations never exceeding what the caller
 is actually permitted to see.
 """
+from app.tool_calling import AssistantTurn, ResolvedToolCall
 from tests.conftest import auth_headers
 
 
@@ -343,3 +344,80 @@ async def test_ordinary_free_text_still_stays_direct(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["mode"] == "direct"
+
+
+# ---------------------------------------------------------------------------
+# The routing gate (2026-08-18): question SHAPE used to be the whole test, so
+# a trailing "?" was the difference between an answer and nothing at all.
+# ---------------------------------------------------------------------------
+
+async def test_statement_shaped_relationship_question_reaches_the_router(client):
+    """No question mark, no interrogative opener -- but the deterministic
+    router can answer it for free, so punctuation must not decide."""
+    resp = await client.get(
+        "/search", params={"q": "Riley Report's manager"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    assert body["overview"]["trace"][0]["tool"] == "get_org_chain"
+    assert [r["id"] for r in body["results"]] == ["mgr-1"]
+
+
+async def test_an_exact_name_is_a_lookup_not_a_relationship_question(client, monkeypatch):
+    """"Riley Report" is a person, not a question about someone called
+    Riley -- the surname matches the router's reports-to pattern."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get("/search", params={"q": "Riley Report"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "direct"
+    assert [r["id"] for r in body["results"]] == ["report-1"]
+
+
+async def test_a_route_naming_nobody_is_not_confident(client, monkeypatch):
+    """The router's name group is greedy and keys on the bare word
+    "report", so this resolves as a manager question about a person called
+    "someone good with dashboards and". A route naming nobody real must not
+    count as a confident match."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get(
+        "/search", params={"q": "someone good with dashboards and reporting"},
+        headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "direct"
+
+
+async def test_coordination_across_values_takes_the_assisted_path(client, monkeypatch):
+    """An OR across values is the one shape find_people cannot express --
+    its parameters take a single value each. This returned zero results
+    without a question mark and seven with one."""
+    captured = {}
+
+    def _fake_resolve(message):
+        captured["message"] = message
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="search_people",
+            arguments={"filters": [{"field": "office", "op": "in", "value": ["Head Office", "Satellite Office"]}]},
+        ))
+
+    monkeypatch.setattr("app.unified_search.resolve_intent", _fake_resolve)
+    resp = await client.get(
+        "/search", params={"q": "anyone in Head Office or Satellite Office"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    assert body["overview"]["trace"][0]["tool"] == "search_people"
+    # search_people had no rendering branch at all -- every structured plan
+    # came back with zero cards regardless of how many people it matched.
+    assert len(body["results"]) > 0
+    assert "Found" in body["overview"]["answer"]
+    assert body["overview"]["answer"] != "Done."

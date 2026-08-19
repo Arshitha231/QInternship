@@ -29,9 +29,12 @@ import re
 import time
 from typing import Any
 
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
+from app.models import Employee
+from app.org_chart import resolve_person
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
@@ -42,6 +45,7 @@ from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
     TOOLS,
     describes_a_problem,
+    _deterministic_resolve,
     ResolvedToolCall,
     execute_with_fallback,
     execute_with_retry,
@@ -85,6 +89,100 @@ def needs_assistant(text: str) -> bool:
     return is_question(text) or describes_a_problem(text)
 
 
+# A coordination between alternatives ("Bangalore or Singapore") is the one
+# request shape find_people structurally cannot say: its parameters take a
+# single value each, so an OR across values needs search_people's explicit
+# filter list. Narrow on purpose -- this is not a general "looks complicated"
+# heuristic, it names one specific expressiveness gap.
+_COORDINATION = re.compile(r"\b(?:or|either)\b", re.IGNORECASE)
+
+
+def _is_exact_identifier(db: Session, text: str) -> bool:
+    """True when the whole query is exactly one person's unique identifier.
+
+    Guards the routing gate below against a name that happens to contain a
+    relationship keyword: the deterministic router reads "Riley Report" as a
+    question about someone called Riley, because "Report" matches its
+    reports-to pattern. An exact identifier is a lookup, never a question,
+    so it is settled here before the router is ever consulted.
+
+    Same predicate find_people already short-circuits on (app/people.py), so
+    a query this returns True for is one the direct path answers exactly.
+    """
+    value = text.strip().lower()
+    if not value:
+        return False
+    handles = {value, value.lstrip("@"), f"@{value.lstrip('@')}"}
+    return db.execute(
+        select(Employee.id).where(
+            Employee.is_active == True,  # noqa: E712
+            or_(
+                func.lower(Employee.full_name) == value,
+                func.lower(Employee.preferred_name) == value,
+                func.lower(Employee.work_email) == value,
+                func.lower(Employee.slack_handle).in_(handles),
+            ),
+        ).limit(1)
+    ).first() is not None
+
+
+def _wants_assistant(db: Session, text: str) -> bool:
+    """The routing gate: is this query worth taking the assisted path?
+
+    Question SHAPE used to be the whole test, which made a trailing "?" the
+    difference between an answer and nothing at all -- "anyone in Bangalore
+    or Singapore who knows Kubernetes" returned 0 results, and the identical
+    text with a "?" returned 7. Statement-shaped requests are not rarer than
+    question-shaped ones; they were just unroutable.
+
+    Three questions now, cheapest first:
+
+      1. Is the whole query one person's identifier? Then it is a lookup.
+         Settled before anything else, so a surname like "Report" can't be
+         read as a relationship question.
+      2. Can the deterministic router answer it? Then the assisted path is
+         FREE (~4ms, no model call) and there is no reason punctuation
+         should decide whether to take it.
+      3. Otherwise, fall back to the original test -- question shape or a
+         described problem -- since from here the assisted path costs a
+         real model call and should be asked for, not guessed at.
+
+    A query that passes none of these still is not stranded: unified_search
+    escalates it after the direct path comes back empty.
+    """
+    if _is_exact_identifier(db, text):
+        return False
+    if _has_confident_route(db, text):
+        return True
+    if _COORDINATION.search(text):
+        return True
+    return needs_assistant(text)
+
+
+def _has_confident_route(db: Session, text: str) -> bool:
+    """The deterministic router matched AND, when it named a person, that
+    person actually exists.
+
+    The existence check is what makes the router safe to consult on
+    statement-shaped text. Its relationship branch keys on the bare word
+    "report", and the name group is greedy, so "someone good with dashboards
+    and reporting" resolves as a manager question about a person called
+    "someone good with dashboards and". That never surfaced while question
+    shape gated the router; it does the moment statements reach it.
+
+    A name that resolves to SEVERAL people still counts as confident -- "which
+    of the three Michaels did you mean?" is a correct answer, not a failure.
+    Only a name matching nobody disqualifies the route.
+    """
+    turn = _deterministic_resolve(text)
+    if turn is None or turn.tool_call is None:
+        return turn is not None  # a plain refusal message is still a decision
+    person = turn.tool_call.arguments.get("person")
+    if turn.tool_call.name == "get_org_chain" and person and person != "self":
+        return not resolve_person(db, person).is_unknown
+    return True
+
+
 # Short, static, per-tool descriptions of *why* a tool was selected. Not the
 # model's own reasoning — nothing in this stack asks the model to explain
 # itself, which would cost a second call — just a fixed, honest description
@@ -99,7 +197,7 @@ def unified_search(
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
-    if text and needs_assistant(text):
+    if text and _wants_assistant(db, text):
         return _assisted(db, caller, text, clean_filters, view_mode)
 
     results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
@@ -223,7 +321,13 @@ def _people_and_citations(
     if isinstance(result, (AmbiguousPersonMatch, UnknownPerson)):
         return [], []
 
-    if tool_name == "find_people":
+    # search_people_by_plan returns list[PersonSummary], exactly like
+    # find_people -- it was simply never listed here, so every structured
+    # plan the model built came back with zero cards no matter how many
+    # people it actually matched. The whole mode-1 path was invisible in the
+    # UI; nothing routed to it often enough to notice until the routing gate
+    # stopped requiring a question mark.
+    if tool_name in ("find_people", "search_people"):
         people = [p for p in result if isinstance(p, PersonSummary)]
         return people, [PersonRef(id=p.id, full_name=p.full_name) for p in people]
 
@@ -306,6 +410,18 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
     did, moved here because the frontend is meant to be a pure renderer now.
     Never invents anything the tool didn't actually return.
     """
+    if tool_name == "search_people":
+        # Was falling through to the catch-all "Done." -- the structured
+        # path had no phrasing at all. Same shape as find_people's summary
+        # below; the filter list itself is deliberately NOT recited back,
+        # that belongs in the trace, not the answer.
+        people = result or []
+        if not people:
+            return "No one in the directory matched those criteria."
+        names = [p.full_name for p in people[:5]]
+        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
+        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+
     if tool_name == "find_people":
         people = result or []
         if not people:
