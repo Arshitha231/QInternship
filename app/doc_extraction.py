@@ -13,11 +13,20 @@ Two-step pipeline, Python-orchestrated rather than agentic: classify, then
 extract. The model is never given a choice about the SEQUENCE — it answers
 exactly one question per call, Python decides what to ask next based on the
 answer, same as every other AI-touching part of this app (see
-app/tool_calling.py's `answer()`). The number and order of steps here is
-never actually ambiguous (every document is classified exactly once, then
-extracted exactly once, with the extraction schema chosen by the
-classification), which is what makes a fixed pipeline the right call
-instead of a model-driven loop.
+app/tool_calling.py's `answer()`). The order of steps here is never
+actually ambiguous (every document is classified exactly once, then
+extracted, with the extraction schema chosen by the classification),
+which is what makes a fixed pipeline the right call instead of a
+model-driven loop.
+
+Extraction is one STEP but not necessarily one completion: a project doc
+names an unknown number of people, and the model chooses for itself how
+many of its one-call-per-person calls to fit in a single response —
+frequently just the first, which silently lost everyone after them. So
+that step continues the conversation until a round emits nobody new,
+bounded by MAX_EXTRACTION_ROUNDS. Python still decides that extraction
+is what happens after classification; the model only decides when it has
+finished naming people.
 
 Name resolution is the interesting part, and it's deliberately NOT a
 resolve-or-None decision anymore. A status document says "Priya picked up
@@ -418,46 +427,129 @@ def _mock_extract_project_doc(text: str) -> list[ProjectExtractionCall]:
     return calls
 
 
+# How many completions one project-doc extraction may spend. A document
+# names as many people as it names, and the model emits one call per
+# person -- but it decides for itself how many of those calls to fit in a
+# single response, and on a plain list of contributors it frequently
+# emits only the FIRST person and stops with finish_reason="tool_calls"
+# (observed on gpt-5: 4 of 6 identical runs over a 3-person document
+# returned one call). That is not truncation and not an error, so there
+# is nothing for a single-shot read of `response.choices[0]` to detect --
+# it just silently loses everyone after the first, and the reviewer sees
+# a document that "didn't find all the people".
+#
+# So extraction continues the conversation instead of reading one
+# response: every round feeds the calls already emitted back as real
+# assistant/tool message pairs and asks again, until a round emits
+# nothing new. Same bounded multi-turn shape app/tool_calling.py's
+# execute_chain already uses for chained questions (see
+# _chain_step_messages) -- native tool-calling messages, not a prose
+# summary of what happened, and a hard round cap so a model that keeps
+# re-emitting can never bill an unbounded number of completions.
+MAX_EXTRACTION_ROUNDS = 5
+
+# Sent back as the tool result for each recorded call. Says only that the
+# call landed and what remains -- the model still decides who is left,
+# from the document it was already given.
+_EXTRACTION_CONTINUE = (
+    "Recorded. If the document names anyone whose contribution you have not "
+    "recorded yet, call propose_project_update for them now. If every person "
+    "in the document has been recorded, reply DONE and call nothing."
+)
+
+
+def _parse_project_call(tool_call: Any) -> ProjectExtractionCall | None:
+    """One tool call -> one typed extraction call, or None if it is not a
+    usable propose_project_update. Split out of the round loop below so a
+    malformed call skips that call alone rather than the whole round."""
+    if tool_call.function.name != "propose_project_update":
+        return None
+    try:
+        args = json.loads(tool_call.function.arguments)
+    except json.JSONDecodeError:
+        return None
+    if not args.get("member_name_guess") or not args.get("project"):
+        return None
+    return ProjectExtractionCall(
+        member_name_guess=str(args["member_name_guess"]),
+        project=str(args["project"]),
+        contribution=str(args.get("contribution", "")),
+        role=str(args["role"]) if args.get("role") else None,
+        skills_gained=[str(s) for s in (args.get("skills_gained") or [])],
+        email=str(args["email"]) if args.get("email") else None,
+        department_mentioned=str(args["department_mentioned"]) if args.get("department_mentioned") else None,
+        confidence=float(args.get("confidence") or 0.0),
+    )
+
+
 def _real_extract_project_doc(text: str) -> list[ProjectExtractionCall]:
     from openai import OpenAIError
 
     from app.tool_calling import OPENAI_CHAT_DEPLOYMENT, _get_openai_client
 
+    messages: list[dict] = [
+        {"role": "system", "content": PROJECT_DOC_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Document to extract from:\n<document>\n{text}\n</document>"},
+    ]
+
+    calls: list[ProjectExtractionCall] = []
+    # (name, project) is the same pair record_project_doc_proposals keys a
+    # subject and its rows on, so deduping here is what stops a re-emitted
+    # person from becoming a second subject card for the same human. Names
+    # are compared case-folded for the same reason _get_or_create_subject
+    # case-folds its own key.
+    seen: set[tuple[str, str]] = set()
+
     try:
         client = _get_openai_client()
-        response = client.chat.completions.create(
-            model=OPENAI_CHAT_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": PROJECT_DOC_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Document to extract from:\n<document>\n{text}\n</document>"},
-            ],
-            tools=PROJECT_DOC_TOOLS,
-            tool_choice="auto",
-        )
-    except OpenAIError:
-        return _mock_extract_project_doc(text)
+        for _ in range(MAX_EXTRACTION_ROUNDS):
+            response = client.chat.completions.create(
+                model=OPENAI_CHAT_DEPLOYMENT,
+                messages=messages,
+                tools=PROJECT_DOC_TOOLS,
+                tool_choice="auto",
+            )
+            choice = response.choices[0].message
+            tool_calls = list(choice.tool_calls or [])
+            if not tool_calls:
+                break  # model answered in prose -- it considers the document finished
 
-    choice = response.choices[0].message
-    calls: list[ProjectExtractionCall] = []
-    for tool_call in (choice.tool_calls or []):
-        if tool_call.function.name != "propose_project_update":
-            continue
-        try:
-            args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            continue
-        if not args.get("member_name_guess") or not args.get("project"):
-            continue
-        calls.append(ProjectExtractionCall(
-            member_name_guess=str(args["member_name_guess"]),
-            project=str(args["project"]),
-            contribution=str(args.get("contribution", "")),
-            role=str(args["role"]) if args.get("role") else None,
-            skills_gained=[str(s) for s in (args.get("skills_gained") or [])],
-            email=str(args["email"]) if args.get("email") else None,
-            department_mentioned=str(args["department_mentioned"]) if args.get("department_mentioned") else None,
-            confidence=float(args.get("confidence") or 0.0),
-        ))
+            added = False
+            for tool_call in tool_calls:
+                parsed = _parse_project_call(tool_call)
+                if parsed is None:
+                    continue
+                key = (parsed.member_name_guess.strip().lower(), parsed.project.strip().lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                calls.append(parsed)
+                added = True
+
+            # Echo the round back in native tool-calling shape, so the next
+            # round sees what it already emitted rather than re-deriving it
+            # from the document alone.
+            messages.append({"role": "assistant", "content": None, "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in tool_calls
+            ]})
+            for tool_call in tool_calls:
+                messages.append({
+                    "role": "tool", "tool_call_id": tool_call.id,
+                    "content": _EXTRACTION_CONTINUE,
+                })
+
+            if not added:
+                # A full round of nothing new (every call a duplicate or
+                # malformed) means asking again would only repeat it.
+                break
+    except OpenAIError:
+        # Degrade to the mock only if nothing was extracted at all -- a
+        # failure in round three should keep the two rounds that worked,
+        # not throw them away for a regex read of the same document.
+        return calls or _mock_extract_project_doc(text)
+
     return calls
 
 

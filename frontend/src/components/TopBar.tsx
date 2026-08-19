@@ -3,7 +3,6 @@ import { ChevronDown, Moon, SearchIcon, Sun, X } from "../icons";
 import type { ReactNode } from "react";
 import type { Identity, ViewMode } from "../types";
 import { WORK_MODE_ROLES } from "../types";
-import { DEV_IDENTITIES } from "../identities";
 import { NotificationBell } from "./NotificationBell";
 import { useTheme } from "../hooks";
 
@@ -11,7 +10,7 @@ interface Props {
   query: string;
   onQueryChange: (q: string) => void;
   identity: Identity;
-  onIdentityChange: (identity: Identity) => void;
+  onSignOut: () => void;
   onOpenPerson: (id: string, name: string) => void;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -20,7 +19,7 @@ interface Props {
 }
 
 export function TopBar({
-  query, onQueryChange, identity, onIdentityChange, onOpenPerson, viewMode, onViewModeChange, helpSlot,
+  query, onQueryChange, identity, onSignOut, onOpenPerson, viewMode, onViewModeChange, helpSlot,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -134,22 +133,21 @@ export function TopBar({
         </button>
         {menuOpen && (
           <div className="menu" id="acct-menu">
-            <div className="menu-label">Viewing as (dev auth)</div>
-            {DEV_IDENTITIES.map((id) => (
-              <button
-                key={id.id}
-                className={`menu-item ${id.id === identity.id ? "active" : ""}`}
-                onClick={() => {
-                  onIdentityChange(id);
-                  setMenuOpen(false);
-                }}
-              >
-                <span>
-                  {id.name}
-                  <span className="sub">{id.role}</span>
-                </span>
-              </button>
-            ))}
+            {/* The role is the access claim the API is being called with,
+                not this person's job title -- worth saying out loud here,
+                since the two disagree for several of the demo accounts. */}
+            <div className="menu-label">
+              Signed in as {identity.name} · role: {identity.role}
+            </div>
+            <button
+              className="menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                onSignOut();
+              }}
+            >
+              <span>Sign out</span>
+            </button>
           </div>
         )}
       </div>

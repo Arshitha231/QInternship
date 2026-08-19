@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser, get_current_user
+from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
 from app.community_links import LinkDenied, LinkNotFound, SuggestionDenied, SuggestionNotActionable, SuggestionNotFound
 from app.community_links import auto_assign_mentors as auto_assign_mentors_service
@@ -75,6 +76,7 @@ from app.schemas import (
     EngagementExposure,
     FinalizeDocumentRequest,
     HrReviewQueueItem,
+    LoginRequest,
     NotificationOut,
     OfficeOut,
     OrgChainNode,
@@ -163,6 +165,21 @@ def health() -> dict:
 @app.get("/auth/whoami", response_model=AuthenticatedUser)
 def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
     return user
+
+
+# --- Demo login. Dev mode only; 404s once real auth is configured, because
+# the credentials it checks are a stand-in for the Entra app-role assignment
+# and not an alternative to it. Any active employee may sign in, with the role
+# derived from the org tree. See app/demo_auth.py.
+
+@app.post("/auth/login", response_model=AuthenticatedUser)
+def login_route(body: LoginRequest, db: Session = Depends(get_db)) -> AuthenticatedUser:
+    try:
+        return demo_login(db, body.email, body.password)
+    except DemoLoginDisabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    except DemoLoginDenied:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
 
 
 @app.get("/people", response_model=list[PersonSummary], response_model_exclude_unset=True)
