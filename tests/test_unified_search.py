@@ -203,7 +203,10 @@ async def test_self_referential_manager_chain_three_hops(client):
 # the one actual person.
 # ---------------------------------------------------------------------------
 
-async def test_named_third_party_report_to_query_uses_find_people_by_name(client):
+async def test_named_third_party_report_to_query_returns_the_manager_as_the_card(client):
+    # The card is the ANSWER (the manager), not the subject of the
+    # question. Previously this returned Riley Report's own card while the
+    # prose named Morgan Manager -- the UI showed the wrong person.
     resp = await client.get(
         "/search", params={"q": "who does Riley Report report to?"}, headers=auth_headers("hr"),
     )
@@ -211,25 +214,22 @@ async def test_named_third_party_report_to_query_uses_find_people_by_name(client
     body = resp.json()
     assert body["mode"] == "assisted"
     trace = body["overview"]["trace"]
-    assert trace[0]["tool"] == "find_people"
-    assert trace[0]["args"] == {"name": "Riley Report"}
-    assert len(body["results"]) == 1
-    assert body["results"][0]["id"] == "report-1"
-    assert body["results"][0]["manager"]["id"] == "mgr-1"
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person": "Riley Report", "direction": "up", "depth": 1}
+    assert [r["id"] for r in body["results"]] == ["mgr-1"]
     assert "Morgan Manager" in body["overview"]["answer"]
 
 
-async def test_named_third_party_possessive_manager_query_uses_find_people_by_name(client):
+async def test_named_third_party_possessive_manager_query_returns_the_manager(client):
     resp = await client.get(
         "/search", params={"q": "who is Riley Report's manager?"}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 200
     body = resp.json()
     trace = body["overview"]["trace"]
-    assert trace[0]["tool"] == "find_people"
-    assert trace[0]["args"] == {"name": "Riley Report"}
-    assert len(body["results"]) == 1
-    assert body["results"][0]["id"] == "report-1"
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"] == {"person": "Riley Report", "direction": "up", "depth": 1}
+    assert [r["id"] for r in body["results"]] == ["mgr-1"]
 
 
 # ---------------------------------------------------------------------------

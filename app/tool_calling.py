@@ -39,7 +39,9 @@ from sqlalchemy.orm import Session
 from app.auth import AuthenticatedUser
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
-from app.org_chart import get_org_chain, resolve_person_name
+from app.models import Employee
+from app.org_chart import get_org_chain, resolve_person
+from app.schemas import AmbiguousPersonMatch, PersonChoice, UnknownPerson
 from app.people import find_people, find_related_language_speakers, get_person, search_people_by_plan
 from app.permissions import ViewMode
 from app.project_search import find_experts
@@ -713,6 +715,12 @@ _SELF_ATTRIBUTE = re.compile(
 # app/org_chart.py) is what actually walks the chain; nothing here queries
 # the database, this only counts how many hops the *text* is asking for.
 _MANAGER_CHAIN_TOKEN = re.compile(r"\bmanager'?s?\b", re.IGNORECASE)
+# Gates the named-third-party branch below. `manager\b` deliberately does
+# NOT match the plural "managers" (no word boundary before the "s"), so
+# "engineering managers in Bangalore" stays a people search rather than
+# being read as a relationship question about somebody called
+# "engineering".
+_THIRD_PARTY_MANAGER = re.compile(r"\bmanager\b|\bmanager's\b|\bboss\b", re.IGNORECASE)
 
 # Extracts the named subject of a third-party relationship question so it
 # can be looked up structurally (find_people(name=...)) instead of thrown
@@ -739,6 +747,14 @@ _REPORTS_TO_PATTERN = re.compile(
 )
 
 
+# Strips one trailing "'s manager" hop off a greedily-captured name. The
+# name group is greedy by design (see above), so on "X's manager's manager"
+# it backtracks to the LAST keyword and captures "X's manager" as the
+# subject -- the hop count is right but the person is not. Applied
+# repeatedly, so an arbitrary number of hops peels back to the real name.
+_TRAILING_MANAGER_HOP = re.compile(r"\s*'?s\s+manager'?s?\s*$", re.IGNORECASE)
+
+
 def _extract_relationship_subject(message: str) -> str | None:
     m = _MANAGER_OF_PATTERN.search(message) or _REPORTS_TO_PATTERN.search(message)
     if not m:
@@ -747,6 +763,11 @@ def _extract_relationship_subject(message: str) -> str | None:
     # above) when the optional (?:'s)? happens to match empty instead —
     # stripped here rather than relied on to land in the right group.
     name = re.sub(r"'s$", "", m.group("name").strip()).strip(" ?.!'\"")
+    while True:
+        peeled = _TRAILING_MANAGER_HOP.sub("", name).strip(" ?.!'\"")
+        if peeled == name:
+            break
+        name = peeled
     return name or None
 
 
@@ -759,9 +780,15 @@ def _extract_relationship_subject(message: str) -> str | None:
 # counts here alongside an explicit chain indicator ("all the way", ...).
 # ---------------------------------------------------------------------------
 
-_CHAIN_INDICATOR = re.compile(r"all the way|to the top|entire chain|whole chain|chain of command", re.IGNORECASE)
+_CHAIN_INDICATOR = re.compile(
+    r"all the way|to the top|entire chain|whole chain|chain of command"
+    r"|reporting chain|management chain|reporting line", re.IGNORECASE)
+# "what is/what's/tell me" were missing, so "what is X's reporting chain"
+# left the interrogative attached to the name and looked up an employee
+# literally called "what is X".
 _LEADING_FILLER = re.compile(
-    r"^(?:show\s+me\s+|who\s+(?:is|does|are)\s+|list\s+|find\s+|everyone\s+)+", re.IGNORECASE)
+    r"^(?:show\s+me\s+|tell\s+me\s+|what(?:\s+is|'s)\s+|who\s+(?:is|does|are)\s+"
+    r"|list\s+|find\s+|everyone\s+)+", re.IGNORECASE)
 _CHAIN_ABOVE_BELOW_PATTERN = re.compile(
     r"\b(?P<direction>above|below)\s+(?:employee\s+)?(?P<name>.+?)(?:,|\s+in\s+the\s+chain|\s*\?|$)",
     re.IGNORECASE,
@@ -770,6 +797,13 @@ _CHAIN_REPORTS_UPDOWN_PATTERN = re.compile(
     r"(?P<name>.+?)\s+reports?\s+(?P<direction>up|down)\s+to\b", re.IGNORECASE)
 _CHAIN_REPORTS_TO_NAME_PATTERN = re.compile(
     r"reports?\s+to\s+(?P<name>.+?)(?:,|\s+all\s+the\s+way|\s*\?|$)", re.IGNORECASE)
+# "X's reporting chain" / "the management chain for X" -- the subject sits
+# next to the chain noun rather than after a direction word, so neither the
+# above/below nor the reports-up/down pattern sees it.
+_CHAIN_POSSESSIVE_PATTERN = re.compile(
+    r"(?P<name>.+?)'?s\s+(?:reporting|management)\s+(?:chain|line)\b", re.IGNORECASE)
+_CHAIN_FOR_NAME_PATTERN = re.compile(
+    r"(?:reporting|management)\s+(?:chain|line)\s+(?:for|of)\s+(?P<name>.+?)(?:,|\s*\?|$)", re.IGNORECASE)
 
 
 def _clean_extracted_name(raw: str) -> str:
@@ -788,6 +822,16 @@ def _extract_chain_query(message: str) -> tuple[str, str] | None:
     if m:
         name = _clean_extracted_name(m.group("name"))
         return (name, m.group("direction").lower()) if name else None
+
+    for pattern in (_CHAIN_POSSESSIVE_PATTERN, _CHAIN_FOR_NAME_PATTERN):
+        m = pattern.search(message)
+        if m:
+            name = _clean_extracted_name(m.group("name"))
+            # A reporting CHAIN is upward unless the text says otherwise --
+            # "everyone below X's reporting line" is not a phrasing anyone
+            # uses, but the direction check costs nothing.
+            direction = "down" if re.search(r"\bbelow\b|\bdown\b", message, re.IGNORECASE) else "up"
+            return (name, direction) if name else None
 
     if _CHAIN_INDICATOR.search(message):
         m = _CHAIN_REPORTS_TO_NAME_PATTERN.search(message)
@@ -871,19 +915,33 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
         subject, direction = chain_query
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="get_org_chain", arguments={"person": subject, "direction": direction, "depth": 10}))
-    if "report" in text or "manager of" in text or "reports to" in text:
+    if "report" in text or _THIRD_PARTY_MANAGER.search(text):
         # A named third-party relationship question ("who does X report
         # to?", "X's manager", "manager of X") names exactly one person —
-        # extract them and look up by `name` (structured, exact/fuzzy
-        # match) instead of `query` (free-text/vector search over the
-        # whole sentence). find_people's own single-match enrichment
-        # already attaches manager/delegate/direct_reports, so this stays
-        # one call. Forwarding the raw sentence as `query` here is what
-        # turned "who does Priya Brown report to?" into 5 unrelated
-        # "Priya *" fuzzy matches instead of the one exact person.
+        # extract them and answer with get_org_chain, so the ANSWER is the
+        # headline record.
+        #
+        # This used to call find_people(name=X), which made X the result
+        # card: "who does Sean Wilson report to?" answered "Sean Wilson
+        # reports to Min-jun Sanchez" in prose while showing a card for
+        # Sean Wilson — the person who was asked about, not the person who
+        # was asked for. The self-referential branch above already fixed
+        # exactly this for "who is MY manager?" and left the third-party
+        # case behind; this is the same fix, reusing the same call.
         subject = _extract_relationship_subject(message)
         if subject:
-            return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": subject}))
+            if _SELF_TEAM.search(text):
+                # "X's direct reports" / "who's on X's team" -- one hop
+                # down. get_org_chain's own RBAC gate decides whether this
+                # caller may see a downward chain at all; nothing is
+                # widened by asking for it here.
+                return AssistantTurn(tool_call=ResolvedToolCall(
+                    name="get_org_chain", arguments={"person": subject, "direction": "down", "depth": 1}))
+            # Possessive hops, same counting rule as the self-referential
+            # branch: "X's manager's manager" walks two levels, not one.
+            hops = len(_MANAGER_CHAIN_TOKEN.findall(text)) or 1
+            return AssistantTurn(tool_call=ResolvedToolCall(
+                name="get_org_chain", arguments={"person": subject, "direction": "up", "depth": hops}))
         # Matched a relationship keyword but couldn't confidently extract
         # WHO it's about — not an exact match, so this defers (None) rather
         # than guessing find_people(query=message) the way this branch used
@@ -1063,6 +1121,37 @@ def resolve_intent(message: str) -> AssistantTurn:
 # the authenticated session, never from tool_call.arguments.
 # ---------------------------------------------------------------------------
 
+def _person_choices(db: Session, query: str, candidate_ids: tuple[str, ...]) -> AmbiguousPersonMatch:
+    """Turns resolver candidate ids into a disambiguation prompt. No
+    permission decision is made here and none is needed: PersonChoice
+    carries only full_name/job_title/org_unit, the same always-visible
+    subset PersonSummary exposes to every role, and the candidates were
+    matched on a name the caller already typed. A restricted employee is
+    still excluded downstream by get_org_chain's own enforce() gate if the
+    caller picks them.
+    """
+    choices: list[PersonChoice] = []
+    for emp_id in candidate_ids:
+        employee = db.get(Employee, emp_id)
+        if employee is None:
+            continue
+        choices.append(PersonChoice(
+            id=employee.id,
+            full_name=employee.full_name,
+            job_title=employee.job_title or "",
+            org_unit=_org_unit_name_for(db, employee),
+        ))
+    return AmbiguousPersonMatch(query=query, matches=choices)
+
+
+def _org_unit_name_for(db: Session, employee: Employee) -> str:
+    from app.models import OrgUnit
+    if employee.org_unit_id is None:
+        return ""
+    unit = db.get(OrgUnit, employee.org_unit_id)
+    return unit.name if unit else ""
+
+
 def execute_tool_call(
     db: Session, caller: AuthenticatedUser, tool_call: ResolvedToolCall,
     view_mode: ViewMode = "work",
@@ -1120,9 +1209,18 @@ def execute_tool_call(
         if person == "self":
             resolved_id = caller.id
         else:
-            resolved_id = resolve_person_name(db, person) if person else None
-        if resolved_id is None:
-            return None  # unresolvable/ambiguous name — same "not found" shape as a bad id
+            # Ambiguous and unknown are returned as their own result types
+            # rather than collapsed into None. They are different answers --
+            # "which of the five Andersons?" versus "no such person" versus
+            # "that person has nobody above them" -- and returning None for
+            # the first two made _phrase() emit the third one's message for
+            # all three.
+            outcome = resolve_person(db, person) if person else None
+            if outcome is None or outcome.is_unknown:
+                return UnknownPerson(query=person or "")
+            if outcome.is_ambiguous:
+                return _person_choices(db, person, outcome.candidates)
+            resolved_id = outcome.person_id
         return get_org_chain(db, caller, person_id=resolved_id, **args)
     if name == "find_project_owner":
         return find_project_owner(db, caller, **args)

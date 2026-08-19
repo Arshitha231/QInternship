@@ -42,9 +42,29 @@ def test_confident_self_reference_still_matches():
 
 
 def test_confident_named_relationship_still_matches():
+    # Answers with the MANAGER as the headline record, not the person who
+    # was asked about. This used to route to find_people(name=...), which
+    # made Sean Wilson the result card for a question whose answer is his
+    # manager -- the same bug the self-referential branch already fixed for
+    # "who is MY manager?".
     turn = _deterministic_resolve("who does Sean Wilson report to?")
     assert turn is not None
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"name": "Sean Wilson"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Sean Wilson", "direction": "up", "depth": 1})
+
+
+def test_named_third_party_manager_chain_counts_hops_without_eating_the_name():
+    # The name group is greedy, so "X's manager's manager" captured
+    # "X's manager" as the subject -- right hop count, wrong person.
+    turn = _deterministic_resolve("who is Sean Wilson's manager's manager?")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Sean Wilson", "direction": "up", "depth": 2})
+
+
+def test_plural_managers_is_a_people_search_not_a_relationship_question():
+    # "engineering managers in Bangalore" must not be read as a question
+    # about somebody called "engineering".
+    assert _deterministic_resolve("engineering managers in Bangalore") is None
 
 
 def test_gap_keyword_is_not_a_bare_substring_match():

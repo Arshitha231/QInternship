@@ -35,7 +35,8 @@ from app.auth import AuthenticatedUser
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
-    AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    UnknownPerson,
 )
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
@@ -215,6 +216,13 @@ def _people_and_citations(
     if result is None:
         return [], []
 
+    # A name that resolved to nobody, or to too many people, produced no
+    # results to render — the answer prose is the whole response. Guarded
+    # here rather than in each branch below because these types are
+    # BaseModels, and the get_org_chain branch would try to iterate one.
+    if isinstance(result, (AmbiguousPersonMatch, UnknownPerson)):
+        return [], []
+
     if tool_name == "find_people":
         people = [p for p in result if isinstance(p, PersonSummary)]
         return people, [PersonRef(id=p.id, full_name=p.full_name) for p in people]
@@ -275,6 +283,23 @@ def _people_and_citations(
     return [], []
 
 
+def _phrase_ambiguous_person(match: AmbiguousPersonMatch) -> str:
+    """Names the candidates instead of picking one. Job title and team are
+    what actually tell two people apart — for the duplicated full names in
+    this directory ("Priya Sharma" twice) the name alone disambiguates
+    nothing, so listing bare names would be a prompt the caller can't act on.
+    """
+    if not match.matches:
+        return f'No active employee matches "{match.query}".'
+    shown = [
+        f"{c.full_name}" + (f" ({c.job_title}{f', {c.org_unit}' if c.org_unit else ''})" if c.job_title else "")
+        for c in match.matches[:5]
+    ]
+    more = f", and {len(match.matches) - 5} more" if len(match.matches) > 5 else ""
+    return (f'"{match.query}" matches {len(match.matches)} people — '
+            f"{'; '.join(shown)}{more}. Which one did you mean?")
+
+
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
     """Builds the overview's prose server-side from the already-filtered
     result — the same job app/../frontend's old client-side phraseAnswer()
@@ -319,6 +344,14 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         return " ".join(bits)
 
     if tool_name == "get_org_chain":
+        # Name resolution failures are answered as themselves, before the
+        # chain phrasing below ever runs. Previously all three collapsed
+        # into that single "nobody found above them" sentence, which is a
+        # confidently wrong answer for two of them.
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
         nodes = result or []
         is_up = args.get("direction") == "up"
         label = "above them" if is_up else "below them"

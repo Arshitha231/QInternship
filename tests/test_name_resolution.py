@@ -9,7 +9,8 @@ execute_tool_call. Fixtures: chain-1/2/3 (Chris Bottom -> Charlie Middle ->
 Casey Top, tests/conftest.py) and dup-name-1/2 (two "Dana Ambiguous"s).
 """
 from app.auth import AuthenticatedUser
-from app.org_chart import resolve_person_name
+from app.org_chart import resolve_person, resolve_person_name
+from app.schemas import AmbiguousPersonMatch, UnknownPerson
 from app.tool_calling import ResolvedToolCall, _extract_chain_query, execute_tool_call
 
 CALLER = AuthenticatedUser(id="caller-x", role="hr")
@@ -106,15 +107,36 @@ def test_dispatch_case_insensitive_and_typo_tolerant(db_session):
     assert [n.id for n in result] == ["chain-2", "chain-3"]
 
 
-def test_dispatch_unresolvable_name_returns_none_not_a_crash(db_session):
+def test_dispatch_unresolvable_name_reports_no_such_person(db_session):
+    # Was: returned None, indistinguishable from "that person has nobody
+    # above them". The caller has to be able to tell those apart -- one is
+    # a typo to correct, the other is a real answer.
     tool_call = ResolvedToolCall(
         name="get_org_chain", arguments={"person": "Zzyzx Nonexistent Qqwrt", "direction": "up"})
-    assert execute_tool_call(db_session, CALLER, tool_call) is None
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert isinstance(result, UnknownPerson)
+    assert result.query == "Zzyzx Nonexistent Qqwrt"
 
 
-def test_dispatch_ambiguous_name_returns_none(db_session):
+def test_dispatch_ambiguous_name_names_the_candidates(db_session):
+    # Still never picks one (that was always right) -- but now says which
+    # ones it could not choose between, so the caller can answer.
     tool_call = ResolvedToolCall(name="get_org_chain", arguments={"person": "Dana Ambiguous", "direction": "up"})
-    assert execute_tool_call(db_session, CALLER, tool_call) is None
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert isinstance(result, AmbiguousPersonMatch)
+    assert {c.id for c in result.matches} == {"dup-name-1", "dup-name-2"}
+    # Job title is what actually separates two people with the same name.
+    assert {c.job_title for c in result.matches} == {"Software Engineer", "Product Manager"}
+
+
+def test_resolver_still_refuses_to_pick_between_duplicates(db_session):
+    outcome = resolve_person(db_session, "Dana Ambiguous")
+    assert outcome.person_id is None
+    assert outcome.is_ambiguous
+    assert set(outcome.candidates) == {"dup-name-1", "dup-name-2"}
+    # The back-compatible wrapper keeps its old contract for callers that
+    # genuinely only need the id.
+    assert resolve_person_name(db_session, "Dana Ambiguous") is None
 
 
 def test_dispatch_self_sentinel_still_works(db_session):
@@ -150,3 +172,63 @@ def test_dispatch_omitted_depth_defaults_to_a_single_hop_downward_too(db_session
     result = execute_tool_call(db_session, CALLER, tool_call)
     assert [n.id for n in result] == ["chain-2"]
     assert [n.depth for n in result] == [1]
+
+
+# ---------------------------------------------------------------------------
+# Nicknames and over-matching (the org-chain bug report, 2026-08-18): the
+# resolver matched full_name only and let the fuzzy tier pick a winner out of
+# an exact tie, so "Nick" found nobody and a bare surname silently answered
+# about whichever person rapidfuzz happened to rank first.
+# ---------------------------------------------------------------------------
+
+def test_preferred_name_resolves(db_session):
+    assert resolve_person(db_session, "Nick").person_id == "nick-1"
+
+
+def test_preferred_name_is_case_insensitive_too(db_session):
+    assert resolve_person(db_session, "nick").person_id == "nick-1"
+
+
+def test_full_name_still_wins_for_the_same_person(db_session):
+    assert resolve_person(db_session, "Nicholas Rivera").person_id == "nick-1"
+
+
+def test_a_nickname_two_people_share_is_ambiguous_not_a_coin_flip(db_session):
+    outcome = resolve_person(db_session, "Bob")
+    assert outcome.is_ambiguous
+    assert set(outcome.candidates) == {"nick-2", "nick-3"}
+
+
+def test_bare_surname_is_ambiguous_rather_than_an_arbitrary_pick(db_session):
+    outcome = resolve_person(db_session, "Okonkwo")
+    assert outcome.is_ambiguous
+    assert set(outcome.candidates) == {"surname-1", "surname-2", "surname-3"}
+
+
+def test_a_real_typo_still_has_one_clear_winner(db_session):
+    # The ambiguity margin must not make ordinary misspellings unresolvable:
+    # "Amara Okonkwo" scores far above its two namesakes here.
+    assert resolve_person(db_session, "Amara Okonkwa").person_id == "surname-1"
+
+
+def test_unknown_name_is_unknown_not_ambiguous(db_session):
+    outcome = resolve_person(db_session, "Zzyzx Qqwrt")
+    assert outcome.is_unknown
+    assert not outcome.is_ambiguous
+
+
+# ---------------------------------------------------------------------------
+# Chain phrasings that used to fall through to the model (or extract a name
+# with the interrogative still attached).
+# ---------------------------------------------------------------------------
+
+def test_possessive_reporting_chain_phrasing():
+    # Was: find_people(name="what is Shaun Anderson") -- the leading
+    # interrogative was captured as part of the name.
+    assert _extract_chain_query("what is Shaun Anderson's reporting chain") \
+        == ("Shaun Anderson", "up")
+
+
+def test_management_chain_for_name_phrasing():
+    assert _extract_chain_query("reporting chain for Sean Wilson") == ("Sean Wilson", "up")
+    assert _extract_chain_query("show me the management line for Sean Wilson") == ("Sean Wilson", "up")
