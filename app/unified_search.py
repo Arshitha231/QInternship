@@ -658,6 +658,37 @@ def _phrase_experts(experts: list[ProblemExpert]) -> str:
 
 
 
+_TOP_MATCHES_SHOWN = 3
+
+
+def _phrase_people_matches(people: list[PersonSummary]) -> str:
+    """Several people match a structured filter (find_people/search_people
+    with more than one result). There's no ranking to report here -- every
+    one of them satisfies the same criteria equally, so this never claims
+    a "best" match the data doesn't support (same discipline _phrase_experts
+    holds to: never invent anything the tool didn't actually return).
+
+    Names a handful with enough real, already-returned context (role,
+    office, availability) to judge fit at a glance, instead of a bare
+    comma-separated name dump -- the old version listed up to 5 names with
+    nothing to distinguish them, which is exactly the wall of text a
+    person then has to read every one of to get anything out of. The rest
+    aren't lost: every match, shown or not, is still a full card in the
+    results grid below this sentence, and a follow-up question narrows
+    the list without retyping the original one.
+    """
+    shown = people[:_TOP_MATCHES_SHOWN]
+    bits = []
+    for p in shown:
+        descriptor = ", ".join(part for part in (p.job_title, p.office.city if p.office else None) if part)
+        avail = " · available" if p.availability_status == "available" else ""
+        bits.append(f"{p.full_name} ({descriptor}{avail})" if descriptor or avail else p.full_name)
+    listed = "; ".join(bits)
+    remaining = len(people) - len(shown)
+    tail = f" {remaining} more match too — ask a follow-up to narrow it down." if remaining > 0 else ""
+    return f"{len(people)} {'person matches' if len(people) == 1 else 'people match'}: {listed}.{tail}"
+
+
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
     """Builds the overview's prose server-side from the already-filtered
     result — the same job app/../frontend's old client-side phraseAnswer()
@@ -672,9 +703,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         people = result or []
         if not people:
             return "No one in the directory matched those criteria."
-        names = [p.full_name for p in people[:5]]
-        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
-        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+        return _phrase_people_matches(people)
 
     if tool_name == "find_people":
         people = result or []
@@ -698,9 +727,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
             if len(bits) > 1:
                 return f"{bits[0]} {', '.join(bits[1:])}."
             return f"Found 1 match: {person.full_name}."
-        names = [p.full_name for p in people[:5]]
-        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
-        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+        return _phrase_people_matches(people)
 
     if tool_name == "get_person":
         if result is None:
