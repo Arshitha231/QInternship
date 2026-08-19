@@ -1035,3 +1035,65 @@ body.help-inspecting, body.help-inspecting * { cursor: help !important; }
 .project-history-edit { margin-top: 10px; }
 .edit-check { display: flex; align-items: center; gap: 7px; font-size: 13px; margin: 8px 0; cursor: pointer; }
 .edit-check input { cursor: pointer; }
+
+/* --- Community graph: canonical roles ------------------------------------
+   The seven standard roles (app/community_roles.py) render as ordinary
+   contact cards on the ring, plus the key below the canvas. */
+
+.community-node-where {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+/* A place-based role answered from another office — worth distinguishing
+   from "this is simply where they sit". */
+.community-node-where.is-fallback { color: var(--amber); }
+
+.community-roles-key {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--white);
+  overflow: hidden;
+}
+
+.community-role-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.community-role-row:last-child { border-bottom: none; }
+.community-role-row.is-missing { opacity: 0.6; }
+
+.community-role-text { font-size: 14px; line-height: 1.35; }
+.community-role-text .sub { display: block; font-size: 12px; color: var(--muted); }
+
+.community-role-who {
+  font: inherit;
+  font-size: 13px;
+  text-align: right;
+  border: none;
+  background: none;
+  color: var(--purple);
+  cursor: pointer;
+  padding: 0;
+}
+.community-role-who:hover { text-decoration: underline; }
+.community-role-who .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--amber);
+  text-decoration: none;
+}
+.community-role-who.is-missing { color: var(--muted); cursor: default; }
+.community-role-who.is-missing:hover { text-decoration: none; }
+
+/* A resolved canonical role: neither the employee's own addition nor a row
+   HR typed in, so neither of the two existing source pills fits. */
+.community-source-role {
+  background: var(--purple-100);
+  color: var(--purple-800);
+}

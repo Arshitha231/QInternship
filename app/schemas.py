@@ -738,6 +738,21 @@ class CommunityLinkOut(BaseModel):
     is_mentor_link: bool
     created_at: datetime
 
+    # --- resolved canonical roles (app/community_roles.py) ---------------
+    # One of CANONICAL_ROLES for a resolved role; null for a personal link,
+    # whose label is whatever the owner typed. The frontend keys its caption
+    # and icon off this rather than parsing role_label.
+    role_key: str | None = None
+    contact_office_name: str | None = None
+    contact_office_city: str | None = None
+    # Whole kilometres from the owner's office to the contact's, and whether
+    # that means this role was answered from another location because the
+    # owner's own office has nobody in it. Both null/false for roles that
+    # don't widen geographically (mentor, technical expert, project contact)
+    # and for personal links.
+    distance_km: int | None = None
+    is_remote_fallback: bool = False
+
 
 class CreateCommunityLinkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
