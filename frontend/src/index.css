@@ -353,6 +353,27 @@ button { font: inherit; }
   color: var(--green-800); background: var(--green-100); padding: 1px 7px; border-radius: 20px; margin-left: 6px;
 }
 
+/* Self-service skills/languages editing (ProfilePage's SkillsEditor).
+   Rendered only on your own profile — see isOwnProfile, which mirrors
+   app/main.py's _require_self. Shares .edit-input, .bio-actions and
+   .bio-error with the other inline edit forms rather than restating them. */
+.skill-edit { display: flex; flex-direction: column; gap: 10px; }
+.skill-edit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.skill-edit-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+/* Takes the slack so the level select and Remove stay right-aligned in a
+   column of rows whose names are all different lengths. */
+.skill-edit-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.skill-edit-level {
+  font: inherit; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--white); color: var(--ink); cursor: pointer;
+}
+.skill-edit-level:focus { outline: none; border-color: var(--purple); }
+.skill-edit-level:disabled { opacity: .55; cursor: default; }
+.skill-edit-add { display: flex; align-items: center; gap: 8px; }
+/* The name field grows; the level select and Add button keep their size. */
+.skill-edit-add .edit-input { flex: 1; min-width: 0; }
+.skill-edit-add .btn { flex-shrink: 0; }
+
 .skill-group + .skill-group { margin-top: 14px; }
 .skill-label { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .03em; }
 .pills { display: flex; flex-wrap: wrap; gap: 7px; }

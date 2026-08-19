@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  addProjectHistory, ApiError, getOrgChart, getPerson, removeProjectHistory, requestDeactivation,
-  requestRestriction, updateEmployee, updateOwnBio, updateOwnNamePronunciation, upsertProjectHistory,
+  addOwnSkill, addProjectHistory, ApiError, getOrgChart, getPerson, removeOwnSkill,
+  removeProjectHistory, requestDeactivation, requestRestriction, updateEmployee, updateOwnBio,
+  updateOwnNamePronunciation, updateOwnSkill, upsertProjectHistory,
 } from "../api";
-import type { ActionRequestResult, ActiveDirectReport } from "../api";
+import type {
+  ActionRequestResult, ActiveDirectReport, SkillCategoryName, SkillLevelName,
+} from "../api";
 import type {
   Identity, OrgChainNode, PersonDetail, ProjectHistoryItem, SkillOut, UpdateEmployeeChanges,
   ViewMode,
@@ -458,6 +461,130 @@ function ProjectHistoryRowEditor({
 }
 
 
+// ---------------------------------------------------------------------------
+// Self-service skills and languages, own profile only.
+//
+// One component serves both cards: a language is a skills row with
+// category="language" (app/own_skills.py), so the only difference between
+// the two instances is the `category` new entries are filed under and the
+// wording. `LEVELS` is the same three either way — a language proficiency
+// and a technical level are the same column.
+//
+// Writes go straight through on each control rather than being batched
+// behind a Save button: each row is an independent EmployeeSkill row on the
+// server (POST/PATCH/DELETE per entry, no bulk endpoint), so a Save would
+// only be pretending to be atomic while firing the same N calls. Each
+// response carries the caller's full PersonDetail, so both lists are
+// replaced from it — an add doesn't always land in the card that submitted
+// it, and the server's answer is the one that knows where it went.
+//
+// Presentation-only gate: rendered when isOwnProfile, which mirrors
+// app/main.py's _require_self. That check is the enforcement; this just
+// keeps a control that would 403 off other people's profiles.
+// ---------------------------------------------------------------------------
+
+const LEVELS: SkillLevelName[] = ["Learning", "Working", "Expert"];
+
+function SkillsEditor({
+  items, category, identity, onUpdated, onClose,
+}: {
+  items: SkillOut[];
+  category: SkillCategoryName;
+  identity: Identity;
+  onUpdated: (detail: PersonDetail) => void;
+  onClose: () => void;
+}) {
+  const noun = category === "language" ? "language" : "skill";
+  const [draft, setDraft] = useState("");
+  const [draftLevel, setDraftLevel] = useState<SkillLevelName>("Working");
+  // The entry a call is in flight for, so only that row disables — a slow
+  // add shouldn't freeze the level select three rows up. "" is the add row.
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(key: string, call: () => Promise<PersonDetail>) {
+    setBusy(key);
+    setError(null);
+    try {
+      onUpdated(await call());
+      return true;
+    } catch (e) {
+      // The server's own message, not a status line — "French is a language
+      // skill, not technical" and "You already have X on your profile" are
+      // the whole point of surfacing detail in api.ts's skillRequest.
+      setError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function add() {
+    const name = draft.trim();
+    if (!name) return;
+    if (await run("", () => addOwnSkill(identity, name, category, draftLevel))) {
+      setDraft("");
+      setDraftLevel("Working");
+    }
+  }
+
+  return (
+    <div className="skill-edit">
+      {items.length > 0 && (
+        <ul className="skill-edit-list">
+          {items.map((item) => (
+            <li className="skill-edit-row" key={item.name}>
+              <span className="skill-edit-name">{item.name}</span>
+              <select
+                className="skill-edit-level" value={item.level} disabled={busy === item.name}
+                aria-label={`Level for ${item.name}`}
+                onChange={(e) => {
+                  const level = e.target.value as SkillLevelName;
+                  void run(item.name, () => updateOwnSkill(identity, item.name, level));
+                }}
+              >
+                {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+              <button
+                className="link-btn link-btn-danger" disabled={busy === item.name}
+                onClick={() => void run(item.name, () => removeOwnSkill(identity, item.name))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="skill-edit-add">
+        <input
+          className="edit-input" value={draft} disabled={busy === ""}
+          placeholder={category === "language" ? "Add a language" : "Add a skill"}
+          aria-label={`Add a ${noun}`}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void add(); }}
+        />
+        <select
+          className="skill-edit-level" value={draftLevel} disabled={busy === ""}
+          aria-label={`Level for the new ${noun}`}
+          onChange={(e) => setDraftLevel(e.target.value as SkillLevelName)}
+        >
+          {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+        <button className="btn btn-primary" disabled={busy === "" || !draft.trim()} onClick={() => void add()}>
+          {busy === "" ? "Adding…" : "Add"}
+        </button>
+      </div>
+
+      {error && <p className="bio-error">{error}</p>}
+      <div className="bio-actions">
+        <button className="btn" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+
 export function ProfilePage({
   personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
 }: Props) {
@@ -473,6 +600,9 @@ export function ProfilePage({
   const [pronunciationDraft, setPronunciationDraft] = useState("");
   const [savingPronunciation, setSavingPronunciation] = useState(false);
   const [pronunciationError, setPronunciationError] = useState<string | null>(null);
+
+  const [editingSkills, setEditingSkills] = useState(false);
+  const [editingLanguages, setEditingLanguages] = useState(false);
 
   const [editingEmployee, setEditingEmployee] = useState(false);
   const [employeeForm, setEmployeeForm] = useState<EmployeeFormState | null>(null);
@@ -524,6 +654,8 @@ export function ProfilePage({
     setBioError(null);
     setEditingPronunciation(false);
     setPronunciationError(null);
+    setEditingSkills(false);
+    setEditingLanguages(false);
     // Closes any open edit form on a profile/identity/mode change, so a
     // draft never lingers pointed at the wrong person — same reasoning as
     // the bio-edit reset just above.
@@ -612,6 +744,16 @@ export function ProfilePage({
     } finally {
       setSavingPronunciation(false);
     }
+  }
+
+  // Both lists come from the same response, not just the one the edited
+  // card renders: skills and languages are one table split by category, so
+  // a write aimed at either can in principle move an entry across the
+  // split. Replacing both keeps the two cards from disagreeing.
+  function applySkillUpdate(updated: PersonDetail) {
+    setDetail((prev) => (
+      prev ? { ...prev, skills: updated.skills, languages: updated.languages } : prev
+    ));
   }
 
   function startEditingEmployee() {
@@ -1047,32 +1189,80 @@ export function ProfilePage({
             </section>
           )}
 
-          {detail.skills && detail.skills.length > 0 && (
+          {/* Rendered for an empty list too when it's your own profile —
+              otherwise there'd be nowhere to add your first one, same
+              reason the About card renders empty above. */}
+          {((detail.skills && detail.skills.length > 0) || isOwnProfile) && (
             <section className="card">
-              <h2>Skills</h2>
-              {groupByLevel(detail.skills).map(([level, items]) => (
-                <div className="skill-group" key={level}>
-                  <p className="skill-label">{level}</p>
-                  <div className="pills">
-                    {items.map((s) => (
-                      <span className={`pill ${LEVEL_CLASS[s.level] ?? ""}`} key={s.name}>
-                        {s.name} <span className="src">&middot; {s.source}</span>
-                      </span>
-                    ))}
+              <div className="card-head">
+                <h2>Skills</h2>
+                {isOwnProfile && !editingSkills && (
+                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingSkills(true)}>
+                    Edit
+                  </button>
+                )}
+              </div>
+              {editingSkills ? (
+                <SkillsEditor
+                  items={detail.skills ?? []} category="technical" identity={identity}
+                  onUpdated={applySkillUpdate} onClose={() => setEditingSkills(false)}
+                />
+              ) : detail.skills && detail.skills.length > 0 ? (
+                groupByLevel(detail.skills).map(([level, items]) => (
+                  <div className="skill-group" key={level}>
+                    <p className="skill-label">{level}</p>
+                    <div className="pills">
+                      {items.map((s) => (
+                        <span className={`pill ${LEVEL_CLASS[s.level] ?? ""}`} key={s.name}>
+                          {s.name} <span className="src">&middot; {s.source}</span>
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  You haven't added any skills yet.{" "}
+                  <button className="link-btn" onClick={() => setEditingSkills(true)}>Add some</button>
+                </p>
+              )}
             </section>
           )}
 
-          {detail.languages && detail.languages.length > 0 && (
+          {((detail.languages && detail.languages.length > 0) || isOwnProfile) && (
             <section className="card">
-              <h2>Languages</h2>
-              <div className="pills">
-                {detail.languages.map((l) => (
-                  <span className="pill" key={l.name}>{l.name}</span>
-                ))}
+              <div className="card-head">
+                <h2>Languages</h2>
+                {isOwnProfile && !editingLanguages && (
+                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingLanguages(true)}>
+                    Edit
+                  </button>
+                )}
               </div>
+              {editingLanguages ? (
+                <SkillsEditor
+                  items={detail.languages ?? []} category="language" identity={identity}
+                  onUpdated={applySkillUpdate} onClose={() => setEditingLanguages(false)}
+                />
+              ) : detail.languages && detail.languages.length > 0 ? (
+                <div className="pills">
+                  {/* Level shown here but not before this card became
+                      editable: a proficiency the owner picked from a
+                      three-option select is theirs to display, and a bare
+                      name next to a level selector that clearly exists
+                      would just look like the page had lost it. */}
+                  {detail.languages.map((l) => (
+                    <span className={`pill ${LEVEL_CLASS[l.level] ?? ""}`} key={l.name}>
+                      {l.name} <span className="src">&middot; {l.level}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  You haven't added any languages yet.{" "}
+                  <button className="link-btn" onClick={() => setEditingLanguages(true)}>Add some</button>
+                </p>
+              )}
             </section>
           )}
 
