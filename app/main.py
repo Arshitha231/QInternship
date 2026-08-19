@@ -1639,3 +1639,17 @@ if FRONTEND_DIST.is_dir():
         if full_path and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(FRONTEND_DIST / "index.html")
+# Add to app/main.py, right below the existing org-chart route
+from app.org_chart import get_team_graph as get_team_graph_service
+from app.schemas import TeamGraphResponse
+
+@app.get("/people/{person_id}/team-graph", response_model=TeamGraphResponse)
+def get_team_chart_route(
+    person_id: str,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamGraphResponse:
+    result = get_team_graph_service(db, user, person_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
