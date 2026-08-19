@@ -85,6 +85,26 @@ resource "azurerm_linux_web_app" "webapp"{
         OPENAI_EMBEDDING_DEPLOYMENT = "text-embedding-3-small"
         SEARCH_ENDPOINT             = var.search_endpoint
         SEARCH_KEY                  = var.search_key
+
+        # This deploy authenticates with app/auth.py's DEV provider: role
+        # and identity come from a client-supplied X-Dev-Role header with no
+        # credential check, and the demo login page (app/demo_auth.py) is
+        # the sign-in flow. That has always been true here -- there is no
+        # Entra app registration behind this site -- but it used to be true
+        # by omission, which is exactly what
+        # app/auth.py's assert_dev_auth_is_intentional() now refuses to
+        # start on. Saying it out loud is the whole point of that guard.
+        #
+        # It belongs in THIS block and not only in the CI job's `az webapp
+        # config appsettings set`, for the reason the comment above already
+        # gives: an undeclared setting is one Terraform wants to null out,
+        # so a value living only in the CI job would be wiped by the very
+        # next apply -- which runs on the same push, just before it.
+        #
+        # Replace with ENTRA_TENANT_ID/ENTRA_CLIENT_ID to make this a real
+        # auth deploy; auth_mode() switches on their presence, and this
+        # setting then does nothing.
+        ALLOW_DEV_AUTH = "1"
     }
 }
 
