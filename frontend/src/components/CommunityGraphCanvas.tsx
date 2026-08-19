@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, createCommunityLink, deleteCommunityLink, getPerson, listCommunityLinks } from "../api";
 import type { CommunityLinkOut, Identity, PersonDetail, PersonSummary, ViewMode } from "../types";
 import { EmployeeSearchPicker } from "./ReviewPage";
+import { CANONICAL_ROLE_META, locationNote, roleCaption, roleMeta } from "../community";
 import { useZoomPan, ZoomPanFrame } from "./ZoomPanFrame";
 import { X } from "../icons";
 
@@ -100,6 +101,8 @@ function ContactCard({
   const name = person.full_name;
   const status = person.availability_status;
   const isPersonal = link.source === "personal";
+  const meta = roleMeta(link);
+  const location = locationNote(link);
 
   return (
     <div
@@ -139,12 +142,30 @@ function ContactCard({
           {STATUS_LABEL[status] ?? status}
         </p>
       )}
-      <p className="community-node-what">{link.role_label}</p>
+      <p className="community-node-what">
+        {meta && <span aria-hidden="true">{meta.icon} </span>}
+        {roleCaption(link)}
+      </p>
+      {/* Where this contact sits, and — when the owner's own office had
+          nobody for a place-based role — that this is the nearest office
+          that did. Silent when there's nothing to say. */}
+      {location && (
+        <p className={`community-node-where ${link.is_remote_fallback ? "is-fallback" : ""}`}>
+          {location}
+        </p>
+      )}
       {editMode && (
         // Exact, unambiguous text per source -- never a shared badge an
-        // employee could mistake for the other kind.
-        <span className={`pill community-source-pill community-source-${link.source}`}>
-          {isPersonal ? "You added — can edit" : "HR added — can't edit"}
+        // employee could mistake for the other kind. Three kinds now, not
+        // two: a resolved canonical role is worked out from the directory
+        // on every read, so calling it "HR added" would name the wrong
+        // author and imply someone could be asked to change it.
+        <span className={`pill community-source-pill community-source-${meta ? "role" : link.source}`}>
+          {isPersonal
+            ? "You added — can edit"
+            : meta
+              ? "From the directory — can't edit"
+              : "HR added — can't edit"}
         </span>
       )}
     </div>
@@ -299,10 +320,20 @@ export function CommunityGraphCanvas({
   // raw id where a name goes. A `null` here means the profile lookup refused
   // someone the link list still returned, which is a real disagreement
   // between two endpoints and not something to paper over on the canvas.
-  const visibleLinks = useMemo(
-    () => (links ?? []).filter((l) => peopleById.get(l.contact_employee_id) !== null),
-    [links, peopleById],
-  );
+  const visibleLinks = useMemo(() => {
+    const drawable = (links ?? []).filter((l) => peopleById.get(l.contact_employee_id) !== null);
+    // Canonical roles first, in CANONICAL_ROLES order, then the owner's own
+    // additions. Without this the ring's clockwise order is whatever the
+    // response happened to list, so the same graph reshuffles as roles
+    // resolve differently — and the seven read as an arbitrary pile rather
+    // than the fixed set they are.
+    const rank = new Map(CANONICAL_ROLE_META.map((r, i) => [r.key, i]));
+    return drawable.sort((a, b) => {
+      const ra = a.role_key ? rank.get(a.role_key) ?? 99 : 99;
+      const rb = b.role_key ? rank.get(b.role_key) ?? 99 : 99;
+      return ra - rb || a.id - b.id;
+    });
+  }, [links, peopleById]);
 
   const radius = useMemo(() => radiusForCount(visibleLinks.length), [visibleLinks]);
   // The canvas's own coordinate space grows with the radius, so a large
@@ -394,6 +425,38 @@ export function CommunityGraphCanvas({
           )}
         </div>
       </ZoomPanFrame>
+
+      {/* The fixed seven, as a key to the ring — and the honest part: a
+          role this directory can't answer for you is shown as a gap, not
+          left out. */}
+      <div className="community-roles-key">
+        {CANONICAL_ROLE_META.map((role) => {
+          const filled = visibleLinks.find((l) => l.role_key === role.key);
+          const person = filled ? peopleById.get(filled.contact_employee_id) : null;
+          return (
+            <div key={role.key} className={`community-role-row ${filled ? "" : "is-missing"}`}>
+              <span className="community-role-icon" aria-hidden="true">{role.icon}</span>
+              <span className="community-role-text">
+                <strong>{role.label}</strong>
+                <span className="sub">{role.question}</span>
+              </span>
+              {filled && person ? (
+                <button
+                  className="community-role-who"
+                  onClick={() => onOpenProfile(person.id, person.full_name)}
+                >
+                  {person.full_name}
+                  {filled.is_remote_fallback && filled.contact_office_city && (
+                    <span className="sub">Nearest office: {filled.contact_office_city}</span>
+                  )}
+                </button>
+              ) : (
+                <span className="community-role-who is-missing">Nobody assigned</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
       {editMode && !adding && (
         nodes.length === 0 ? (
