@@ -361,3 +361,91 @@ def get_org_chain(
             len(result),
         )
     # 6. respond (via the returns above)
+from sqlalchemy import select
+from app.models import EmployeeProject, Project, Employee
+from app.schemas import TeamGraphResponse, TeamProjectOut, TeammateOut, PersonRef, OrgChainNode
+from app.permissions import can_see_confidential_project, is_record_visible
+from app.people import MAX_RESULTS
+
+def get_team_graph(
+    db: Session,
+    caller: AuthenticatedUser,
+    person_id: str
+) -> TeamGraphResponse | None:
+    projects_out = []
+    teammates_out = []
+    
+    try:
+        # 1. Retrieve & verify root person visibility
+        root = db.get(Employee, person_id)
+        if root is None or not root.is_active or not is_record_visible(caller, root):
+            return None
+
+        # 2. Find their active projects (SQLAlchemy 2.0 syntax)
+        my_eps = db.execute(
+            select(EmployeeProject)
+            .where(
+                EmployeeProject.employee_id == person_id,
+                EmployeeProject.end_date.is_(None)
+            )
+        ).scalars().all()
+        
+        seen_teammates_for_project = set()
+
+        for ep in my_eps:
+            proj = db.get(Project, ep.project_id)
+            if not proj:
+                continue
+                
+            # SECURITY CHECK: Hide confidential project edges from non-members[cite: 1]
+            if proj.classification == "confidential" and not can_see_confidential_project(db, caller, proj.id):
+                continue
+                
+            projects_out.append(
+                TeamProjectOut(id=proj.id, name=proj.name, classification=proj.classification)
+            )
+
+            # 3. Find other active members on this specific project
+            peers = db.execute(
+                select(EmployeeProject)
+                .where(
+                    EmployeeProject.project_id == proj.id,
+                    EmployeeProject.employee_id != person_id,
+                    EmployeeProject.end_date.is_(None)
+                )
+            ).scalars().all()
+
+            for peer_ep in peers:
+                peer = db.get(Employee, peer_ep.employee_id)
+                # Apply standard visibility rules to the peer
+                if peer and peer.is_active and is_record_visible(caller, peer):
+                    cache_key = f"{proj.id}-{peer.id}"
+                    if cache_key not in seen_teammates_for_project:
+                        seen_teammates_for_project.add(cache_key)
+                        
+                        delegate = None
+                        if peer.delegate_id:
+                            delegate_emp = db.get(Employee, peer.delegate_id)
+                            if delegate_emp:
+                                delegate = PersonRef(id=delegate_emp.id, full_name=delegate_emp.full_name)
+                        
+                        peer_node = OrgChainNode(
+                            id=peer.id, 
+                            full_name=peer.full_name, 
+                            job_title=peer.job_title,
+                            org_unit=_org_unit_name(db, peer.org_unit_id), 
+                            depth=1,  # 1 hop away via the project
+                            availability_status=peer.availability_status.value, 
+                            delegate=delegate,
+                            has_reports=False
+                        )
+                        
+                        teammates_out.append(TeammateOut(project_id=proj.id, person=peer_node))
+
+        # 4. Cap results to prevent bulk extraction[cite: 1, 4]
+        teammates_out = teammates_out[:MAX_RESULTS]
+        return TeamGraphResponse(projects=projects_out, teammates=teammates_out)
+        
+    finally:
+        # 5. Write to audit_log — happens whether visible, role-denied, or populated[cite: 1, 4]
+        _write_audit(db, caller, f"action=get_team_graph;person_id={person_id}", len(teammates_out))
