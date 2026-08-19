@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app import config
 from app.auth import AuthenticatedUser, assert_dev_auth_is_intentional, get_current_user
 from app.certifications import LocalStatusWritesDisabled, RecordCourseStatusDenied, UnknownCourse, record_course_status
+from app.chain_budgets import assert_chain_budgets_within_ceiling
 from app.community_links import LinkDenied, LinkNotFound, SuggestionDenied, SuggestionNotActionable, SuggestionNotFound
 from app.community_links import auto_assign_mentors as auto_assign_mentors_service
 from app.community_links import confirm_suggested_official_link as confirm_suggested_official_link_service
@@ -146,6 +147,11 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # see assert_dev_auth_is_intentional's docstring for why that fallback
     # is a full auth bypass, not a degraded feature.
     assert_dev_auth_is_intentional()
+    # Same shape again: fails loudly if a plan class's declared chain
+    # budget (app/chain_budgets.py) exceeds the absolute ceiling on any
+    # axis — caught before the app ever serves a request, not the first
+    # time someone's chain runs for 20 seconds and nobody knows why.
+    assert_chain_budgets_within_ceiling()
     yield
 
 

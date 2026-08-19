@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
+from app.chain_budgets import DEFAULT_PLAN_CLASS, ChainBudget, budget_for
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
 from app.org_chart import get_org_chain, resolve_person_name
@@ -1419,9 +1420,57 @@ def _history_messages(
 # entered when the MODEL's own first call sets needs_followup; an ordinary
 # single-call request never reaches any of this and costs exactly what it
 # costs today (see answer()'s branch point below).
+#
+# Bounded along three independent axes (app/chain_budgets.py), not just a
+# step count -- a loop can be cheap in steps and expensive in exposure (a
+# handful of broad queries returns more than twenty narrow ones), so steps
+# alone was the wrong single axis. Whichever of steps / distinct records /
+# wall-clock is exhausted first ends the chain.
 # ---------------------------------------------------------------------------
 
-MAX_CHAIN_STEPS = 3
+
+def _extract_record_ids(result: Any) -> list[str]:
+    """Every step's contribution to the chain's running distinct-record
+    count -- IDs only, extracted the same permissive way regardless of
+    which of the seven tools produced the result, never re-deriving what
+    counts as a record from the tool name. `id` covers six of the seven
+    result shapes (PersonSummary, PersonDetail, OrgChainNode,
+    MentorCandidate, ProblemExpert); find_project_owner's ProjectOwnerResult
+    uses `owner_id` instead, so that's checked too. A result with neither
+    (skill_gap/skill_scarcity's aggregate stats, or None) contributes
+    nothing, which is correct: this axis measures how many distinct
+    people/records a chain has surfaced, not how many tool calls it made.
+    """
+    items = result if isinstance(result, list) else [result]
+    ids = []
+    for item in items:
+        item_id = getattr(item, "id", None) or getattr(item, "owner_id", None)
+        if item_id is not None:
+            ids.append(item_id)
+    return ids
+
+
+def _exhausted_axis(
+    step: int, distinct_records: int, elapsed_ms: int, budget: ChainBudget,
+) -> str | None:
+    """Which axis of `budget`, if any, this chain has exhausted -- checked
+    in the same fixed order every time so which reason is reported is
+    deterministic when more than one axis happens to trip on the same
+    step, not whichever the caller happened to check first."""
+    if step >= budget.steps:
+        return "steps"
+    if distinct_records >= budget.max_records:
+        return "records"
+    if elapsed_ms >= budget.max_wall_clock_ms:
+        return "wall_clock"
+    return None
+
+
+_TRUNCATION_NOTES = {
+    "steps": "Stopped after running out of reasoning steps — this may be incomplete.",
+    "records": "Stopped after reaching its results budget — this may be incomplete.",
+    "wall_clock": "Stopped after running out of time — this may be incomplete.",
+}
 
 
 def _execute_chain_step(
@@ -1438,9 +1487,9 @@ def _execute_chain_step(
     broadening/audit logic -- documented and tested as a deliberate
     tradeoff (test_execute_with_retry_succeeds_after_one_correction pins
     the double execution explicitly). A chain step that may run up to
-    MAX_CHAIN_STEPS times has no equivalent case for paying that cost
-    every time, so this returns the result the successful call already
-    produced instead of re-running it.
+    the plan class's budgeted step count has no equivalent case for
+    paying that cost every time, so this returns the result the
+    successful call already produced instead of re-running it.
 
     Returns None if every retry is exhausted without a successful
     execution -- the caller (execute_chain) treats that as this step's
@@ -1503,28 +1552,36 @@ def _chain_step_messages(tool_call: ResolvedToolCall, result: Any) -> list[dict]
 def execute_chain(
     db: Session, caller: AuthenticatedUser, first_call: ResolvedToolCall, message: str,
     view_mode: ViewMode = "work", history_messages: list[dict] | None = None,
+    plan_class: str = DEFAULT_PLAN_CLASS,
 ) -> dict:
-    """Bounded multi-step tool-calling, up to MAX_CHAIN_STEPS calls. Every
-    step dispatches through the exact same execute_tool_call() a
-    single-call request already uses -- same caller, same view_mode, same
-    enforce()/compile_query() gate at every step. This is orchestration
-    around the existing dispatcher, never a second one: nothing here
-    decides permissions differently because it's step two.
+    """Bounded multi-step tool-calling, under `plan_class`'s declared
+    budget (app/chain_budgets.py) -- steps, distinct records returned, and
+    wall-clock, exhausted independently; whichever trips first ends the
+    chain. Every step dispatches through the exact same execute_tool_call()
+    a single-call request already uses -- same caller, same view_mode,
+    same enforce()/compile_query() gate at every step. This is
+    orchestration around the existing dispatcher, never a second one:
+    nothing here decides permissions differently because it's step two.
 
     Response shape is a single-call answer's -- {message, tool_call,
     arguments, result} from the FINAL step only, as if that step (with
     its already-resolved arguments) had been the only call made -- plus
-    one additive key, `steps`: the ordered list of {tool, arguments,
+    two additive keys: `steps`, the ordered list of {tool, arguments,
     latency_ms} for every step actually executed, PLAN (+ real measured
-    timing) only, never a step's result. Safe
-    to hand back to the caller (unlike a mid-chain result, which stays
-    server-side): a tool name and its arguments carry nothing an ordinary
-    caller couldn't already see was asked, and this is the same
-    plan-not-result boundary saved sessions and follow-up-chat history
-    both hold to. It exists so a UI can render "resolved in N steps"
-    instead of a chain looking identical to a single call -- full detail
-    still lives in the audit log via chain_id/chain_step (one row per
-    step) for anything needing more than the trace.
+    timing) only, never a step's result -- safe to hand back to the
+    caller (unlike a mid-chain result, which stays server-side), since a
+    tool name and its arguments carry nothing an ordinary caller couldn't
+    already see was asked, the same plan-not-result boundary saved
+    sessions and follow-up-chat history both hold to; and `truncated`,
+    None when the chain ended because the model itself was done, or the
+    name of whichever budget axis ended it otherwise ("steps" / "records"
+    / "wall_clock") -- a truncated answer says so (folded into `message`
+    too, via _TRUNCATION_NOTES) rather than silently returning a partial
+    result indistinguishable from a complete one. `steps` exists so a UI
+    can render "resolved in N steps" instead of a chain looking identical
+    to a single call -- full detail still lives in the audit log via
+    chain_id/chain_step (one row per step) for anything needing more than
+    the trace.
 
     SECURITY NOTE (composition), checked against app/policy.py directly,
     not assumed: enforce() is a pure function of (plan, caller, view_mode)
@@ -1535,7 +1592,8 @@ def execute_chain(
     step feeds back to the model is the already-caller-filtered response
     object that step produced (_serialize_step_result), so the model's
     cumulative context across the whole chain never exceeds the union of
-    what MAX_CHAIN_STEPS individually-permitted answers would have shown.
+    what the plan class's budgeted step count worth of individually-
+    permitted answers would have shown.
     That bound does NOT eliminate ARCHITECTURE_2.md §16's own named
     "cross-query inference" limitation -- "a user can ask several
     individually-permitted questions and assemble something restricted
@@ -1545,10 +1603,13 @@ def execute_chain(
     letting this function imply it closes a gap the rest of the system
     already says it doesn't.
     """
+    budget = budget_for(plan_class)
     chain_id = uuid.uuid4().hex
+    chain_started = time.monotonic()
     attempt = first_call
     extra_messages: list[dict] = []
     plan_trace: list[dict] = []
+    seen_record_ids: set[str] = set()
     step = 0
 
     while True:
@@ -1563,12 +1624,21 @@ def execute_chain(
             return {
                 "message": "I found a matching action but couldn't complete it — try rephrasing.",
                 "tool_call": attempt.name, "arguments": attempt.arguments, "result": None,
-                "steps": plan_trace,
+                "steps": plan_trace, "truncated": None,
             }
 
         result, attempt = outcome
         plan_trace.append({"tool": attempt.name, "arguments": attempt.arguments, "latency_ms": step_latency_ms})
-        wants_more = attempt.needs_followup and step < MAX_CHAIN_STEPS
+        seen_record_ids.update(_extract_record_ids(result))
+
+        # Budget only matters if the model actually wants another step --
+        # a chain that finishes on its own within budget is not truncated
+        # just because step happens to equal the ceiling.
+        exhausted = None
+        if attempt.needs_followup:
+            elapsed_ms = int((time.monotonic() - chain_started) * 1000)
+            exhausted = _exhausted_axis(step, len(seen_record_ids), elapsed_ms, budget)
+        wants_more = attempt.needs_followup and exhausted is None
 
         if wants_more:
             extra_messages.extend(_chain_step_messages(attempt, result))
@@ -1591,6 +1661,13 @@ def execute_chain(
 
         final = _finish_with_broadening(db, caller, attempt, result, message, chain_id, step)
         final["steps"] = plan_trace
+        final["truncated"] = exhausted
+        if exhausted is not None:
+            # A truncated answer says so -- folded into the same message
+            # field the presentation layer already renders, not a flag
+            # only an API consumer that thought to check it would notice.
+            note = _TRUNCATION_NOTES[exhausted]
+            final["message"] = f"{final['message']} {note}" if final["message"] else note
         return final
 
 
