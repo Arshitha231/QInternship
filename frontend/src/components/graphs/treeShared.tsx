@@ -55,7 +55,35 @@ export function NodeBox({
     </div>
   );
 }
-
+export function OrgUnitBadge({
+  unitName,
+  headcount,
+  registerRef,
+}: {
+  unitName: string;
+  headcount: number;
+  registerRef: (el: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      ref={registerRef}
+      className="tree-node tree-node-org-unit"
+      style={{
+        background: "#f8fafc",
+        border: "2px dashed #94a3b8",
+        padding: "16px",
+        textAlign: "center",
+      }}
+    >
+      <p className="tree-node-name" style={{ margin: "0 0 4px 0", fontSize: "1.1rem" }}>
+        {unitName}
+      </p>
+      <p className="tree-node-role" style={{ margin: 0, color: "#64748b" }}>
+        👥 {headcount} {headcount === 1 ? "person" : "people"}
+      </p>
+    </div>
+  );
+}
 export interface TreeGroup {
   parentId: string;
   childIds: string[];
