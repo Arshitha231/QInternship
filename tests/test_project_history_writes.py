@@ -282,3 +282,32 @@ async def test_identifying_columns_are_not_editable(client, db_session, atlas_id
         headers=auth_headers("it"),
     )
     assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# The read side has to name the row the write side addresses.
+# ---------------------------------------------------------------------------
+
+async def test_project_history_exposes_the_id_the_write_path_needs(
+    client, db_session, atlas_id
+):
+    """ProfilePage edits a membership by (person, project), so the id has
+    to travel with the row it edits — without it the UI can render project
+    history it has no way to address."""
+    _mkemp(db_session, "ph-readid-1", "Pat ReadId")
+    await client.put(
+        f"/people/ph-readid-1/projects/{atlas_id}", params={"view_mode": "work"},
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+    )
+    resp = await client.get(
+        "/people/ph-readid-1", params={"view_mode": "work"}, headers=auth_headers("it"))
+    assert resp.status_code == 200, resp.text
+
+    history = resp.json()["project_history"]
+    row = next(p for p in history if p["project_id"] == atlas_id)
+    assert row["project_name"] == "Project Atlas"
+    # Round-trips: the id the read handed back addresses the same row.
+    delete = await client.delete(
+        f"/people/ph-readid-1/projects/{row['project_id']}", params={"view_mode": "work"},
+        headers=auth_headers("it"))
+    assert delete.status_code == 204

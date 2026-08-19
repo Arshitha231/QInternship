@@ -37,6 +37,12 @@ class SkillOut(BaseModel):
 
 
 class ProjectHistoryItem(BaseModel):
+    # Which EmployeeProject row this is, so a caller who may EDIT project
+    # history can address it (PUT/DELETE /people/{id}/projects/{project_id}).
+    # Not gated: the project's NAME is already here for anyone who can see
+    # project_history at all, and an opaque row id discloses strictly less
+    # than the name it sits next to.
+    project_id: int
     project_name: str
     project_type: str
     role: str

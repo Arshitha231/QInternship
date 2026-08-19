@@ -150,6 +150,64 @@ export function updateEmployee(
   });
 }
 
+// --- IT, work mode: edit anyone's project history except their own -------
+// Both calls 403 for any non-"it" identity, in employee mode, and on the
+// caller's OWN record (app/writes.py's _refuse_own_record) — ProfilePage
+// only renders the controls when all three already hold, but that is a
+// convenience, not the enforcement.
+
+// The subset of an EmployeeProject row this path may write. Dates are ISO
+// (YYYY-MM-DD) rather than the month strings the READ side returns:
+// ProjectHistoryItem deliberately publishes month precision only, so a
+// month picked in the UI becomes the 1st of that month here rather than
+// this pretending to round-trip a day it was never told.
+export interface ProjectHistoryChanges {
+  role?: string;
+  contribution?: string | null;
+  start_date?: string;
+  end_date?: string | null;
+}
+
+export interface ProjectHistoryRow {
+  employee_id: string;
+  project_id: number;
+  role: string;
+  contribution: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+// Creates the membership if it doesn't exist, patches it if it does —
+// (person, project) identifies the row, so this is safe to repeat. Only
+// the keys present are written; an explicit null clears (end_date: null is
+// how a project becomes current again), while an omitted key is left
+// alone. Same diff-before-calling contract as updateEmployee above.
+export function upsertProjectHistory(
+  identity: Identity, personId: string, projectId: number,
+  changes: ProjectHistoryChanges, viewMode: ViewMode,
+): Promise<ProjectHistoryRow> {
+  return request<ProjectHistoryRow>(
+    `/people/${personId}/projects/${projectId}?view_mode=${viewMode}`, identity, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+}
+
+// 204, no body — hence the bare fetch rather than request<T>, same shape
+// deleteCommunityLink uses.
+export async function removeProjectHistory(
+  identity: Identity, personId: string, projectId: number, viewMode: ViewMode,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/people/${personId}/projects/${projectId}?view_mode=${viewMode}`,
+    { method: "DELETE", headers: headers(identity) },
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  }
+}
+
 // The plain summary app/main.py's _employee_action_result returns —
 // deliberately not PersonDetail, since get_person returns nothing for an
 // inactive record (the very state deactivate/reactivate transition
