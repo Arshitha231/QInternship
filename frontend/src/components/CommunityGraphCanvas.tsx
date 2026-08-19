@@ -435,7 +435,6 @@ export function CommunityGraphCanvas({
           const person = filled ? peopleById.get(filled.contact_employee_id) : null;
           return (
             <div key={role.key} className={`community-role-row ${filled ? "" : "is-missing"}`}>
-              <span className="community-role-icon" aria-hidden="true">{role.icon}</span>
               <span className="community-role-text">
                 <strong>{role.label}</strong>
                 <span className="sub">{role.question}</span>
