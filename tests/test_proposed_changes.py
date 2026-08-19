@@ -1332,3 +1332,58 @@ def test_extraction_falls_back_to_mock_when_the_first_round_fails(monkeypatch):
 
     assert {c.member_name_guess for c in calls} == {
         "Alex Kim", "Jamie Doubleton", "Robin Nobody"}
+
+
+# ---------------------------------------------------------------------------
+# Candidate identity — what a reviewer picks BETWEEN.
+# ---------------------------------------------------------------------------
+
+async def test_same_named_candidates_are_distinguishable(client, project_doc):
+    """The point of the ranked-candidate design is that a human confirms
+    who a document meant. Two Jamie Doubletons match the same name with
+    the same evidence, so full_name, confidence and match_reason are
+    identical for both by construction -- if those are all the screen
+    gets, the human is asked to choose with nothing to choose on."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    candidates = jamie["candidates"]
+    assert len(candidates) == 2
+
+    # The premise: the document-derived fields genuinely cannot separate them.
+    assert len({c["full_name"] for c in candidates}) == 1
+    # The fix: directory identity can.
+    assert {c["job_title"] for c in candidates} == {"Software Engineer", "Data Engineer"}
+    assert all(c["org_unit"] for c in candidates)
+    assert all(c["is_active"] is True for c in candidates)
+
+
+async def test_candidate_details_are_read_at_display_time(client, project_doc, db_session):
+    """Stored candidate_employee_ids is an extraction-time snapshot of the
+    ranking. Identity is resolved when the screen is read, so a document
+    staged before a promotion doesn't ask a reviewer to confirm someone by
+    a job title they no longer hold."""
+    from app.models import Employee
+
+    employee = db_session.get(Employee, "extract-dup-1")
+    employee.job_title = "Principal Engineer"
+    db_session.commit()
+
+    subjects = await _subjects(client, project_doc["doc_id"])
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    titles = {c["job_title"] for c in jamie["candidates"]}
+    assert "Principal Engineer" in titles
+    assert "Software Engineer" not in titles
+
+
+async def test_candidate_details_stay_within_the_always_visible_field_set(client, project_doc):
+    """A candidate list must not become a way to read more about somebody
+    than searching for them would -- app/people.py's SUMMARY_FIELDS is the
+    always-visible set, and salary/hire_date/etc. are not in it."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    allowed = {
+        "employee_id", "full_name", "confidence", "match_reason",
+        "job_title", "org_unit", "office", "is_active",
+    }
+    for subject in subjects:
+        for candidate in subject["candidates"]:
+            assert set(candidate) <= allowed, f"leaked {set(candidate) - allowed}"

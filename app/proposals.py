@@ -34,6 +34,8 @@ from app.models import (
     Employee,
     EmployeeProject,
     EmployeeSkill,
+    Office,
+    OrgUnit,
     Project,
     ProposedChange,
     Skill,
@@ -158,6 +160,47 @@ def _load_subject(db: Session, subject_id: int) -> DocSubjectMatch:
 # GET /doc_subject_matches?doc_id= — the required first screen.
 # ---------------------------------------------------------------------------
 
+def _candidate_details(db: Session, employee_id: str) -> dict:
+    """Who this candidate actually is, for a human about to pick between
+    same-named people.
+
+    rank_candidates stores name + confidence + match_reason, which is a
+    complete record of the EVIDENCE THE DOCUMENT GAVE and a useless basis
+    for the decision it asks for: the directory seeds two Priya Sharmas on
+    purpose, a status document names neither's team, so both candidates
+    render identically at the same 0.30 and the reviewer is asked to
+    confirm one with nothing to tell them apart.
+
+    Read at display time rather than frozen into candidate_employee_ids at
+    extraction time, for two reasons. Documents staged before this existed
+    get the detail with no re-upload (the row already has the ids; only
+    the labels were missing). And a reviewer deciding today should see who
+    these people are today — a title or team that changed since upload
+    makes the stored snapshot actively misleading, while the ranking
+    itself, which is a record of what the document said, stays untouched.
+
+    Restricted to SUMMARY_FIELDS' always-visible set (see app/people.py) —
+    the same fields any find_people result already exposes to this caller,
+    so a candidate list can't become a way to read more about somebody
+    than searching for them would.
+    """
+    employee = db.get(Employee, employee_id)
+    if employee is None:
+        return {}
+    unit = db.get(OrgUnit, employee.org_unit_id) if employee.org_unit_id else None
+    office = db.get(Office, employee.office_id) if employee.office_id else None
+    return {
+        "job_title": employee.job_title,
+        "org_unit": unit.name if unit else None,
+        "office": office.name if office else None,
+        # A candidate deactivated since extraction can't be confirmed
+        # anyway (resolve_subject refuses a non-active employee), so this
+        # is what lets the screen say why instead of offering a button
+        # that fails.
+        "is_active": employee.is_active,
+    }
+
+
 def list_subjects(
     db: Session, caller: AuthenticatedUser, view_mode: ViewMode,
     doc_id: int | None = None, status: str | None = None,
@@ -177,7 +220,10 @@ def list_subjects(
 
     out: list[dict] = []
     for row in rows:
-        candidates = json.loads(row.candidate_employee_ids)
+        candidates = [
+            {**c, **_candidate_details(db, c["employee_id"])}
+            for c in json.loads(row.candidate_employee_ids)
+        ]
         pending_count = (
             db.query(ProposedChange)
             .filter(ProposedChange.subject_match_id == row.id,
