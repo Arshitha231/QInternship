@@ -42,6 +42,10 @@ export interface SkillOut {
 }
 
 export interface ProjectHistoryItem {
+  // Addresses the EmployeeProject row for PUT/DELETE
+  // /people/{id}/projects/{project_id}. Always present -- it's ungated on
+  // the backend, same as project_name.
+  project_id: number;
   project_name: string;
   project_type: string;
   role: string;
@@ -328,6 +332,15 @@ export interface DocSubjectCandidate {
   // app/doc_extraction.py's rank_candidates for exactly which strings this
   // can be; rendered as-is, humanised at the display layer.
   match_reason: string;
+  // Who this person actually is, so two same-named candidates are
+  // distinguishable — full_name and confidence describe what the DOCUMENT
+  // said and are identical for both of them. Filled by app/proposals.py's
+  // _candidate_details at display time. Optional because an employee row
+  // deleted since extraction yields none of it.
+  job_title?: string;
+  org_unit?: string | null;
+  office?: string | null;
+  is_active?: boolean;
 }
 
 export interface DocSubjectMatchOut {
@@ -403,10 +416,21 @@ export interface CommunityLinkOut {
   source: "official" | "personal";
   office_id: number | null;
   department_id: number | null;
-  // Marks the subset of official links whose expiration is computed
-  // server-side at read time — never something the frontend calculates.
   is_mentor_link: boolean;
   created_at: string;
+
+  // One of app/community_roles.py's CANONICAL_ROLES for a resolved role;
+  // null for a personal link, whose label is whatever the owner typed.
+  // frontend/src/community.ts turns this into a caption and an icon.
+  role_key: string | null;
+  contact_office_name: string | null;
+  contact_office_city: string | null;
+  // Whole kilometres to the contact's office, and whether the role was
+  // answered from another location because the owner's own office has
+  // nobody in it. Both empty for roles that don't widen geographically
+  // (mentor, technical expert, project contact) and for personal links.
+  distance_km: number | null;
+  is_remote_fallback: boolean;
 }
 
 // HR's review queue for office/role -> candidate mappings bootstrapped from

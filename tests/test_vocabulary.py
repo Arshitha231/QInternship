@@ -10,7 +10,9 @@ org units "Platform Engineering" / "Finance Operations", offices "Test HQ"
 import pytest
 
 from app.query_plan import Filter, PeopleQuery
-from app.vocabulary import SNAPPABLE_FIELDS, snap, validate
+from app.vocabulary import (
+    SNAPPABLE_FIELDS, _load_vocab, _snap_one, snap, snap_tool_arguments, validate,
+)
 
 # ---------------------------------------------------------------------------
 # validate() -- structural rejection only
@@ -286,3 +288,80 @@ def test_all_snappable_fields_are_registered_as_filterable():
     for field_name in SNAPPABLE_FIELDS:
         assert field_name in REGISTRY
         assert REGISTRY[field_name].filterable
+
+
+# ---------------------------------------------------------------------------
+# snap_tool_arguments(): snap() only ever ran on a PeopleQuery, so
+# search_people got vocabulary correction and find_people -- which the router
+# picks far more often -- did not.
+# ---------------------------------------------------------------------------
+
+def test_a_plausible_but_wrong_org_unit_snaps_to_the_real_one(db_session):
+    """Golden eval t2-07: the model emits "Cloud Infrastructure" for a
+    department actually called "Infrastructure", find_people's org_unit
+    resolution returns nothing, and it hard-empties -- 0 results for a
+    question with real answers."""
+    snapped, _ = snap_tool_arguments(db_session, {"skill": "Terraform", "org_unit": "Engineerin"})
+    assert snapped["org_unit"] == "Engineering"
+
+
+def test_an_already_correct_value_is_left_exactly_alone(db_session):
+    args = {"org_unit": "Engineering", "skill": "Terraform"}
+    snapped, _ = snap_tool_arguments(db_session, args)
+    assert snapped == args
+
+
+def test_an_unresolvable_value_is_kept_so_the_result_stays_honestly_empty(db_session):
+    """"do we have anyone who knows Quantum Computing" must still be
+    answerable with "no" -- snapping it to the nearest real skill would turn
+    an honest empty result into a confidently wrong one."""
+    snapped, notes = snap_tool_arguments(db_session, {"skill": "Underwater Basket Weaving"})
+    assert snapped["skill"] == "Underwater Basket Weaving"
+    assert [n.resolved for n in notes if n.field == "skill"] == [None]
+
+
+def test_language_is_deliberately_not_snapped(db_session):
+    """find_related_language_speakers already handles a language miss, and
+    handles it better: it offers speakers of a related language and says so.
+    Snapping would replace that with a silent guess."""
+    snapped, _ = snap_tool_arguments(db_session, {"language": "Telugu"})
+    assert snapped["language"] == "Telugu"
+
+
+def test_non_string_and_absent_values_are_untouched(db_session):
+    args = {"available": True, "level": "Expert", "name": None}
+    snapped, notes = snap_tool_arguments(db_session, args)
+    assert snapped == args
+    assert notes == []
+
+
+# ---------------------------------------------------------------------------
+# A snap must be a CLEAR winner, not merely above the threshold. This
+# vocabulary has a common suffix -- 60 of 75 org units end in "Team" -- so
+# WRatio's partial/token passes score all of them alike against any
+# "<something> Team" input.
+# ---------------------------------------------------------------------------
+
+def test_a_plausible_team_name_that_does_not_exist_does_not_snap(db_session):
+    """Measured before the margin: "Payments Team", "Search Team", "Growth
+    Team" and "Security Team" all snapped to "Machine Learning Team", and
+    "Billing API Team" to "Product Management Team A" -- silently answering
+    a different question, which is the one thing snapping must never do."""
+    vocab = _load_vocab(db_session, "org_unit")
+    for invented in ("Payments Team", "Search Team", "Growth Team", "Security Team"):
+        assert _snap_one(invented, vocab) is None, invented
+
+
+def test_a_real_near_miss_still_snaps(db_session):
+    """A genuine near-miss shares the DISTINCTIVE token rather than the
+    common one, so it still has a clear winner."""
+    vocab = _load_vocab(db_session, "org_unit")
+    assert _snap_one("Engineerin", vocab) == "Engineering"
+
+
+def test_skill_typos_are_unaffected_by_the_margin(db_session):
+    """Skill names share no common suffix, so the margin never bites here --
+    pinned so a future tightening of it cannot silently break typo
+    correction."""
+    vocab = _load_vocab(db_session, "skills")
+    assert _snap_one("Terrafrom", vocab) == "Terraform"

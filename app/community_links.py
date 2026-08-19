@@ -32,6 +32,7 @@ from app.auth import AuthenticatedUser
 from app.models import AuditLog, CommunityLink, Employee, OrgSettings, OrgUnit, SuggestedOfficialLink
 from app.models.enums import CommunityLinkSource, SuggestedLinkStatus
 from app.models.org_settings import DEFAULT_MENTOR_LINK_DURATION_DAYS
+from app.community_roles import SYNTHETIC_LINK_IDS, resolve_canonical_roles
 from app.permissions import ViewMode
 from app.permissions import effective_role
 from app.policy import enforce, excluded_by_obligations
@@ -122,14 +123,6 @@ def _serialize(link: CommunityLink) -> dict:
     }
 
 
-# Sentinel id for the read-time-only "manager" entry below — never a real
-# community_links primary key (those autoincrement from 1), so a client
-# can't mistake it for a row that exists to PATCH/DELETE; db.get(CommunityLink,
-# MANAGER_LINK_ID) simply finds nothing, so those actions 404 on it exactly
-# like any other nonexistent id, with no special-casing needed on that side.
-MANAGER_LINK_ID = -1
-
-
 def _contact_is_visible(db: Session, decision, contact_employee_id: str) -> bool:
     """Whether the person on the other end of a link can still be shown.
 
@@ -151,39 +144,65 @@ def _contact_is_visible(db: Session, decision, contact_employee_id: str) -> bool
     return not excluded_by_obligations(decision, contact)
 
 
-def _synthesize_manager_link(db: Session, decision, caller_employee: Employee) -> dict | None:
-    """The reporting relationship is already real org data
-    (Employee.manager_id) — surfaced here at read time, not duplicated into
-    a stored community_links row that could drift out of sync the next time
-    someone's manager changes. None when the caller has no manager on file,
-    or their manager can't be shown to them (gone, or restricted).
-    """
-    if caller_employee.manager_id is None:
-        return None
-    manager = db.get(Employee, caller_employee.manager_id)
-    if manager is None or not _contact_is_visible(db, decision, manager.id):
-        return None
+# ---------------------------------------------------------------------------
+# GET /community_links — the caller's own graph: the seven canonical roles
+# resolved at read time (app/community_roles.py), plus their own personal
+# additions.
+#
+# The stored official rows are no longer returned one-for-one. payroll,
+# benefits_admin, facilities_admin and hr_contact were four separate nodes
+# answering one question — "who handles employee and company logistics" —
+# and the spec collapses them into a single HR representative. They are
+# still HR's confirmed choices and still win over a derived contact; they
+# are just presented as the one role they always were.
+# ---------------------------------------------------------------------------
+
+def _serialize_resolved_role(owner_id: str, resolved: dict) -> dict:
+    """A resolved role in the same shape as a stored link, so the frontend
+    draws one kind of node and not two."""
+    contact = resolved["contact"]
+    office = resolved["office"]
+    distance_km = resolved["distance_km"]
     return {
-        "id": MANAGER_LINK_ID,
-        "owner_employee_id": caller_employee.id,
-        "contact_employee_id": manager.id,
-        "role_label": "manager",
+        # The real row's id when one is behind this answer (a mentor
+        # pairing, or an official link HR confirmed), so the node still
+        # points at something that exists; the role's sentinel otherwise.
+        "id": resolved["link_id"] or SYNTHETIC_LINK_IDS[resolved["role"]],
+        "owner_employee_id": owner_id,
+        "contact_employee_id": contact.id,
+        "role_label": resolved["role"],
         "reason": None,
         "source": CommunityLinkSource.official.value,
-        "office_id": None,
+        "office_id": office.id if office else None,
         "department_id": None,
-        "is_mentor_link": False,
-        # Synthesized fresh on every read — there is no stored "since when
-        # has this person been my manager" fact to report instead.
+        "is_mentor_link": resolved["role"] == "mentor",
+        # Resolved fresh on every read — there is no stored "since when" to
+        # report for a relationship derived from current org data.
         "created_at": datetime.now(),
+        "role_key": resolved["role"],
+        "contact_office_name": office.name if office else None,
+        "contact_office_city": office.city if office else None,
+        # Rounded to whole kilometres: the graph says "about 3,100 km away",
+        # and a decimal place would imply a precision that city-level
+        # coordinates don't have.
+        "distance_km": round(distance_km) if distance_km else None,
+        "is_remote_fallback": resolved["is_remote_fallback"],
     }
 
 
-# ---------------------------------------------------------------------------
-# GET /community_links — the caller's own graph, official + personal
-# merged, mentor expiration applied, plus the manager entry synthesized
-# from org data (see _synthesize_manager_link).
-# ---------------------------------------------------------------------------
+def _serialize_personal(link: CommunityLink) -> dict:
+    """A personal link, widened with the same keys the resolved roles carry
+    so one response model covers both. role_key is null — a personal link's
+    label is whatever the owner typed, not one of the canonical seven."""
+    return {
+        **_serialize(link),
+        "role_key": None,
+        "contact_office_name": None,
+        "contact_office_city": None,
+        "distance_km": None,
+        "is_remote_fallback": False,
+    }
+
 
 def list_community_links(
     db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work",
@@ -201,24 +220,36 @@ def list_community_links(
     """
     decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
 
-    rows = (
+    caller_employee = db.get(Employee, caller.id)
+    if caller_employee is None:
+        return []
+
+    # Mentor expiration is applied before resolving, because whether a
+    # mentor link has flipped to personal decides which of the two lists
+    # below it belongs in.
+    stored = (
         db.query(CommunityLink)
         .filter(CommunityLink.owner_employee_id == caller.id)
         .order_by(CommunityLink.id)
         .all()
     )
+    for row in stored:
+        _resolve_mentor_expiration(db, row)
+
     out = [
-        _serialize(_resolve_mentor_expiration(db, row))
-        for row in rows
-        if _contact_is_visible(db, decision, row.contact_employee_id)
+        _serialize_resolved_role(caller.id, resolved)
+        for resolved in resolve_canonical_roles(db, caller_employee)
+        if _contact_is_visible(db, decision, resolved["contact"].id)
     ]
 
-    caller_employee = db.get(Employee, caller.id)
-    manager_entry = (
-        _synthesize_manager_link(db, decision, caller_employee) if caller_employee else None
+    # The owner's own additions, which no resolver produces and nothing
+    # collapses. An expired mentor link arrives here, as a personal one.
+    out.extend(
+        _serialize_personal(row)
+        for row in stored
+        if row.source == CommunityLinkSource.personal
+        and _contact_is_visible(db, decision, row.contact_employee_id)
     )
-    if manager_entry is not None:
-        out.insert(0, manager_entry)
     return out
 
 

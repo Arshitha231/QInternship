@@ -14,11 +14,12 @@ record itself is what 404s (mirroring get_person), not the direction.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
 from rapidfuzz import fuzz, process
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import AuthenticatedUser
@@ -46,53 +47,135 @@ MAX_DEPTH = 10
 FUZZY_MATCH_THRESHOLD = 80
 
 
-def resolve_person_name(db: Session, name: str) -> str | None:
-    """Resolve a plain name string to exactly one active employee id: exact
-    match, then case-insensitive, then fuzzy (rapidfuzz) above
-    FUZZY_MATCH_THRESHOLD. In-process over every active employee's name —
-    500 rows, not worth a fuzzy-search DB feature for.
+@dataclass(frozen=True)
+class PersonResolution:
+    """The outcome of turning a typed name into one employee id.
 
-    Two employees can legitimately share an exact full name (the seeded
-    "Priya Sharma" duplicate) — the org chain needs exactly one root to
-    walk from, and picking either one silently would answer a different
-    question than the one asked, so an exact match that isn't unique is
-    treated as unresolved, same as no match at all. Callers get "I
-    couldn't find that person" either way, never a wrong-but-confident
-    chain.
+    Three distinct outcomes, not two: resolved, ambiguous (several real
+    people matched and picking one would answer a different question than
+    the one asked), and unknown (nothing matched). The old `str | None`
+    return collapsed the last two, which is why "Priya Sharma" — a genuinely
+    duplicated name — and "Zzyzx Qqwrt" produced the identical, wrong
+    "nobody found above them in the org chart" message.
+    """
+
+    person_id: str | None = None
+    candidates: tuple[str, ...] = ()
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.person_id is None and bool(self.candidates)
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.person_id is None and not self.candidates
+
+
+# How far below the top fuzzy score another person can score and still count
+# as a rival rather than a clear loser. A real typo has one obvious winner
+# ("Shaun Andersen" -> "Shaun Anderson" at ~96, next best in the fifties); a
+# bare surname does not ("Anderson" scores identically against all five
+# Andersons, because WRatio's partial pass sees a full substring hit in every
+# one of them). Without this margin the resolver silently returned whichever
+# of the five rapidfuzz happened to rank first.
+AMBIGUITY_MARGIN = 5
+
+
+def _name_index(db: Session) -> dict[str, list[str]]:
+    """Every string a caller could reasonably use for an active employee ->
+    the ids it could mean. Both full_name and preferred_name, because a
+    directory that can't find "Andy" when the record says "Andrew Choi" is
+    broken for exactly the phrasing colleagues actually use. 9 employees
+    here have a real nickname and none of them were reachable by it before.
+    """
+    index: dict[str, list[str]] = {}
+    rows = db.execute(
+        select(Employee.id, Employee.full_name, Employee.preferred_name).where(Employee.is_active == True)  # noqa: E712
+    ).all()
+    for emp_id, full_name, preferred_name in rows:
+        for candidate in (full_name, preferred_name):
+            if not candidate:
+                continue
+            ids = index.setdefault(candidate, [])
+            if emp_id not in ids:
+                ids.append(emp_id)
+    return index
+
+
+def _decide(ids: list[str], _query: str) -> PersonResolution | None:
+    """One matched id resolves; several is ambiguous; none defers to the
+    next tier (None)."""
+    unique = list(dict.fromkeys(ids))
+    if len(unique) == 1:
+        return PersonResolution(person_id=unique[0])
+    if len(unique) > 1:
+        return PersonResolution(candidates=tuple(unique))
+    return None
+
+
+def resolve_person(db: Session, name: str) -> PersonResolution:
+    """Resolve a plain name to exactly one active employee, or say why not.
+
+    Three tiers, tried in order — exact, case-insensitive, fuzzy — each over
+    both full_name and preferred_name. A tier that matches several distinct
+    people stops there and reports ambiguity rather than falling through to
+    a looser tier, since a looser tier can only ever add more candidates.
     """
     name = name.strip()
     if not name:
-        return None
+        return PersonResolution()
 
+    # Exact and case-insensitive stay indexed SQL lookups -- the common
+    # case (a name typed or clicked correctly) must not pay for loading
+    # every employee's names into memory. Only the fuzzy tier below needs
+    # the full in-process index.
     exact = db.execute(
-        select(Employee.id).where(Employee.full_name == name, Employee.is_active == True)
+        select(Employee.id).where(
+            or_(Employee.full_name == name, Employee.preferred_name == name),
+            Employee.is_active == True,  # noqa: E712
+        )
     ).scalars().all()
-    if len(exact) == 1:
-        return exact[0]
-    if len(exact) > 1:
-        return None
+    if (decided := _decide(list(exact), name)) is not None:
+        return decided
 
+    lowered = name.lower()
     ci = db.execute(
-        select(Employee.id).where(func.lower(Employee.full_name) == name.lower(), Employee.is_active == True)
+        select(Employee.id).where(
+            or_(func.lower(Employee.full_name) == lowered, func.lower(Employee.preferred_name) == lowered),
+            Employee.is_active == True,  # noqa: E712
+        )
     ).scalars().all()
-    if len(ci) == 1:
-        return ci[0]
-    if len(ci) > 1:
-        return None
+    if (decided := _decide(list(ci), name)) is not None:
+        return decided
 
-    active_names = db.execute(
-        select(Employee.id, Employee.full_name).where(Employee.is_active == True)
-    ).all()
-    by_name: dict[str, list[str]] = {}
-    for emp_id, full_name in active_names:
-        by_name.setdefault(full_name, []).append(emp_id)
+    index = _name_index(db)
+    scored = process.extract(
+        name, list(index.keys()), scorer=fuzz.WRatio,
+        score_cutoff=FUZZY_MATCH_THRESHOLD, limit=None,
+    )
+    if not scored:
+        return PersonResolution()
 
-    match = process.extractOne(name, by_name.keys(), scorer=fuzz.WRatio, score_cutoff=FUZZY_MATCH_THRESHOLD)
-    if match is None:
-        return None
-    matched_name, _score, _index = match
-    matched_ids = by_name[matched_name]
-    return matched_ids[0] if len(matched_ids) == 1 else None
+    # Rivals are judged per PERSON, not per matched string: one employee can
+    # appear twice (full_name and preferred_name both scoring) and that is
+    # not ambiguity, it is the same person matching two ways.
+    best_by_person: dict[str, float] = {}
+    for matched_name, score, _index in scored:
+        for emp_id in index[matched_name]:
+            if score > best_by_person.get(emp_id, -1):
+                best_by_person[emp_id] = score
+    top = max(best_by_person.values())
+    contenders = [emp_id for emp_id, score in best_by_person.items() if score >= top - AMBIGUITY_MARGIN]
+    return _decide(contenders, name) or PersonResolution()
+
+
+def resolve_person_name(db: Session, name: str) -> str | None:
+    """Back-compatible wrapper: the id, or None for both "no match" and
+    "too many matches". Callers that need to tell those apart — and every
+    caller that phrases an answer for a human should — use resolve_person()
+    directly.
+    """
+    return resolve_person(db, name).person_id
 
 
 def _org_unit_name(db: Session, org_unit_id: int) -> str:

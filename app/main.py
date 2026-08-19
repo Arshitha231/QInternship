@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,12 +37,16 @@ from app.db import engine, get_db
 from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
 from app.models import DocSubjectMatch, Employee, Office, OrgUnit, TrainingCourse
-from app.models.enums import CourseStatus, display_status
+from app.models.enums import CourseStatus, SkillCategory, SkillLevel, display_status
 from app.notifications import (
     NotifyDateMilestonesDenied, NotifyHrReviewsDenied, notifications_for, notify_date_milestones,
     notify_upcoming_hr_reviews,
 )
 from app.org_chart import get_org_chain as get_org_chain_service
+from app.own_skills import SkillAlreadyHeld, SkillCategoryMismatch, SkillNotHeld
+from app.own_skills import add_own_skill as add_own_skill_service
+from app.own_skills import remove_own_skill as remove_own_skill_service
+from app.own_skills import update_own_skill as update_own_skill_service
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
@@ -104,9 +108,12 @@ from app.schemas import (
     ResolveSubjectRequest,
     SubmitAuthorizationRecordRequest,
     SuggestedOfficialLinkOut,
+    AddOwnSkillRequest,
     UpdateBioRequest,
+    UpdateOwnSkillRequest,
     UpdateCommunityLinkRequest,
     UpdateEmployeeRequest,
+    UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
 )
 from app.tool_calling import answer as answer_service
@@ -131,7 +138,9 @@ from app.writes import request_deactivation as request_deactivation_service
 from app.writes import request_restriction as request_restriction_service
 from app.writes import request_subject_name
 from app.writes import set_project_description as set_project_description_service
+from app.writes import remove_project_history as remove_project_history_service
 from app.writes import update_employee as update_employee_service
+from app.writes import upsert_project_history as upsert_project_history_service
 
 
 @asynccontextmanager
@@ -329,6 +338,111 @@ def update_name_pronunciation_route(
     if person_id != user.id:
         raise HTTPException(status_code=403, detail="You can only edit your own profile")
     result = update_own_name_pronunciation_service(db, user, person_id, body.name_pronunciation.strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+# --- Self-service skills and languages -------------------------------------
+# Same identity gate as /bio and /pronunciation above, and for the same
+# reason: a skill somebody claims about themselves is theirs to state, and
+# app/own_skills.py stamps every write here `self`-sourced so a reader can
+# tell a self-claim from a verified one. Not routed through
+# app.permissions' EDITABLE table — see app/own_skills.py's docstring for
+# why identity, not role, is the right gate for an own-record write.
+#
+# One endpoint family covers both cards: a language is a skills row with
+# category=language (app/own_skills.py), so the Languages card posts
+# category="language" and everything else is identical.
+#
+# All three answer with the caller's full PersonDetail rather than the row
+# that changed — including DELETE, which is why it's a 200 with a body
+# instead of the 204 DELETE /people/{id}/projects/{project_id} returns. An
+# add doesn't always land in the card that submitted it (category belongs
+# to the skill), so the response has to be able to show where it went, and
+# the caller is looking at their own profile page anyway.
+
+
+def _require_self(person_id: str, user: AuthenticatedUser) -> None:
+    if person_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own profile")
+
+
+@app.post("/people/{person_id}/skills", status_code=201,
+          response_model=PersonDetail, response_model_exclude_unset=True)
+def add_own_skill_route(
+    person_id: str,
+    body: AddOwnSkillRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Add a skill or language to your own profile.
+
+    An unrecognised name creates it; a name matching an existing skill
+    case-insensitively (or as a known synonym) attaches to that one. 409 if
+    you already hold it — changing a level is PATCH, not a second add.
+    """
+    _require_self(person_id, user)
+    try:
+        result = add_own_skill_service(
+            db, user, person_id, body.skill.strip(),
+            SkillCategory(body.category), SkillLevel(body.level),
+        )
+    except SkillCategoryMismatch as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SkillAlreadyHeld as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have {exc.args[0]} on your profile — edit its level instead.",
+        ) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.patch("/people/{person_id}/skills", response_model=PersonDetail, response_model_exclude_unset=True)
+def update_own_skill_route(
+    person_id: str,
+    body: UpdateOwnSkillRequest,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Change the level of a skill or language already on your own profile.
+
+    The skill is named in the BODY, not the path: real skill names contain
+    slashes ("CI/CD", "Agile/Scrum"), and a percent-encoded slash is decoded
+    back into a path separator before routing ever sees it, so a
+    name-in-path endpoint would 404 on exactly those entries.
+    """
+    _require_self(person_id, user)
+    try:
+        result = update_own_skill_service(db, user, person_id, body.skill.strip(), SkillLevel(body.level))
+    except SkillNotHeld as exc:
+        raise HTTPException(status_code=404, detail=f"{exc.args[0]} isn't on your profile.") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return result
+
+
+@app.delete("/people/{person_id}/skills", response_model=PersonDetail, response_model_exclude_unset=True)
+def remove_own_skill_route(
+    person_id: str,
+    skill: str = Query(..., min_length=1, description="Name of the skill or language to remove."),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> PersonDetail:
+    """Remove a skill or language from your own profile.
+
+    Named in the query string for the same slash reason PATCH names it in
+    the body — a query value may legally contain "/" once decoded, a path
+    segment may not. Only your holding of the skill goes; the skill itself
+    stays for everyone else who has it.
+    """
+    _require_self(person_id, user)
+    try:
+        result = remove_own_skill_service(db, user, person_id, skill.strip())
+    except SkillNotHeld as exc:
+        raise HTTPException(status_code=404, detail=f"{exc.args[0]} isn't on your profile.") from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
@@ -676,6 +790,70 @@ def clear_project_description_route(
     except WriteTargetMissing as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     return {"project_id": project.id, "project_name": project.name, "project_desc": None}
+
+
+@app.put("/people/{person_id}/projects/{project_id}")
+def upsert_project_history_route(
+    person_id: str,
+    project_id: int,
+    body: UpsertProjectHistoryRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """IT, work mode: add or correct anyone's project history — except
+    their own (see app/writes.py's _refuse_own_record).
+
+    PUT rather than POST/PATCH because (person_id, project_id) fully
+    identifies the membership: the same call creates it or edits it, and
+    repeating it converges on the same row rather than stacking duplicates.
+    Only the keys actually supplied are written, so this is not a
+    replace-the-whole-row PUT — `{"end_date": null}` clears the end date,
+    omitting it leaves it alone.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    changes = body.model_dump(exclude_unset=True)
+    try:
+        membership = upsert_project_history_service(
+            db, user, person_id, project_id, changes, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Employee or project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "employee_id": membership.employee_id,
+        "project_id": membership.project_id,
+        "role": membership.role,
+        "contribution": membership.contribution,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
+
+
+@app.delete("/people/{person_id}/projects/{project_id}", status_code=204)
+def remove_project_history_route(
+    person_id: str,
+    project_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    """IT, work mode: remove anyone's project membership — except their own.
+
+    Removes the membership, not the project: the Project row and everyone
+    else staffed on it are untouched, same scoping reasoning as
+    DELETE /projects/{id}/description above.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        remove_project_history_service(db, user, person_id, project_id, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Project membership not found") from exc
+    return Response(status_code=204)
 
 
 @app.get("/people/{person_id}/org-chart", response_model=list[OrgChainNode])

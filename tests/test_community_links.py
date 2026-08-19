@@ -563,6 +563,22 @@ def _mk_contact(db_session, id_, full_name, **overrides) -> Employee:
     return emp
 
 
+
+def _personal_contacts(resp) -> list[str]:
+    """Contact ids from the owner's OWN additions only.
+
+    The graph always carries the seven resolved canonical roles now
+    (app/community_roles.py), derived from org data rather than stored rows,
+    so a whole-list assertion here would be testing role resolution rather
+    than the visibility rule these tests are about.
+    """
+    return [r["contact_employee_id"] for r in resp.json() if r["source"] == "personal"]
+
+
+def _role_labels(resp) -> list[str]:
+    return [r["role_label"] for r in resp.json()]
+
+
 async def test_link_to_a_deactivated_contact_is_omitted(client, db_session):
     owner = _mk_contact(db_session, "cl-vis-owner-1", "Auben Keeper")
     gone = _mk_contact(db_session, "cl-vis-gone", "Tobin Departed")
@@ -570,14 +586,14 @@ async def test_link_to_a_deactivated_contact_is_omitted(client, db_session):
              source=CommunityLinkSource.personal, role_label="expenses")
 
     before = await client.get("/community_links", headers=auth_headers("employee", owner.id))
-    assert [r["contact_employee_id"] for r in before.json()] == [gone.id]
+    assert _personal_contacts(before) == [gone.id]
 
     gone.is_active = False
     db_session.commit()
 
     after = await client.get("/community_links", headers=auth_headers("employee", owner.id))
     assert after.status_code == 200
-    assert after.json() == []
+    assert _personal_contacts(after) == []
 
 
 async def test_link_to_a_restricted_contact_is_omitted(client, db_session):
@@ -591,7 +607,7 @@ async def test_link_to_a_restricted_contact_is_omitted(client, db_session):
 
     resp = await client.get("/community_links", headers=auth_headers("employee", owner.id))
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert _personal_contacts(resp) == []
 
 
 async def test_the_row_survives_and_the_link_returns_when_the_contact_does(client, db_session):
@@ -605,13 +621,13 @@ async def test_the_row_survives_and_the_link_returns_when_the_contact_does(clien
     contact.is_active = False
     db_session.commit()
     gone = await client.get("/community_links", headers=auth_headers("employee", owner.id))
-    assert gone.json() == []
+    assert _personal_contacts(gone) == []
 
     contact.is_active = True
     db_session.commit()
 
     resp = await client.get("/community_links", headers=auth_headers("employee", owner.id))
-    rows = resp.json()
+    rows = [r for r in resp.json() if r["source"] == "personal"]
     assert [r["id"] for r in rows] == [link.id]
     assert rows[0]["role_label"] == "onboarding buddy"
     assert db_session.get(CommunityLink, link.id) is not None
@@ -628,14 +644,14 @@ async def test_hr_in_work_mode_still_sees_a_restricted_contact(client, db_sessio
 
     work = await client.get(
         "/community_links", params={"view_mode": "work"}, headers=auth_headers("hr", owner.id))
-    assert [r["contact_employee_id"] for r in work.json()] == [hidden.id]
+    assert _personal_contacts(work) == [hidden.id]
 
     # ...and loses it in employee mode, same as everywhere else. This is the
     # case a work-mode-only filter would have got wrong: the link list would
     # return a contact that GET /people/{id} in the same mode refuses.
     employee_mode = await client.get(
         "/community_links", params={"view_mode": "employee"}, headers=auth_headers("hr", owner.id))
-    assert employee_mode.json() == []
+    assert _personal_contacts(employee_mode) == []
 
 
 async def test_synthesized_manager_entry_drops_a_restricted_manager(client, db_session):
@@ -645,10 +661,10 @@ async def test_synthesized_manager_entry_drops_a_restricted_manager(client, db_s
     underling = _mk_contact(db_session, "cl-vis-underling", "Devan Downhill", manager_id=boss.id)
 
     before = await client.get("/community_links", headers=auth_headers("employee", underling.id))
-    assert [r["role_label"] for r in before.json()] == ["manager"]
+    assert "manager" in _role_labels(before)
 
     boss.availability_status = AvailabilityStatus.restricted
     db_session.commit()
 
     after = await client.get("/community_links", headers=auth_headers("employee", underling.id))
-    assert after.json() == []
+    assert "manager" not in _role_labels(after)

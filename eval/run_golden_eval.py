@@ -60,9 +60,12 @@ from app.tool_calling import (  # noqa: E402
     execute_tool_call,
 )
 
-from golden_set import ALL_QUESTIONS  # noqa: E402
+from golden_set import ALL_QUESTIONS, SEARCH_DEPENDENT_CATEGORIES  # noqa: E402
 
 RESULTS_PATH = Path(__file__).resolve().parent / "results.json"
+# Set by preflight when the index cannot be trusted for this run; read by
+# summarize() so the report says which pipeline the numbers describe.
+SEARCH_DISABLED_REASON: str | None = None
 CALL_DELAY_SECONDS = 8.0  # pacing between real LLM calls, see module docstring
 MAX_RETRIES = 5
 # The default plan class's declared step budget (app/chain_budgets.py) --
@@ -348,6 +351,87 @@ def preflight() -> None:
         print("golden eval: WARNING — Azure AI Search and/or embeddings unconfigured. "
               "find_people will fall back to the SQL path, so retrieval scores below "
               "measure a different pipeline than production runs.\n", flush=True)
+        return
+
+    _check_index_parity()
+
+
+# How much of a sample of the index has to exist in the evaluated database
+# before the two are considered to be describing the same population. Set
+# low deliberately: this is detecting "completely unrelated corpus", not
+# "slightly stale index", and a genuinely stale index (a few deactivations
+# not yet re-indexed) must not trip it.
+INDEX_PARITY_MIN_OVERLAP = 0.5
+INDEX_PARITY_SAMPLE = 100
+
+
+def _check_index_parity() -> None:
+    """Detect an index that is configured, healthy, and describing a
+    DIFFERENT population than the database being evaluated.
+
+    This is the failure the old preflight could not see. It checked whether
+    Search was configured; it never checked whether Search was configured
+    against the right data. eval/fixture.db is a pinned snapshot and the
+    shared employees-index tracks the deployed database, so as of
+    2026-08-18 the two share exactly zero ids out of 530 and 559 -- every
+    Search-ranked question returns documents whose ids resolve to nobody
+    locally, find_people falls through to its SQL branch, and the fuzzy-name
+    and description questions score 0.0. Seven tier-2 questions were failing
+    this way, which is most of the gap between tier 2's 0.687 and tier 1's
+    1.0. That is an environment artifact being reported as answer quality.
+
+    On detection: say so loudly, and take Search out of the run entirely, so
+    the numbers measure ONE coherent pipeline (SQL) rather than a hybrid
+    whose ranking arm is silently dead. Questions that genuinely need
+    Search are then reported as unmeasurable rather than as failures --
+    see summarize().
+    """
+    global SEARCH_DISABLED_REASON
+    db = SessionLocal()
+    try:
+        sample = sc.search_people(name=None, top=INDEX_PARITY_SAMPLE)
+        if not sample:
+            print("golden eval: WARNING — the search index returned no documents at all. "
+                  "Retrieval scores below measure the SQL path only.\n", flush=True)
+            SEARCH_DISABLED_REASON = "index empty or unreachable"
+            _disable_search()
+            return
+        from sqlalchemy import select
+
+        from app.models import Employee
+        present = db.execute(
+            select(Employee.id).where(Employee.id.in_(sample))
+        ).scalars().all()
+        overlap = len(present) / len(sample)
+        if overlap < INDEX_PARITY_MIN_OVERLAP:
+            print(
+                f"golden eval: WARNING — the search index and this database describe different\n"
+                f"  populations: {len(present)} of {len(sample)} sampled index documents exist here.\n"
+                f"  The index tracks the DEPLOYED database; eval/fixture.db is a pinned snapshot.\n"
+                f"  Search is being disabled for this run so the scores measure one coherent\n"
+                f"  pipeline instead of a hybrid whose ranking arm silently returns nothing.\n"
+                f"  Questions that require ranked retrieval are reported as UNMEASURABLE below,\n"
+                f"  not as failures — scoring them here would measure the environment, not the\n"
+                f"  system.\n", flush=True)
+            SEARCH_DISABLED_REASON = (
+                f"index/database mismatch ({len(present)}/{len(sample)} sampled ids present)")
+            _disable_search()
+    finally:
+        db.close()
+
+
+def _disable_search() -> None:
+    """Take the ranking arm out of the run at its single entry point.
+
+    find_people already treats a None from search_people as "Search is
+    unavailable, use SQL" (app/people.py) -- the same documented degradation
+    path an unreachable Search takes -- so this needs no new branch anywhere
+    in the application, and nothing about what is being measured becomes
+    special-cased for the eval.
+    """
+    import app.people
+
+    app.people.search_people = lambda *_a, **_k: None
 
 
 def run() -> list[dict]:
@@ -426,14 +510,23 @@ def run() -> list[dict]:
 
         recall, precision = score(relevant, returned_list)
         k = max(len(relevant), 1)
+        # Recorded, never silently dropped: the numbers still appear in
+        # results.json so a run can be inspected, they are simply kept out
+        # of the averages summarize() reports.
+        unmeasurable = bool(
+            SEARCH_DISABLED_REASON
+            and _needed_ranked_retrieval(q["category"], record["tool_call"], record["arguments"]))
         record.update(
             relevant_count=len(relevant), returned_count=len(returned_list),
             topk_returned=returned_list[:k], exec_error=exec_error,
             recall_at_k=recall, precision_at_k=precision,
+            unmeasurable=unmeasurable,
+            unmeasurable_reason=SEARCH_DISABLED_REASON if unmeasurable else None,
         )
         results.append(record)
         RESULTS_PATH.write_text(json.dumps(results, indent=2, default=str))
-        print(f"    -> {record['tool_call']}({record['arguments']}) recall@{k}={recall:.2f} precision@{k}={precision:.2f}",
+        suffix = "  [UNMEASURABLE — needs a matching search index]" if unmeasurable else ""
+        print(f"    -> {record['tool_call']}({record['arguments']}) recall@{k}={recall:.2f} precision@{k}={precision:.2f}{suffix}",
               flush=True)
         time.sleep(CALL_DELAY_SECONDS)
 
@@ -441,18 +534,59 @@ def run() -> list[dict]:
     return results
 
 
+def _needed_ranked_retrieval(category: str, tool_call: str | None, arguments: dict | None) -> bool:
+    """Did THIS call actually depend on the ranking arm?
+
+    Category alone is too blunt. t2-18 ("someone who can help with
+    Kubernetes and works in Infrastructure") is phrased semantically and
+    sits in a search-dependent category, but the model routed it to
+    skill + org_unit filters -- which SQL answers exactly, and does. Excusing
+    it whenever the index is unavailable would hide a real regression if that
+    routing ever broke.
+
+    So the category is a guard, and the emitted call is the decision:
+
+      * fuzzy_name -- a misspelling ("Preeya Sharma") has nothing but fuzzy
+        matching to reach the right person. The SQL fallback is a literal
+        substring match by design, so this can never resolve without Search.
+      * query= -- free text is only meaningful to something that ranks it.
+        A structured filter combination is not, however it was phrased.
+    """
+    if category not in SEARCH_DEPENDENT_CATEGORIES:
+        return False
+    if category == "fuzzy_name":
+        return True
+    return tool_call == "find_people" and bool((arguments or {}).get("query"))
+
+
 def summarize(results: list[dict]) -> None:
     print("\n" + "=" * 72)
     print("SUMMARY")
     print("=" * 72)
 
+    if SEARCH_DISABLED_REASON:
+        print(f"\nPIPELINE: SQL only — search disabled for this run ({SEARCH_DISABLED_REASON}).")
+        print("Scores below describe the SQL retrieval path, NOT the hybrid pipeline")
+        print("production runs. Questions that require ranked retrieval are excluded")
+        print("from the averages and listed separately at the end.")
+
     for tier in (1, 2, 3):
-        tier_results = [r for r in results if r["tier"] == tier and "recall_at_k" in r]
+        scored = [r for r in results if r["tier"] == tier and "recall_at_k" in r]
+        if not scored:
+            continue
+        # Unmeasurable questions are excluded from the averages rather than
+        # counted as zeros. Averaging them in reports the environment as
+        # though it were answer quality -- the exact mistake that made tier
+        # 2 read as a retrieval problem.
+        tier_results = [r for r in scored if not r.get("unmeasurable")]
+        skipped = len(scored) - len(tier_results)
         if not tier_results:
+            print(f"\nTier {tier}  (n=0 of {len(scored)} measurable — all excluded)")
             continue
         avg_recall = sum(r["recall_at_k"] for r in tier_results) / len(tier_results)
         avg_precision = sum(r["precision_at_k"] for r in tier_results) / len(tier_results)
-        print(f"\nTier {tier}  (n={len(tier_results)})")
+        excluded = f", {skipped} excluded as unmeasurable" if skipped else ""
+        print(f"\nTier {tier}  (n={len(tier_results)}{excluded})")
         print(f"  recall@k:    {avg_recall:.3f}")
         print(f"  precision@k: {avg_precision:.3f}")
         weak = sorted(tier_results, key=lambda r: r["recall_at_k"] + r["precision_at_k"])[:5]
@@ -460,6 +594,15 @@ def summarize(results: list[dict]) -> None:
         for r in weak:
             print(f"    [{r['id']}] recall={r['recall_at_k']:.2f} precision={r['precision_at_k']:.2f}"
                   f"  \"{r['text']}\"  (tool={r.get('tool_call')})")
+
+    unmeasurable = [r for r in results if r.get("unmeasurable")]
+    if unmeasurable:
+        print(f"\nUNMEASURABLE in this environment  (n={len(unmeasurable)})")
+        print("  These need a search index describing the same people as the evaluated")
+        print("  database. They are not failures and are not counted above; re-run against")
+        print("  an environment where the index matches to get a real number for them.")
+        for r in unmeasurable:
+            print(f"    [{r['id']}] {r['category']}  \"{r['text']}\"")
 
     # Side-by-side single-call vs chained measurement (this feature's own
     # verification requirement): every question records `steps` regardless

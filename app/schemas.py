@@ -37,6 +37,12 @@ class SkillOut(BaseModel):
 
 
 class ProjectHistoryItem(BaseModel):
+    # Which EmployeeProject row this is, so a caller who may EDIT project
+    # history can address it (PUT/DELETE /people/{id}/projects/{project_id}).
+    # Not gated: the project's NAME is already here for anyone who can see
+    # project_history at all, and an opaque row id discloses strictly less
+    # than the name it sits next to.
+    project_id: int
     project_name: str
     project_type: str
     role: str
@@ -221,6 +227,57 @@ class AmbiguousProjectMatch(BaseModel):
     matches: list[str]
 
 
+class PersonChoice(BaseModel):
+    """One disambiguation candidate — enough to tell two people apart, and
+    nothing more. Deliberately not a PersonSummary: this is a "which one did
+    you mean" prompt, not a search result, and it must not become a way to
+    read attributes about people the caller never actually asked for.
+    Populated only from fields every role can already see.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+
+
+class AmbiguousPersonMatch(BaseModel):
+    """A name matched several people and no single one is the obvious
+    answer — returned instead of a chain/profile, exactly like
+    AmbiguousProjectMatch above does for projects.
+
+    This is the type that stops the silent-wrong-person failure: "Anderson"
+    matches five employees in this directory and "Mike" matches three
+    preferred names, and the resolver used to pick whichever rapidfuzz
+    ranked first. Naming the candidates costs one extra turn and is the only
+    honest answer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    matches: list[PersonChoice]
+
+
+class UnknownPerson(BaseModel):
+    """No active employee matched the name at all — distinct from
+    AmbiguousPersonMatch (too many matched) and from an empty chain (the
+    person exists, but has nobody above/below them, or that direction is
+    restricted for this caller).
+
+    Those three were previously indistinguishable: every one of them
+    produced "Nobody found above them in the org chart (or that direction is
+    restricted for your role)", which is a confidently wrong answer for the
+    first two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+
+
 class MentorCandidate(BaseModel):
     """One find_mentor result. `reason` is always populated — the system
     finds people who match requirements, it never claims to rank the "best"
@@ -360,6 +417,64 @@ class UpdateNamePronunciationRequest(BaseModel):
     # UpdateBioRequest: a full-replace PATCH, so an empty string is how the
     # owner clears a respelling they no longer want on file.
     name_pronunciation: str = Field(max_length=200)
+
+
+# --- Self-service skills and languages (app/own_skills.py) -----------------
+# One table behind both, split by category at render time, so these two
+# request models serve the Skills card and the Languages card alike. Skill
+# names are matched case-insensitively and through synonyms server-side, so
+# the client never has to send a canonical spelling.
+
+SkillLevelName = Literal["Learning", "Working", "Expert"]
+
+
+class AddOwnSkillRequest(BaseModel):
+    # 150 to match Skill.name's column width — an unrecognised name creates
+    # the skills row, so this is the one request that can actually reach it.
+    skill: str = Field(min_length=1, max_length=150)
+    # Which card this came from, and therefore where a BRAND-NEW skill gets
+    # filed. Ignored for a name that already exists — category belongs to
+    # the skill, not to one person's holding of it — except that crossing
+    # the Skills/Languages split is refused outright rather than silently
+    # re-filed. See app/own_skills.py's SkillCategoryMismatch.
+    category: Literal["technical", "domain", "language"] = "technical"
+    level: SkillLevelName
+
+
+class UpdateOwnSkillRequest(BaseModel):
+    """Re-level a skill already held. Level is the only editable part: the
+    name identifies the row, and category isn't a property of one person's
+    holding. Correcting a name is a remove plus an add."""
+
+    skill: str = Field(min_length=1, max_length=150)
+    level: SkillLevelName
+
+
+class UpsertProjectHistoryRequest(BaseModel):
+    """IT's direct edit of one person's membership of one project.
+
+    Same wire contract as UpdateEmployeeRequest: every field optional, the
+    route sends only the keys actually supplied, and an explicit null
+    clears. `{"end_date": null}` is how a project becomes current again,
+    which must stay distinguishable from omitting end_date entirely.
+
+    Creating a membership through this same model needs role and
+    start_date, since both are NOT NULL on EmployeeProject -- that is
+    enforced in app/writes.py rather than here, because whether this call
+    creates or patches depends on whether the row already exists, which the
+    wire shape cannot know.
+
+    employee_id and project_id are deliberately absent: they identify the
+    row (they are in the path), and moving a membership between people or
+    projects is a delete plus a create, not a field edit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str | None = Field(default=None, max_length=150)
+    contribution: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
 
 
 class UpdateEmployeeRequest(BaseModel):
@@ -705,6 +820,21 @@ class CommunityLinkOut(BaseModel):
     department_id: int | None = None
     is_mentor_link: bool
     created_at: datetime
+
+    # --- resolved canonical roles (app/community_roles.py) ---------------
+    # One of CANONICAL_ROLES for a resolved role; null for a personal link,
+    # whose label is whatever the owner typed. The frontend keys its caption
+    # and icon off this rather than parsing role_label.
+    role_key: str | None = None
+    contact_office_name: str | None = None
+    contact_office_city: str | None = None
+    # Whole kilometres from the owner's office to the contact's, and whether
+    # that means this role was answered from another location because the
+    # owner's own office has nobody in it. Both null/false for roles that
+    # don't widen geographically (mentor, technical expert, project contact)
+    # and for personal links.
+    distance_km: int | None = None
+    is_remote_fallback: bool = False
 
 
 class CreateCommunityLinkRequest(BaseModel):
