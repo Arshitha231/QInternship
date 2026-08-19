@@ -101,6 +101,7 @@ from app.schemas import (
     EmployeeContinuityDetail,
     EngagementExposure,
     FinalizeDocumentRequest,
+    LoginRequest,
     HrReviewQueueItem,
     NotificationOut,
     OfficeOut,
@@ -222,7 +223,22 @@ def health() -> dict:
 @app.get("/auth/whoami", response_model=AuthenticatedUser)
 def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
     return user
+from pydantic import BaseModel
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/auth/login")
+def login_route(body: LoginRequest, db: Session = Depends(get_db)):
+    """Demo login endpoint for local testing."""
+    try:
+        return demo_login(db, body.email, body.password)
+    except DemoLoginDenied as exc:
+        raise HTTPException(status_code=401, detail="Invalid credentials") from exc
+    except DemoLoginDisabled as exc:
+        # In production (Entra auth), this route pretends it doesn't exist at all.
+        raise HTTPException(status_code=404, detail="Not Found") from exc
 
 @app.get("/people", response_model=list[PersonSummary], response_model_exclude_unset=True)
 def list_people(
