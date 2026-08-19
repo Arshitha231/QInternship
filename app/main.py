@@ -149,12 +149,7 @@ reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15000)
 provider = MeterProvider(metric_readers=[reader])
 metrics.set_meter_provider(provider)
 
-app = FastAPI(
-    title="Employee Directory API",
-    description="Internal employee directory with permission-filtered natural-language search.",
-    version="0.1.0",
-    lifespan=_lifespan,
-)
+
 
 # --- Instrument the App ---
 FastAPIInstrumentor.instrument_app(app)
@@ -168,8 +163,13 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     assert_registry_covers_schema(engine)
     yield
 
-
-
+app = FastAPI(
+    title="Employee Directory API",
+    description="Internal employee directory with permission-filtered natural-language search.",
+    version="0.1.0",
+    lifespan=_lifespan,
+)
+FastAPIInstrumentor.instrument_app(app)
 # Local frontend dev server only (Vite default port) — the API has no
 # cookie-based session to protect against CSRF here, auth is a header the
 # browser never attaches automatically.
