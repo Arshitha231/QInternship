@@ -3,7 +3,9 @@ most and get their own tests rather than being implied by the others —
 zero-token for direct mode, and citations never exceeding what the caller
 is actually permitted to see.
 """
+from app.schemas import ProblemExpert
 from app.tool_calling import AssistantTurn, ResolvedToolCall
+from app.unified_search import _TOOL_REASONS, _phrase_experts
 from tests.conftest import auth_headers
 
 
@@ -421,3 +423,83 @@ async def test_coordination_across_values_takes_the_assisted_path(client, monkey
     assert len(body["results"]) > 0
     assert "Found" in body["overview"]["answer"]
     assert body["overview"]["answer"] != "Done."
+
+
+# ---------------------------------------------------------------------------
+# find_experts phrasing. "Who can help?" is the one question whose useful
+# answer is not just a name: it is who hit the same thing, and whether they
+# can actually be asked right now. Only 3 of 545 seeded employees are away,
+# so the branches that matter most are exercised directly here.
+# ---------------------------------------------------------------------------
+
+def _expert(name, availability, *, project_id=1, project="Kafka Rebuild",
+            role="Lead", excerpt="consumer rebalancing stalled under load",
+            retrieval="semantic+keyword"):
+    return ProblemExpert(
+        id=name, full_name=name, job_title="Engineer", org_unit="Platform",
+        availability_status=availability, project_id=project_id, project_name=project,
+        role=role, current=True, reason=f"works on {project} as {role}",
+        retrieval=retrieval, excerpt=excerpt,
+    )
+
+
+def test_available_expert_is_said_to_be_available():
+    answer = _phrase_experts([_expert("Priya Nair", "available")])
+    assert "Priya Nair" in answer
+    assert "is available" in answer
+
+
+def test_an_away_top_match_offers_someone_reachable_instead():
+    """The old phrasing named the top match and stopped, so it would point
+    confidently at someone who is away without ever saying so."""
+    answer = _phrase_experts([_expert("Dev Menon", "away"), _expert("Sara Cohen", "available")])
+    assert "Dev Menon" in answer and "away" in answer
+    # The ranking stays visible: the closest match is still named first,
+    # not silently reshuffled behind whoever happens to be free.
+    assert answer.index("Dev Menon") < answer.index("Sara Cohen")
+    assert "Sara Cohen also worked on it and is available." in answer
+
+
+def test_nobody_available_says_so_instead_of_implying_otherwise():
+    answer = _phrase_experts([_expert("Dev Menon", "away"), _expert("Sara Cohen", "away")])
+    assert "the closest match" in answer
+    assert "isn't free either" in answer
+    # Must not then contradict itself by advertising the very people it
+    # just said were unreachable.
+    assert "worked on related projects" not in answer
+
+
+def test_a_single_away_expert_says_there_is_nobody_else():
+    answer = _phrase_experts([_expert("Dev Menon", "away")])
+    assert "nobody else in our project history has worked on this" in answer
+
+
+def test_others_count_excludes_everyone_already_named():
+    experts = [_expert("Dev Menon", "away"), _expert("Sara Cohen", "available")] + [
+        _expert(f"P{i}", "available") for i in range(3)
+    ]
+    answer = _phrase_experts(experts)
+    # 5 experts, 2 named in the sentence -> 3 others, not 4.
+    assert "3 others worked on related projects." in answer
+
+
+def test_a_missing_excerpt_is_reported_as_a_looser_match():
+    """The excerpt's absence is meaningful: nothing in the project write-up
+    overlapped the problem, so the link is thinner than the ranking says."""
+    answer = _phrase_experts([_expert("Dev Menon", "available", excerpt=None)])
+    assert "looser match" in answer
+
+
+def test_keyword_only_retrieval_is_never_phrased_as_a_semantic_match():
+    answer = _phrase_experts([_expert("Dev Menon", "available", retrieval="keyword")])
+    assert "(keyword match only)" in answer
+
+
+def test_trace_reasons_are_written_for_people_not_lifted_from_tool_schemas():
+    """search_people's schema description is ~400 characters before its
+    first period, so deriving the trace line from it rendered a paragraph of
+    spec prose about op=in and filter_groups -- a query dump, in the one
+    place meant to explain in plain language."""
+    for tool, reason in _TOOL_REASONS.items():
+        assert len(reason) < 120, f"{tool} reason is too long to read in a trace line"
+        assert "op=" not in reason and "filter_groups" not in reason

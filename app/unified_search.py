@@ -185,9 +185,36 @@ def _has_confident_route(db: Session, text: str) -> bool:
 
 # Short, static, per-tool descriptions of *why* a tool was selected. Not the
 # model's own reasoning — nothing in this stack asks the model to explain
-# itself, which would cost a second call — just a fixed, honest description
-# of what each tool structurally does, taken from its own schema.
-_TOOL_REASONS = {t["function"]["name"]: t["function"]["description"].split(".")[0] + "." for t in TOOLS}
+# itself, which would cost a second call — just a fixed, honest sentence
+# about what each tool did.
+#
+# Written out rather than derived from the tool schemas. These used to be
+# `description.split(".")[0]`, which assumed every schema description opens
+# with one short sentence. search_people's does not: its first period is
+# ~400 characters in, so the trace rendered a paragraph of spec prose about
+# `op=in`, `filter_groups` and `job_title contains 'Architect'` — which
+# reads like a query dump, because that is what it is. A schema description
+# is written to steer a model; a trace line is written for a person, and
+# the two are not the same text.
+_TOOL_REASONS = {
+    "find_people": "Searched the directory for people matching that.",
+    "search_people": "Filtered the directory on the specific attributes asked for.",
+    "get_person": "Looked up that person's profile.",
+    "get_org_chain": "Walked the reporting chain.",
+    "find_project_owner": "Looked up who owns that project.",
+    "find_mentor": "Ranked people who could mentor you in that skill.",
+    "skill_gap": "Checked how well those skills are covered.",
+    "skill_scarcity": "Checked how rare that skill is across the company.",
+    "find_experts": "Matched the problem against what our projects actually did, "
+                    "then found the people who worked on them.",
+}
+
+# Every tool must have one -- a tool added without a reason would otherwise
+# silently fall back to the generic string and nobody would notice.
+assert set(_TOOL_REASONS) == {t["function"]["name"] for t in TOOLS}, (
+    "every tool needs a trace reason: "
+    f"{set(_TOOL_REASONS) ^ {t['function']['name'] for t in TOOLS}}"
+)
 
 
 def unified_search(
@@ -404,6 +431,84 @@ def _phrase_ambiguous_person(match: AmbiguousPersonMatch) -> str:
             f"{'; '.join(shown)}{more}. Which one did you mean?")
 
 
+def _phrase_experts(experts: list[ProblemExpert]) -> str:
+    """The one place in this module where a longer explanation earns its
+    keep. Every other tool answers a question with a fact ("X reports to
+    Y"); this one answers "I'm stuck, who can help?", where the useful reply
+    is who hit the same thing, what happened, and whether they can actually
+    be asked right now.
+
+    Availability is the half that was missing. The old phrasing named the
+    top match and stopped, so it would confidently point at someone who is
+    away without saying so -- the single most useless way to answer this
+    question. It now leads with someone reachable when there is one, and
+    says so plainly when there is not.
+
+    No pronouns anywhere: the directory does not record them, and this
+    sentence names real colleagues.
+    """
+    top = experts[0]
+    available = [e for e in experts if e.availability_status == "available"]
+    # Names the retrieval that actually ran: a keyword-only answer (the
+    # project corpus not embedded yet) is never phrased as a semantic match.
+    qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
+
+    named = 1
+    if top.availability_status == "available":
+        parts = [f"{top.full_name} {top.reason}, and is available{qualifier}."]
+    elif available:
+        # The closest match can't be reached, but somebody who worked on the
+        # same thing can -- name both, in that order, so the ranking stays
+        # visible rather than silently reshuffled by availability.
+        alt = available[0]
+        named = 2
+        alt_clause = (f"{alt.full_name} also worked on it and is available."
+                      if alt.project_id == top.project_id
+                      else f"{alt.full_name} {alt.reason}, and is available.")
+        parts = [f"{top.full_name} {top.reason}, but is {top.availability_status}{qualifier}.", alt_clause]
+    else:
+        # Nobody is reachable. The count of everyone else is folded into
+        # this clause rather than appended after it -- "nobody else is free"
+        # followed by "and 1 other worked on related projects" reads as a
+        # contradiction even though both are true.
+        named = len(experts)
+        if len(experts) == 1:
+            rest = "nobody else in our project history has worked on this"
+        elif len(experts) == 2:
+            rest = "the one other person who worked on it isn't free either"
+        else:
+            rest = f"none of the {len(experts) - 1} others who worked on it are free either"
+        parts = [f"{top.full_name} {top.reason} — the closest match, but is "
+                 f"{top.availability_status}, and {rest}{qualifier}."]
+
+    # Counted from everyone NOT already named, so this never re-counts the
+    # person just offered as the reachable alternative.
+    remaining = len(experts) - named
+    if remaining > 0:
+        parts.append(f"{remaining} other{'s' if remaining != 1 else ''} worked on related projects.")
+
+    # Last, so the verbatim quotation ends the answer -- an excerpt is a
+    # sentence lifted whole from a project description and may or may not
+    # carry its own final punctuation, which makes it awkward to place
+    # anywhere a following sentence has to butt up against it.
+    if top.excerpt:
+        parts.append(f'That project hit: "{top.excerpt}"')
+    else:
+        parts.append("Nothing in that project's write-up directly mentions what you described, "
+                     "so this is a looser match.")
+
+    return " ".join(parts)
+
+    # Lifted verbatim from the project's own description (see
+    # app/project_search.py's _project_excerpts) -- appended, never blended
+    # into the sentence above, so it stays visibly a quotation rather than
+    # something this function composed. Its ABSENCE is meaningful too:
+    # nothing in that project's write-up overlapped the problem, so the link
+    # is thinner than the ranking alone suggests, and saying so beats
+    # asserting a match at full confidence.
+
+
+
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
     """Builds the overview's prose server-side from the already-filtered
     result — the same job app/../frontend's old client-side phraseAnswer()
@@ -511,20 +616,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         experts = result or []
         if not experts:
             return "Nothing in our project history matches that problem."
-        top = experts[0]
-        # Says WHY, from the assignment record, and names the retrieval that
-        # actually ran. A keyword-only answer (the corpus not embedded yet)
-        # is never phrased as if it were a semantic match.
-        qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
-        others = f", and {len(experts) - 1} other{'s' if len(experts) > 2 else ''}" if len(experts) > 1 else ""
-        sentence = f"{top.full_name} {top.reason}{others}{qualifier}."
-        # top.excerpt, when present, is lifted verbatim from the project's
-        # own description (app/project_search.py's _project_excerpts) --
-        # appended, never blended into the sentence above, so it stays
-        # visibly a quotation rather than something this function composed.
-        if top.excerpt:
-            sentence += f' Relevant: "{top.excerpt}"'
-        return sentence
+        return _phrase_experts(experts)
 
     if tool_name == "skill_gap":
         items = result or []
