@@ -106,6 +106,9 @@ class Employee(Base):
 
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    
+    # --- PHASE 4: LINKEDIN LEAD INTEGRATION ---
+    linkedin_profile: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Public professional profile URL. INTERNAL sensitivity (see
     # app/registry.py): a LinkedIn page is already public, so this is no
