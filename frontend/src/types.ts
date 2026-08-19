@@ -173,7 +173,10 @@ export interface OrgChainNode {
 // Mirrors app/unified_search.py's response shape exactly (GET /search).
 // The frontend never classifies a query itself — `mode` is the backend's
 // deterministic decision, `overview` is only ever present when
-// mode === "assisted".
+// mode === "assisted". `note`, conversely, is direct-mode-only: plain text
+// for a case like the skill-miss broadening fallback, which has something
+// to explain but made no model call, so it must never be rendered as an
+// AIOverview (no Sparkles/"AI Overview" framing, no reasoning trace).
 export interface TraceStep {
   tool: string;
   reason: string;
@@ -191,6 +194,7 @@ export interface UnifiedSearchResponse {
   mode: "direct" | "assisted";
   results: PersonSummary[];
   overview?: AIOverview;
+  note?: string;
 }
 
 export type Role = "employee" | "manager" | "hr" | "it";

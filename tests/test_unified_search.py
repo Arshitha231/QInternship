@@ -235,11 +235,13 @@ async def test_named_third_party_possessive_manager_query_uses_find_people_by_na
 # ---------------------------------------------------------------------------
 # Skill-miss escalation: a filter-style skill query that misses exactly
 # still stays honest and zero-chat-model-cost — it broadens via
-# find_people's own semantic search, not a second AI system, and is
-# labeled assisted so the UI shows it was broadened.
+# find_people's own semantic search, not a second AI system. mode stays
+# "direct" (no overview/trace) because no model call happened; the
+# broadening explanation surfaces as a plain `note` instead, so the
+# frontend never shows AI framing for something the AI had no part in.
 # ---------------------------------------------------------------------------
 
-async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkeypatch):
+async def test_skill_miss_broadens_without_the_model_or_ai_framing(client, monkeypatch):
     monkeypatch.setattr(
         "app.tool_calling._get_openai_client",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("chat model must not be called for a skill miss")),
@@ -249,8 +251,9 @@ async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkey
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mode"] == "assisted"
-    assert body["overview"]["trace"][0]["tool"] == "find_people"
+    assert body["mode"] == "direct"
+    assert body.get("overview") is None
+    assert body["note"]
 
 
 async def test_unique_field_miss_stays_direct_with_no_escalation(client):

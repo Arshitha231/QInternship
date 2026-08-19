@@ -111,18 +111,18 @@ def unified_search(
     # finding (see execute_with_fallback), never a second, separate
     # AI system.
     if not results and clean_filters.get("skill"):
-        # "direct", not "deterministic" -- this bypasses resolve_intent()'s
-        # router entirely (it's GET /search's own filter-miss escalation,
-        # never touches the model), so it shouldn't read as the same thing
-        # app.tool_calling._deterministic_resolve() means by that label.
+        # mode stays "direct" here, not "assisted" -- this bypasses
+        # resolve_intent()'s router entirely (it's GET /search's own
+        # filter-miss escalation, never touches the model) and must not
+        # render as an AI Overview: no model call happened, so there's no
+        # AI reasoning to show a trace of. raw["message"] (built by
+        # _finish_with_broadening) becomes a plain `note` instead of an
+        # `overview.answer`, which is the one field the frontend is allowed
+        # to show without the Sparkles/"AI Overview" framing.
         tool_call = ResolvedToolCall(name="find_people", arguments=clean_filters, routed_via="direct")
-        started = time.monotonic()
         raw = execute_with_fallback(db, caller, tool_call, f"(direct query, skill miss) {clean_filters['skill']}",
                                     view_mode)
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        return _build_assisted(db, caller, raw, elapsed_ms,
-                               "No exact skill match — broadened to a semantic search across employee profiles.",
-                               view_mode)
+        return {"mode": "direct", "results": raw["result"] or [], "note": raw["message"]}
 
     return {"mode": "direct", "results": results}
 
