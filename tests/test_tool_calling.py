@@ -7,6 +7,8 @@ import json
 import time
 from types import SimpleNamespace
 
+from openai import OpenAIError
+
 import app.tool_calling as tool_calling
 from app.auth import AuthenticatedUser
 from app.chain_budgets import CEILING, DEFAULT_PLAN_CLASS, PLAN_CLASS_BUDGETS, ChainBudget
@@ -1105,6 +1107,80 @@ def test_the_real_refusal_still_passes_through_unchanged(monkeypatch):
     turn = tool_calling._real_resolve("what's the weather")
     assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
     assert turn.off_contract_text is None
+
+
+# ---------------------------------------------------------------------------
+# phrase_answer() -- the second, narrowly-scoped call that phrases the
+# overview's answer from a result execute_tool_call() already produced.
+# Unlike _real_resolve's own free text (never rendered, see above), this
+# call's output IS the answer -- so what matters here is that it only ever
+# runs with a real model configured, degrades to None (never raises) on
+# failure, and is handed nothing beyond the already-permission-filtered
+# result -- never a second, less-filtered read.
+# ---------------------------------------------------------------------------
+
+def test_phrase_answer_is_never_called_without_a_real_model_configured():
+    # _mode() defaults to "mock" in tests (conftest clears CHAT_ENDPOINT/
+    # CHAT_KEY) -- no monkeypatch needed to prove the no-model case.
+    assert tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None) is None
+
+
+def test_phrase_answer_grounds_its_prompt_in_only_the_already_filtered_result(monkeypatch):
+    from app.schemas import PersonSummary
+
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    summary = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    seen_calls = []
+
+    def fake_create(**kwargs):
+        seen_calls.append(kwargs)
+        return _fake_content_response("Riley Report is a Software Engineer in Engineering.")
+
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))))
+
+    text = tool_calling.phrase_answer(
+        "who is Riley Report", "find_people", {"name": "Riley Report"}, [summary])
+
+    assert text == "Riley Report is a Software Engineer in Engineering."
+    assert len(seen_calls) == 1
+    # No tools offered on this call -- it phrases a sentence, it never picks
+    # a function the way _real_resolve's routing call does.
+    assert "tools" not in seen_calls[0]
+    # The user turn carries nothing but the question and the result this
+    # function was handed -- never a second query against the database, and
+    # never more than that one already-filtered PersonSummary.
+    user_turn = next(m["content"] for m in seen_calls[0]["messages"] if m["role"] == "user")
+    assert json.loads(user_turn.split("JSON:\n", 1)[1]) == {
+        "tool": "find_people", "arguments": {"name": "Riley Report"},
+        "result": [summary.model_dump(mode="json")],
+    }
+
+
+def test_phrase_answer_degrades_to_none_on_a_model_failure(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_create(**_kwargs):
+        raise OpenAIError("boom")
+
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))))
+
+    text = tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None)
+    assert text is None
+
+
+def test_phrase_answer_treats_blank_model_output_the_same_as_no_model(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: _content_client("   "))
+
+    text = tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None)
+    assert text is None
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,7 @@ from app.tool_calling import (
     describes_a_problem,
     _deterministic_resolve,
     names_a_real_person,
+    phrase_answer,
     ResolvedToolCall,
     execute_chain,
     execute_with_fallback,
@@ -339,17 +340,27 @@ def _assisted(
         raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
-    return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
+    return _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
 
 
 def _build_assisted(
     db: Session, caller: AuthenticatedUser, raw: dict, elapsed_ms: int, reason: str,
-    view_mode: ViewMode = "work",
+    text: str, view_mode: ViewMode = "work",
 ) -> dict:
     tool_name = raw["tool_call"]
     result = raw["result"]
     results, citations = _people_and_citations(db, caller, tool_name, result, view_mode)
-    answer_text = raw["message"] or _phrase(tool_name, raw["arguments"] or {}, result)
+    # raw["message"] (disambiguation prompts, broadening explanations) is a
+    # specific procedural message the model has no way to reconstruct from
+    # the result alone -- kept verbatim. Otherwise, prefer a real model
+    # phrasing of the already-permission-filtered result (see phrase_answer's
+    # docstring for why that's safe); _phrase()'s template is only the
+    # fallback for when no real model is configured or the call fails.
+    answer_text = (
+        raw["message"]
+        or phrase_answer(text, tool_name, raw["arguments"] or {}, result)
+        or _phrase(tool_name, raw["arguments"] or {}, result)
+    )
     return {
         "mode": "assisted",
         "results": results,
@@ -690,10 +701,13 @@ def _phrase_people_matches(people: list[PersonSummary]) -> str:
 
 
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
-    """Builds the overview's prose server-side from the already-filtered
-    result — the same job app/../frontend's old client-side phraseAnswer()
-    did, moved here because the frontend is meant to be a pure renderer now.
-    Never invents anything the tool didn't actually return.
+    """The deterministic fallback template for the overview's prose, used
+    when phrase_answer() (app.tool_calling) has no real model to ask or its
+    call fails -- mock mode, and any real-mode degradation, both need an
+    answer regardless. Never invents anything the tool didn't actually
+    return, same discipline the real model is prompted to follow in
+    phrase_answer's system prompt, so a request answers identically in
+    substance whichever of the two actually wrote the sentence.
     """
     if tool_name == "search_people":
         # Was falling through to the catch-all "Done." -- the structured

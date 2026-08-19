@@ -11,9 +11,10 @@ from tests.conftest import auth_headers
 
 # ---------------------------------------------------------------------------
 # Direct mode: the "zero-token" property is provable, not just assumed —
-# resolve_intent (the only thing in this codebase that ever calls the chat
-# model) is patched to raise if it's invoked at all. A direct-mode request
-# succeeding proves it was never called.
+# resolve_intent (the router; the other chat-model caller, phrase_answer, is
+# only ever reached from _build_assisted, which direct mode never calls) is
+# patched to raise if it's invoked at all. A direct-mode request succeeding
+# proves it was never called.
 # ---------------------------------------------------------------------------
 
 async def test_direct_mode_never_calls_the_model(client, monkeypatch):
@@ -165,6 +166,34 @@ async def test_self_referential_manager_query_uses_get_org_chain_not_get_person(
     assert "report-1" not in result_ids  # never highlights the caller
     assert "mgr-1" in result_ids  # highlights the manager instead
     assert "Morgan Manager" in body["overview"]["answer"]
+
+
+# ---------------------------------------------------------------------------
+# The overview's answer prefers a real model's phrasing of the already-
+# filtered result over the deterministic _phrase() template, when one is
+# configured and returns something — and still falls back to the template
+# otherwise. Every other test in this file exercises the fallback
+# implicitly (mock mode, same as production with no CHAT_ENDPOINT/CHAT_KEY
+# set); these two make both halves of that fallback explicit.
+# ---------------------------------------------------------------------------
+
+async def test_overview_answer_prefers_the_real_models_phrasing(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.unified_search.phrase_answer",
+        lambda question, tool_name, arguments, result: "A model-phrased sentence about Morgan Manager.",
+    )
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "report-1"))
+    assert resp.status_code == 200
+    assert resp.json()["overview"]["answer"] == "A model-phrased sentence about Morgan Manager."
+
+
+async def test_overview_answer_falls_back_to_the_template_when_the_model_has_nothing(client, monkeypatch):
+    monkeypatch.setattr("app.unified_search.phrase_answer", lambda *a, **kw: None)
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "report-1"))
+    assert resp.status_code == 200
+    # Same assertion the un-monkeypatched version of this query makes above
+    # -- proves the template path alone still answers it correctly.
+    assert "Morgan Manager" in resp.json()["overview"]["answer"]
 
 
 async def test_self_referential_direct_reports_query_uses_get_org_chain_self(client):

@@ -1194,6 +1194,68 @@ def _real_resolve(
     return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
 
 
+_PHRASING_SYSTEM_PROMPT = (
+    "You write one short, natural-language sentence (two at most) answering the "
+    "caller's question, given a JSON object that is the caller's ENTIRE and ONLY "
+    "source of truth. It has already been filtered to exactly what this caller is "
+    "permitted to see. State only facts literally present in it -- never a name, "
+    "number, or relationship the JSON doesn't contain, and never anything from your "
+    "own knowledge. If `result` is null, an empty list, or otherwise shows nothing "
+    "matched, say that plainly. No preamble, no mention that you are an AI, no "
+    "restating the question, no disclaimers."
+)
+
+
+def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -> str | None:
+    """A second, narrowly-scoped model call that phrases the final answer
+    sentence from a result execute_tool_call() already produced -- i.e.
+    already run through is_record_visible for this caller, same as every
+    card and citation built from it.
+
+    This is NOT the same trust boundary _real_resolve() polices when it
+    discards the model's own free text (see that function's docstring): that
+    prose had no source behind it, so passing it through would let the model
+    answer from its own knowledge or replay a few-shot's conclusion as fact.
+    Here the model sees nothing BUT this caller's already-permission-filtered
+    result -- it is grounding a sentence in data the caller could already
+    read off the result cards, not asserting anything of its own.
+
+    None, never an exception, whenever there's nothing to ask -- no real
+    model configured, or the call itself fails -- so the caller (_build_
+    assisted) falls back to the deterministic _phrase() template. Same
+    degrade-don't-error shape _real_resolve() already uses for the routing
+    call, applied to the phrasing call.
+    """
+    if _mode() != "real":
+        return None
+    # Same serialization execute_chain() already uses to hand a step's
+    # result back to the model (_serialize_step_result) -- one code path
+    # for "already-permission-filtered result -> JSON the model can read",
+    # covered by that function's own leak test, rather than a second one
+    # that could drift out of sync with it.
+    payload = (
+        f'{{"tool": {json.dumps(tool_name)}, "arguments": {json.dumps(arguments, default=str)}, '
+        f'"result": {_serialize_step_result(result)}}}'
+    )
+    try:
+        client = _get_openai_client()
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": _PHRASING_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Question: {question}\n\nJSON:\n{payload}"},
+            ],
+            # Same reasoning as the routing call's own reasoning_effort choice
+            # (see _real_resolve) -- phrasing one sentence off data that's
+            # already computed is not a deliberation-worthy task either.
+            reasoning_effort="minimal",
+        )
+    except OpenAIError:
+        return None
+    text = (response.choices[0].message.content or "").strip()
+    return text or None
+
+
 def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
     """Distinguishes the new plan-shaped tool from the original fixed-
     parameter ones, purely by name -- both come out of the same
