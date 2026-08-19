@@ -29,19 +29,26 @@ import re
 import time
 from typing import Any
 
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
+from app.models import Employee
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
-    AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
+    UnknownPerson,
 )
+from app.vocabulary import snap_tool_arguments
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
     TOOLS,
     describes_a_problem,
+    _deterministic_resolve,
+    names_a_real_person,
     ResolvedToolCall,
+    execute_chain,
     execute_with_fallback,
     execute_with_retry,
     resolve_intent,
@@ -84,11 +91,131 @@ def needs_assistant(text: str) -> bool:
     return is_question(text) or describes_a_problem(text)
 
 
+# A coordination between alternatives ("Bangalore or Singapore") is the one
+# request shape find_people structurally cannot say: its parameters take a
+# single value each, so an OR across values needs search_people's explicit
+# filter list. Narrow on purpose -- this is not a general "looks complicated"
+# heuristic, it names one specific expressiveness gap.
+_COORDINATION = re.compile(r"\b(?:or|either)\b", re.IGNORECASE)
+
+
+def _is_exact_identifier(db: Session, text: str) -> bool:
+    """True when the whole query is exactly one person's unique identifier.
+
+    Guards the routing gate below against a name that happens to contain a
+    relationship keyword: the deterministic router reads "Riley Report" as a
+    question about someone called Riley, because "Report" matches its
+    reports-to pattern. An exact identifier is a lookup, never a question,
+    so it is settled here before the router is ever consulted.
+
+    Same predicate find_people already short-circuits on (app/people.py), so
+    a query this returns True for is one the direct path answers exactly.
+    """
+    value = text.strip().lower()
+    if not value:
+        return False
+    handles = {value, value.lstrip("@"), f"@{value.lstrip('@')}"}
+    return db.execute(
+        select(Employee.id).where(
+            Employee.is_active == True,  # noqa: E712
+            or_(
+                func.lower(Employee.full_name) == value,
+                func.lower(Employee.preferred_name) == value,
+                func.lower(Employee.work_email) == value,
+                func.lower(Employee.slack_handle).in_(handles),
+            ),
+        ).limit(1)
+    ).first() is not None
+
+
+def _wants_assistant(db: Session, text: str) -> bool:
+    """The routing gate: is this query worth taking the assisted path?
+
+    Question SHAPE used to be the whole test, which made a trailing "?" the
+    difference between an answer and nothing at all -- "anyone in Bangalore
+    or Singapore who knows Kubernetes" returned 0 results, and the identical
+    text with a "?" returned 7. Statement-shaped requests are not rarer than
+    question-shaped ones; they were just unroutable.
+
+    Three questions now, cheapest first:
+
+      1. Is the whole query one person's identifier? Then it is a lookup.
+         Settled before anything else, so a surname like "Report" can't be
+         read as a relationship question.
+      2. Can the deterministic router answer it? Then the assisted path is
+         FREE (~4ms, no model call) and there is no reason punctuation
+         should decide whether to take it.
+      3. Otherwise, fall back to the original test -- question shape or a
+         described problem -- since from here the assisted path costs a
+         real model call and should be asked for, not guessed at.
+
+    A query that passes none of these still is not stranded: unified_search
+    escalates it after the direct path comes back empty.
+    """
+    if _is_exact_identifier(db, text):
+        return False
+    if _has_confident_route(db, text):
+        return True
+    if _COORDINATION.search(text):
+        return True
+    return needs_assistant(text)
+
+
+def _has_confident_route(db: Session, text: str) -> bool:
+    """The deterministic router matched AND, when it named a person, that
+    person actually exists.
+
+    The existence check is what makes the router safe to consult on
+    statement-shaped text. Its relationship branch keys on the bare word
+    "report", and the name group is greedy, so "someone good with dashboards
+    and reporting" resolves as a manager question about a person called
+    "someone good with dashboards and". That never surfaced while question
+    shape gated the router; it does the moment statements reach it.
+
+    A name that resolves to SEVERAL people still counts as confident -- "which
+    of the three Michaels did you mean?" is a correct answer, not a failure.
+    Only a name matching nobody disqualifies the route.
+    """
+    turn = _deterministic_resolve(text)
+    if turn is None:
+        return False
+    # Shared with resolve_intent, so the gate and the router can never
+    # disagree about whether a route is trustworthy.
+    return names_a_real_person(db, turn)
+
+
 # Short, static, per-tool descriptions of *why* a tool was selected. Not the
 # model's own reasoning — nothing in this stack asks the model to explain
-# itself, which would cost a second call — just a fixed, honest description
-# of what each tool structurally does, taken from its own schema.
-_TOOL_REASONS = {t["function"]["name"]: t["function"]["description"].split(".")[0] + "." for t in TOOLS}
+# itself, which would cost a second call — just a fixed, honest sentence
+# about what each tool did.
+#
+# Written out rather than derived from the tool schemas. These used to be
+# `description.split(".")[0]`, which assumed every schema description opens
+# with one short sentence. search_people's does not: its first period is
+# ~400 characters in, so the trace rendered a paragraph of spec prose about
+# `op=in`, `filter_groups` and `job_title contains 'Architect'` — which
+# reads like a query dump, because that is what it is. A schema description
+# is written to steer a model; a trace line is written for a person, and
+# the two are not the same text.
+_TOOL_REASONS = {
+    "find_people": "Searched the directory for people matching that.",
+    "search_people": "Filtered the directory on the specific attributes asked for.",
+    "get_person": "Looked up that person's profile.",
+    "get_org_chain": "Walked the reporting chain.",
+    "find_project_owner": "Looked up who owns that project.",
+    "find_mentor": "Ranked people who could mentor you in that skill.",
+    "skill_gap": "Checked how well those skills are covered.",
+    "skill_scarcity": "Checked how rare that skill is across the company.",
+    "find_experts": "Matched the problem against what our projects actually did, "
+                    "then found the people who worked on them.",
+}
+
+# Every tool must have one -- a tool added without a reason would otherwise
+# silently fall back to the generic string and nobody would notice.
+assert set(_TOOL_REASONS) == {t["function"]["name"] for t in TOOLS}, (
+    "every tool needs a trace reason: "
+    f"{set(_TOOL_REASONS) ^ {t['function']['name'] for t in TOOLS}}"
+)
 
 
 def unified_search(
@@ -98,8 +225,15 @@ def unified_search(
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
-    if text and needs_assistant(text):
+    if text and _wants_assistant(db, text):
         return _assisted(db, caller, text, clean_filters, view_mode)
+
+    # The Filters panel is free-text inputs, not dropdowns fed by the real
+    # vocabulary, so "bangalore" and "cloud operations team" arrive exactly
+    # as typed. The assisted path snaps the model's arguments the same way
+    # (app/tool_calling.py); doing it here too means a filter chip and a
+    # question that mean the same thing resolve the same way.
+    clean_filters, _notes = snap_tool_arguments(db, clean_filters)
 
     results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
 
@@ -132,7 +266,7 @@ def _assisted(
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
 ) -> dict:
     started = time.monotonic()
-    turn = resolve_intent(text)
+    turn = resolve_intent(text, db)
     if turn.tool_call is None:
         return {
             "mode": "assisted",
@@ -147,7 +281,17 @@ def _assisted(
     # chip shouldn't silently override what the user just typed.
     if clean_filters and turn.tool_call.name == "find_people":
         turn.tool_call.arguments = {**clean_filters, **turn.tool_call.arguments}
-    raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
+    # The bounded multi-step chain was built, tested and eval'd, and then
+    # only ever reachable from POST /ask -- which the frontend never calls.
+    # So "who on Priya's team knows Terraform" was unanswerable in the
+    # actual product while working in an endpoint nothing used. Same
+    # trigger as app.tool_calling.answer(): only when the model itself
+    # asked for a follow-up in its first response, so single-call requests
+    # keep costing exactly one call.
+    if turn.tool_call.needs_followup:
+        raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
+    else:
+        raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
     return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
@@ -167,9 +311,38 @@ def _build_assisted(
         "overview": {
             "answer": answer_text,
             "citations": citations,
-            "trace": [{"tool": tool_name, "reason": reason, "args": raw["arguments"] or {}, "latency_ms": elapsed_ms}],
+            "trace": _trace(raw, reason, elapsed_ms),
         },
     }
+
+
+def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
+    """One entry per call actually made. A chained answer that showed only
+    its final step read as though the question had been answered by a
+    filter nobody asked for -- the step that resolved "Priya's team" into
+    an actual team is most of the explanation.
+
+    latency_ms is the whole turn's, attributed to the last step rather than
+    split across them: the steps are sequential and only the total was
+    measured, and inventing a per-step split would be presenting a guess as
+    a measurement.
+    """
+    steps = raw.get("steps")
+    if not steps:
+        return [{"tool": raw["tool_call"], "reason": reason,
+                 "args": raw["arguments"] or {}, "latency_ms": elapsed_ms}]
+    trace = []
+    for i, step in enumerate(steps):
+        last = i == len(steps) - 1
+        trace.append({
+            "tool": step["tool"],
+            "reason": reason if last else (
+                f"{_TOOL_REASONS.get(step['tool'], 'Matched a directory function.')} "
+                f"Its result filled in the next step."),
+            "args": step["arguments"] or {},
+            "latency_ms": elapsed_ms if last else 0,
+        })
+    return trace
 
 
 def _resolve_summaries(
@@ -215,7 +388,20 @@ def _people_and_citations(
     if result is None:
         return [], []
 
-    if tool_name == "find_people":
+    # A name that resolved to nobody, or to too many people, produced no
+    # results to render — the answer prose is the whole response. Guarded
+    # here rather than in each branch below because these types are
+    # BaseModels, and the get_org_chain branch would try to iterate one.
+    if isinstance(result, (AmbiguousPersonMatch, UnknownPerson)):
+        return [], []
+
+    # search_people_by_plan returns list[PersonSummary], exactly like
+    # find_people -- it was simply never listed here, so every structured
+    # plan the model built came back with zero cards no matter how many
+    # people it actually matched. The whole mode-1 path was invisible in the
+    # UI; nothing routed to it often enough to notice until the routing gate
+    # stopped requiring a question mark.
+    if tool_name in ("find_people", "search_people"):
         people = [p for p in result if isinstance(p, PersonSummary)]
         return people, [PersonRef(id=p.id, full_name=p.full_name) for p in people]
 
@@ -275,12 +461,119 @@ def _people_and_citations(
     return [], []
 
 
+def _phrase_ambiguous_person(match: AmbiguousPersonMatch) -> str:
+    """Names the candidates instead of picking one. Job title and team are
+    what actually tell two people apart — for the duplicated full names in
+    this directory ("Priya Sharma" twice) the name alone disambiguates
+    nothing, so listing bare names would be a prompt the caller can't act on.
+    """
+    if not match.matches:
+        return f'No active employee matches "{match.query}".'
+    shown = [
+        f"{c.full_name}" + (f" ({c.job_title}{f', {c.org_unit}' if c.org_unit else ''})" if c.job_title else "")
+        for c in match.matches[:5]
+    ]
+    more = f", and {len(match.matches) - 5} more" if len(match.matches) > 5 else ""
+    return (f'"{match.query}" matches {len(match.matches)} people — '
+            f"{'; '.join(shown)}{more}. Which one did you mean?")
+
+
+def _phrase_experts(experts: list[ProblemExpert]) -> str:
+    """The one place in this module where a longer explanation earns its
+    keep. Every other tool answers a question with a fact ("X reports to
+    Y"); this one answers "I'm stuck, who can help?", where the useful reply
+    is who hit the same thing, what happened, and whether they can actually
+    be asked right now.
+
+    Availability is the half that was missing. The old phrasing named the
+    top match and stopped, so it would confidently point at someone who is
+    away without saying so -- the single most useless way to answer this
+    question. It now leads with someone reachable when there is one, and
+    says so plainly when there is not.
+
+    No pronouns anywhere: the directory does not record them, and this
+    sentence names real colleagues.
+    """
+    top = experts[0]
+    available = [e for e in experts if e.availability_status == "available"]
+    # Names the retrieval that actually ran: a keyword-only answer (the
+    # project corpus not embedded yet) is never phrased as a semantic match.
+    qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
+
+    named = 1
+    if top.availability_status == "available":
+        parts = [f"{top.full_name} {top.reason}, and is available{qualifier}."]
+    elif available:
+        # The closest match can't be reached, but somebody who worked on the
+        # same thing can -- name both, in that order, so the ranking stays
+        # visible rather than silently reshuffled by availability.
+        alt = available[0]
+        named = 2
+        alt_clause = (f"{alt.full_name} also worked on it and is available."
+                      if alt.project_id == top.project_id
+                      else f"{alt.full_name} {alt.reason}, and is available.")
+        parts = [f"{top.full_name} {top.reason}, but is {top.availability_status}{qualifier}.", alt_clause]
+    else:
+        # Nobody is reachable. The count of everyone else is folded into
+        # this clause rather than appended after it -- "nobody else is free"
+        # followed by "and 1 other worked on related projects" reads as a
+        # contradiction even though both are true.
+        named = len(experts)
+        if len(experts) == 1:
+            rest = "nobody else in our project history has worked on this"
+        elif len(experts) == 2:
+            rest = "the one other person who worked on it isn't free either"
+        else:
+            rest = f"none of the {len(experts) - 1} others who worked on it are free either"
+        parts = [f"{top.full_name} {top.reason} — the closest match, but is "
+                 f"{top.availability_status}, and {rest}{qualifier}."]
+
+    # Counted from everyone NOT already named, so this never re-counts the
+    # person just offered as the reachable alternative.
+    remaining = len(experts) - named
+    if remaining > 0:
+        parts.append(f"{remaining} other{'s' if remaining != 1 else ''} worked on related projects.")
+
+    # Last, so the verbatim quotation ends the answer -- an excerpt is a
+    # sentence lifted whole from a project description and may or may not
+    # carry its own final punctuation, which makes it awkward to place
+    # anywhere a following sentence has to butt up against it.
+    if top.excerpt:
+        parts.append(f'That project hit: "{top.excerpt}"')
+    else:
+        parts.append("Nothing in that project's write-up directly mentions what you described, "
+                     "so this is a looser match.")
+
+    return " ".join(parts)
+
+    # Lifted verbatim from the project's own description (see
+    # app/project_search.py's _project_excerpts) -- appended, never blended
+    # into the sentence above, so it stays visibly a quotation rather than
+    # something this function composed. Its ABSENCE is meaningful too:
+    # nothing in that project's write-up overlapped the problem, so the link
+    # is thinner than the ranking alone suggests, and saying so beats
+    # asserting a match at full confidence.
+
+
+
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
     """Builds the overview's prose server-side from the already-filtered
     result — the same job app/../frontend's old client-side phraseAnswer()
     did, moved here because the frontend is meant to be a pure renderer now.
     Never invents anything the tool didn't actually return.
     """
+    if tool_name == "search_people":
+        # Was falling through to the catch-all "Done." -- the structured
+        # path had no phrasing at all. Same shape as find_people's summary
+        # below; the filter list itself is deliberately NOT recited back,
+        # that belongs in the trace, not the answer.
+        people = result or []
+        if not people:
+            return "No one in the directory matched those criteria."
+        names = [p.full_name for p in people[:5]]
+        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
+        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+
     if tool_name == "find_people":
         people = result or []
         if not people:
@@ -319,6 +612,14 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         return " ".join(bits)
 
     if tool_name == "get_org_chain":
+        # Name resolution failures are answered as themselves, before the
+        # chain phrasing below ever runs. Previously all three collapsed
+        # into that single "nobody found above them" sentence, which is a
+        # confidently wrong answer for two of them.
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
         nodes = result or []
         is_up = args.get("direction") == "up"
         label = "above them" if is_up else "below them"
@@ -362,20 +663,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         experts = result or []
         if not experts:
             return "Nothing in our project history matches that problem."
-        top = experts[0]
-        # Says WHY, from the assignment record, and names the retrieval that
-        # actually ran. A keyword-only answer (the corpus not embedded yet)
-        # is never phrased as if it were a semantic match.
-        qualifier = "" if top.retrieval == "semantic+keyword" else f" ({top.retrieval} match only)"
-        others = f", and {len(experts) - 1} other{'s' if len(experts) > 2 else ''}" if len(experts) > 1 else ""
-        sentence = f"{top.full_name} {top.reason}{others}{qualifier}."
-        # top.excerpt, when present, is lifted verbatim from the project's
-        # own description (app/project_search.py's _project_excerpts) --
-        # appended, never blended into the sentence above, so it stays
-        # visibly a quotation rather than something this function composed.
-        if top.excerpt:
-            sentence += f' Relevant: "{top.excerpt}"'
-        return sentence
+        return _phrase_experts(experts)
 
     if tool_name == "skill_gap":
         items = result or []

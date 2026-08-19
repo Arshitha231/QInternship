@@ -366,3 +366,14 @@ def test_enforced_person_ref_default_argument_matches_explicit_work_mode(db_sess
     default_ref = enforced_person_ref(db_session, HR, "restricted-1")
     explicit_ref = enforced_person_ref(db_session, HR, "restricted-1", "work")
     assert default_ref == explicit_ref
+
+
+def test_full_name_supports_in_for_a_chain_second_step(db_session):
+    """A chain resolves a set in step 1 and filters by it in step 2. The
+    model picks whichever identifier step 1's result made obvious -- ids or
+    names -- and only ids were permitted, so golden eval t3-14 was rejected
+    mid-chain with "operator 'in' not legal for field 'full_name'"."""
+    result = _run(db_session, PeopleQuery(
+        select=["id"],
+        filters=[Filter(field="full_name", op="in", value=["Riley Report", "Morgan Manager"])]))
+    assert set(result) == {"report-1", "mgr-1"}
