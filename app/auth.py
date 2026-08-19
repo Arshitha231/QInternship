@@ -57,7 +57,7 @@ def auth_mode() -> str:
 def assert_dev_auth_is_intentional() -> None:
     """Fail loudly at startup if dev auth mode was reached by omission.
 
-    _auth_mode() falls back to "dev" whenever ENTRA_TENANT_ID/ENTRA_CLIENT_ID
+    auth_mode() falls back to "dev" whenever ENTRA_TENANT_ID/ENTRA_CLIENT_ID
     are simply unset — the right default for a laptop with zero Azure setup,
     and the wrong one for a deploy where those two env vars were forgotten.
     In dev mode, role and identity come straight from a client-supplied
@@ -69,7 +69,7 @@ def assert_dev_auth_is_intentional() -> None:
     explicitly counts too, since that's a deliberate choice rather than a
     fallback nobody noticed.
     """
-    if _auth_mode() != "dev":
+    if auth_mode() != "dev":
         return
     if os.environ.get("AUTH_MODE") == "dev":
         return
