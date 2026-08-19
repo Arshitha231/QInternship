@@ -152,7 +152,6 @@ metrics.set_meter_provider(provider)
 
 
 # --- Instrument the App ---
-FastAPIInstrumentor.instrument_app(app)
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Fails loudly at startup if a DB column has no app/registry.py entry
