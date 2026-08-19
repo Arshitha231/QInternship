@@ -831,3 +831,16 @@ class EmployeeContinuityDetail(BaseModel):
     current_record: AuthorizationRecordOut | None
     history: list[AuthorizationRecordOut]
     engagements: list[EngagementExposure]
+
+class SkillNodeOut(BaseModel):
+    skill_name: str
+    category: str
+
+class SkillConnectionOut(BaseModel):
+    person: OrgChainNode
+    proficiency: int # 1 to 3
+    source: str
+
+class SkillGraphResponse(BaseModel):
+    skill: SkillNodeOut
+    connections: list[SkillConnectionOut]
