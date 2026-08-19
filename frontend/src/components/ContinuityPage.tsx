@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   acknowledgeHrReview, ApiError, confirmAuthorizationRecord, findPeople, getContinuityOverview,
   getEmployeeContinuity, getEngagementExposure, getHrReviewQueue, rejectAuthorizationRecord,
@@ -25,7 +25,7 @@ const SEVERITY_LABEL: Record<string, string> = { high: "High", medium: "Medium",
 
 const AUTH_TYPE_LABEL: Record<string, string> = {
   citizen: "Citizen", permanent_resident: "Permanent Resident", cpt: "CPT", opt: "OPT",
-  stem_opt: "STEM OPT", h1b: "H1B", l1: "L1", other: "Other",
+  stem_opt: "STEM OPT", h1b: "H-1B", l1: "L-1", other: "Other",
 };
 
 function SeverityBadge({ exposure }: { exposure: string }) {
@@ -405,6 +405,13 @@ function EmployeeDrillDown({
         <p className="continuity-meta">No verified work-authorization record on file.</p>
       )}
 
+      {/* Right after current-record context, always in the same place
+          whether reached via a queue row or the name search — the only
+          path to actually changing this data starts here, and burying it
+          further down (e.g. after a variable-length pending list) is what
+          makes a write path hard to find. */}
+      <SubmitRecordForm employeeId={detail.employee.id} identity={identity} onSubmitted={onChanged} />
+
       {pending.length > 0 && (
         <>
           <p className="skill-label">Pending submissions</p>
@@ -418,8 +425,6 @@ function EmployeeDrillDown({
           </ul>
         </>
       )}
-
-      <SubmitRecordForm employeeId={detail.employee.id} identity={identity} onSubmitted={onChanged} />
 
       {resolved.length > 0 && (
         <>
@@ -468,7 +473,26 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
 
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupResults, setLookupResults] = useState<PersonSummary[]>([]);
+  // The name-search path: reaches anyone, including someone with no due
+  // review who'd never appear in the queue at all (a new hire with no
+  // authorization record yet) — the drill-down it opens renders as its own
+  // panel below the table, since there's no queue row to expand into.
   const [selectedPerson, setSelectedPerson] = useState<EmployeeContinuityDetail | null>(null);
+  // The queue-row path: inline expansion, keyed by employee id so the
+  // clicked row itself can carry the "expanded" styling. Kept separate from
+  // selectedPerson rather than reusing one slot for both, since a search
+  // result and a queue row are different pieces of UI that can't share a
+  // home to expand into.
+  const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
+  const [expandedDetail, setExpandedDetail] = useState<EmployeeContinuityDetail | null>(null);
+  const [expandedLoading, setExpandedLoading] = useState(false);
+  // Which employee id the in-flight fetch is actually for — a ref rather
+  // than state because it has to be read synchronously inside a .then()
+  // that may resolve after a second, faster click already moved
+  // expandedEmployeeId on. Without this, clicking row A then quickly
+  // clicking row B can let A's slower response land after B's and overwrite
+  // B's detail with A's data.
+  const expandedRequestId = useRef<string | null>(null);
 
   useEffect(() => {
     if (subView !== "overview") return;
@@ -505,6 +529,9 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
     let cancelled = false;
     setLoadingQueue(true);
     setSelectedPerson(null);
+    setExpandedEmployeeId(null);
+    setExpandedDetail(null);
+    expandedRequestId.current = null;
     getHrReviewQueue(identity, { ...queueFilters, window_days: queueWindowDays }).then((q) => {
       if (!cancelled) {
         setQueue(q);
@@ -545,6 +572,39 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
   function refreshSelectedPerson() {
     if (!selectedPerson) return;
     getEmployeeContinuity(identity, selectedPerson.employee.id).then(setSelectedPerson);
+  }
+
+  // Click the same row again -> collapse. Click a different row -> the
+  // previous one closes and this one opens (only one expanded at a time,
+  // same reasoning EngagementCard would apply if it were list-wide instead
+  // of per-card). Also collapses whatever the search box had open, so two
+  // drill-downs are never visible at once.
+  function toggleQueueRow(employeeId: string) {
+    if (expandedEmployeeId === employeeId) {
+      expandedRequestId.current = null;
+      setExpandedEmployeeId(null);
+      setExpandedDetail(null);
+      return;
+    }
+    setSelectedPerson(null);
+    setExpandedEmployeeId(employeeId);
+    setExpandedDetail(null);
+    setExpandedLoading(true);
+    expandedRequestId.current = employeeId;
+    getEmployeeContinuity(identity, employeeId).then((d) => {
+      if (expandedRequestId.current !== employeeId) return; // superseded by a later click
+      setExpandedDetail(d);
+      setExpandedLoading(false);
+    });
+  }
+
+  function refreshExpandedRow() {
+    if (!expandedEmployeeId) return;
+    const employeeId = expandedEmployeeId;
+    getEmployeeContinuity(identity, employeeId).then((d) => {
+      if (expandedRequestId.current !== employeeId) return;
+      setExpandedDetail(d);
+    });
   }
 
   useEffect(() => {
@@ -679,7 +739,14 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
             <ul className="reports-list">
               {lookupResults.map((p) => (
                 <li key={p.id}>
-                  <button onClick={() => getEmployeeContinuity(identity, p.id).then(setSelectedPerson)}>
+                  <button
+                    onClick={() => {
+                      expandedRequestId.current = null;
+                      setExpandedEmployeeId(null);
+                      setExpandedDetail(null);
+                      getEmployeeContinuity(identity, p.id).then(setSelectedPerson);
+                    }}
+                  >
                     {p.full_name}
                     <span className="sub">{p.job_title}</span>
                   </button>
@@ -769,38 +836,69 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
                 </tr>
               </thead>
               <tbody>
-                {queue.map((item) => (
-                  <tr
-                    key={item.employee.id}
-                    className="continuity-queue-row"
-                    onClick={() => getEmployeeContinuity(identity, item.employee.id).then(setSelectedPerson)}
-                  >
-                    <td>{item.employee.full_name}</td>
-                    <td>{item.current_record.authorization_type}</td>
-                    <td>
-                      {item.days_until_hr_review} day{item.days_until_hr_review === 1 ? "" : "s"}
-                    </td>
-                    <td>{item.engagements_affected}</td>
-                    <td>
-                      <SeverityBadge exposure={item.highest_exposure} />
-                    </td>
-                    <td>
-                      {item.current_record.hr_review_acknowledged_at ? (
-                        <span className="continuity-meta">Acknowledged</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="link-btn"
-                          disabled={ackBusyRecordId === item.current_record.id}
-                          onClick={(e) => handleAcknowledge(item.current_record.id, e)}
-                          title="Stop the daily reminder for this due date — the review itself still needs to happen via a confirmed authorization record."
-                        >
-                          {ackBusyRecordId === item.current_record.id ? "Acknowledging…" : "Acknowledge reminder"}
-                        </button>
+                {queue.map((item) => {
+                  const isExpanded = expandedEmployeeId === item.employee.id;
+                  return (
+                    <Fragment key={item.employee.id}>
+                      <tr
+                        className={`continuity-queue-row${isExpanded ? " continuity-queue-row-expanded" : ""}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isExpanded}
+                        onClick={() => toggleQueueRow(item.employee.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleQueueRow(item.employee.id);
+                          }
+                        }}
+                      >
+                        <td>{item.employee.full_name}</td>
+                        <td>{recordLabel(item.current_record)}</td>
+                        <td>
+                          {item.days_until_hr_review} day{item.days_until_hr_review === 1 ? "" : "s"}
+                        </td>
+                        <td>{item.engagements_affected}</td>
+                        <td>
+                          <SeverityBadge exposure={item.highest_exposure} />
+                        </td>
+                        <td>
+                          {item.current_record.hr_review_acknowledged_at ? (
+                            <span className="continuity-meta">Acknowledged</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="link-btn"
+                              disabled={ackBusyRecordId === item.current_record.id}
+                              onClick={(e) => handleAcknowledge(item.current_record.id, e)}
+                              title="Stop the daily reminder for this due date — the review itself still needs to happen via a confirmed authorization record."
+                            >
+                              {ackBusyRecordId === item.current_record.id ? "Acknowledging…" : "Acknowledge reminder"}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="continuity-queue-detail-row">
+                          {/* One column per <th> above — table-layout: fixed on
+                              .continuity-queue-table keeps those widths locked
+                              regardless of how tall or wide this cell's content
+                              gets (the confirm-diff panel included), so opening
+                              it only pushes rows below down, never sideways. */}
+                          <td colSpan={6}>
+                            {expandedLoading || !expandedDetail ? (
+                              <div className="skel skel-card" style={{ height: 160 }} />
+                            ) : (
+                              <EmployeeDrillDown
+                                detail={expandedDetail} identity={identity} onChanged={refreshExpandedRow}
+                              />
+                            )}
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                  </tr>
-                ))}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           )}

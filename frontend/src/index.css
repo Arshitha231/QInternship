@@ -716,11 +716,23 @@ button { font: inherit; }
 
 .continuity-submit-form { max-width: 420px; margin-bottom: 16px; }
 
-.continuity-queue-table { background: var(--white); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 14px 18px; margin-bottom: 16px; }
+.continuity-queue-table {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius-card);
+  padding: 14px 18px; margin-bottom: 16px;
+  /* Locks column widths to the header row regardless of what the expanded
+     detail cell's content does — a confirm-diff opening inside an already-
+     expanded row grows that row taller (expected), never wider/narrower
+     column-by-column (not expected). Without this, table-layout: auto lets
+     a wide colSpan cell renegotiate every column's width on every render. */
+  table-layout: fixed;
+}
 .continuity-queue-table th { padding-bottom: 10px; }
 .continuity-queue-row { cursor: pointer; }
 .continuity-queue-row:hover td { background: var(--page); }
 .continuity-queue-row td:first-child { font-weight: 500; color: var(--ink); }
+.continuity-queue-row-expanded td { background: var(--page); }
+.continuity-queue-detail-row > td { padding: 14px 0 18px; }
+.continuity-queue-detail-row .card { margin: 0; }
 .continuity-current-record p { margin: 0; }
 
 /* --- AI-assisted doc review (ReviewPage) --- */
