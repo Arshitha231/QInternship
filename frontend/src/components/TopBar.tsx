@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import melLogo from "../assets/mel-logo.png";
 import { ChevronDown, Moon, SearchIcon, Sun, X } from "../icons";
 import type { ReactNode } from "react";
 import type { Identity, ViewMode } from "../types";
@@ -19,7 +20,15 @@ interface Props {
 }
 
 export function TopBar({
-  query, onQueryChange, identity, onSignOut, onOpenPerson, viewMode, onViewModeChange, helpSlot,
+query,
+  onQueryChange,
+  identity,
+  onIdentityChange,
+  onSignOut,
+  onOpenPerson,
+  viewMode,
+  onViewModeChange,
+  helpSlot,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -27,7 +36,8 @@ export function TopBar({
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+      if (menuRef.current && !menuRef.current.contains(e.target as Node))
+        setMenuOpen(false);
     }
     function onEsc(e: KeyboardEvent) {
       if (e.key === "Escape") setMenuOpen(false);
@@ -40,31 +50,44 @@ export function TopBar({
     };
   }, []);
 
-  const initials = identity.name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+  const initials = identity.name
+    .split(" ")
+    .map((p) => p[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <header className="topbar">
       <div className="brand">
         <span className="brand-mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-          </svg>
+          <img src={melLogo} alt="" />
         </span>
-        <span className="brand-name">OrgHub</span>
+        <span className="brand-name">Mel</span>
       </div>
 
       <div className="search" data-help="search">
         <SearchIcon className="search-icon" />
-        <label className="sr-only" htmlFor="q" style={{ position: "absolute", left: -9999 }}>Search the directory</label>
+        <label
+          className="sr-only"
+          htmlFor="q"
+          style={{ position: "absolute", left: -9999 }}
+        >
+          Search the directory
+        </label>
         <input
           id="q"
           type="search"
-          placeholder="Search a name or skill, or ask a question — e.g. &quot;who could mentor me in Terraform?&quot;"
+          placeholder='Search a name or skill, or ask a question — e.g. "who could mentor me in Terraform?"'
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
         />
         {query && (
-          <button className="clear-btn" aria-label="Clear search" onClick={() => onQueryChange("")}>
+          <button
+            className="clear-btn"
+            aria-label="Clear search"
+            onClick={() => onQueryChange("")}
+          >
             <X size={15} />
           </button>
         )}
@@ -87,9 +110,11 @@ export function TopBar({
               type="button"
               className={`viewmode-btn ${viewMode === m ? "active" : ""}`}
               aria-pressed={viewMode === m}
-              title={m === "work"
-                ? "Your full access for this role"
-                : "What an ordinary colleague sees — identical for every role"}
+              title={
+                m === "work"
+                  ? "Your full access for this role"
+                  : "What an ordinary colleague sees — identical for every role"
+              }
               onClick={() => onViewModeChange(m)}
             >
               {m === "work" ? "Work" : "Employee"}
@@ -103,8 +128,12 @@ export function TopBar({
       <button
         type="button"
         className="theme-toggle"
-        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        aria-label={
+          theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+        }
+        title={
+          theme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+        }
         onClick={toggleTheme}
       >
         {theme === "dark" ? <Sun /> : <Moon />}
@@ -124,10 +153,17 @@ export function TopBar({
             setMenuOpen((v) => !v);
           }}
         >
-          <span className="avatar-sm" aria-hidden="true">{initials}</span>
+          <span className="avatar-sm" aria-hidden="true">
+            {initials}
+          </span>
           <span>
             {identity.name}
-            <span className="role-tag" style={{ display: "block", lineHeight: 1 }}>{identity.role}</span>
+            <span
+              className="role-tag"
+              style={{ display: "block", lineHeight: 1 }}
+            >
+              {identity.role}
+            </span>
           </span>
           <ChevronDown />
         </button>
