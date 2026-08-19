@@ -542,6 +542,8 @@ def approve_action_request_route(
         raise HTTPException(status_code=409, detail={
             "message": str(exc), "active_direct_reports": exc.reports,
         }) from exc
+    except DuplicateEmail as exc:
+        raise HTTPException(status_code=409, detail=f"work_email {exc} is already in use") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _action_request_result(db, request)
