@@ -17,9 +17,20 @@ interface Props {
   viewMode: ViewMode;
   focusId: string;
   focusPerson: PersonDetail | null;
+  highlightedIds?: Set<string>; // <-- Add the Set here
   onNavigate: (id: string) => void;
   onOpenProfile: (id: string, name: string) => void;
 }
+
+export function TeamGraph({ 
+  identity, 
+  viewMode, 
+  focusId, 
+  focusPerson, 
+  highlightedIds = new Set(), // <-- Destructure with default
+  onNavigate, 
+  onOpenProfile 
+}: Props) {
 
 function HubBox({ label, registerRef }: { label: string; registerRef: (el: HTMLDivElement | null) => void }) {
   return (
