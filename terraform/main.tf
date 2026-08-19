@@ -75,8 +75,7 @@ resource "azurerm_linux_web_app" "webapp"{
         SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
         DATABASE_URL                   = "mssql+pymssql://${azurerm_mssql_server.server.administrator_login}:${var.db_pwd}@${azurerm_mssql_server.server.fully_qualified_domain_name}:1433/${azurerm_mssql_database.database.name}"
 
-        # Real AI resolution instead of the silent mock fallback -- see
-        # variables.tf's comment on why these were missing before.
+        # Real AI resolution instead of the silent mock fallback
         CHAT_ENDPOINT               = var.chat_endpoint
         CHAT_KEY                    = var.chat_key
         OPENAI_CHAT_DEPLOYMENT      = "gpt-5"
@@ -86,24 +85,11 @@ resource "azurerm_linux_web_app" "webapp"{
         SEARCH_ENDPOINT             = var.search_endpoint
         SEARCH_KEY                  = var.search_key
 
-        # This deploy authenticates with app/auth.py's DEV provider: role
-        # and identity come from a client-supplied X-Dev-Role header with no
-        # credential check, and the demo login page (app/demo_auth.py) is
-        # the sign-in flow. That has always been true here -- there is no
-        # Entra app registration behind this site -- but it used to be true
-        # by omission, which is exactly what
-        # app/auth.py's assert_dev_auth_is_intentional() now refuses to
-        # start on. Saying it out loud is the whole point of that guard.
-        #
-        # It belongs in THIS block and not only in the CI job's `az webapp
-        # config appsettings set`, for the reason the comment above already
-        # gives: an undeclared setting is one Terraform wants to null out,
-        # so a value living only in the CI job would be wiped by the very
-        # next apply -- which runs on the same push, just before it.
-        #
-        # Replace with ENTRA_TENANT_ID/ENTRA_CLIENT_ID to make this a real
-        # auth deploy; auth_mode() switches on their presence, and this
-        # setting then does nothing.
+        # OpenTelemetry variables for SRE dashboard
+        OTEL_EXPORTER_OTLP_ENDPOINT = ""
+        OTEL_EXPORTER_OTLP_HEADERS  = ""
+        OTEL_SERVICE_NAME           = "employee-directory-api"
+
         ALLOW_DEV_AUTH = "1"
     }
 }
