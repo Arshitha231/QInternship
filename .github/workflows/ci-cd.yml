@@ -284,7 +284,10 @@ jobs:
               EMBEDDING_KEY="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
               OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
               SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
-              SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}"
+              SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}" \
+              OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
+              OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
+              OTEL_SERVICE_NAME="quadrant-directory-api"
 
       # A web app recreated by Terraform (e.g. after a forced-replacement
       # change like a location move) comes up with no explicit runtime

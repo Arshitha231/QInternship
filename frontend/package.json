@@ -11,6 +11,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@opentelemetry/auto-instrumentations-web": "^0.66.0",
+    "@opentelemetry/context-zone": "^2.10.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/sdk-trace-web": "^2.10.0",
     "@types/d3-force": "^3.0.10",
     "d3-force": "^3.0.0",
     "react": "^19.2.8",
