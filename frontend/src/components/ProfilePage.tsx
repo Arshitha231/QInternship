@@ -508,11 +508,11 @@ export function ProfilePage({
   // only enforcement that matters.
   const canEditEmployee = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
   // Same presentation-only mirror, of app/writes.py's project-history gate:
-  // EDITABLE grants "project_entry"/"contribution" to it/work, and
+  // EDITABLE grants "project_entry"/"contribution" to hr/work, and
   // _refuse_own_record blocks the caller's own record. !isOwnProfile is the
-  // visible half of that second rule — an IT person looking at their own
+  // visible half of that second rule — an HR person looking at their own
   // profile sees no edit controls at all, rather than buttons that 403.
-  const canEditProjectHistory = identity.role === "it" && viewMode === "work" && !isOwnProfile;
+  const canEditProjectHistory = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
 
   useEffect(() => {
     let cancelled = false;

@@ -28,9 +28,12 @@ from pydantic import BaseModel
 # hr_org_unit_name for why the org tree is only ever the fallback signal, in
 # contexts that have no request to read a claim from.
 #
-# It is a privileged role but deliberately not a superset of hr: it may edit
-# project descriptions and review AI-extracted changes, and it may not read
-# salaries. See app/permissions.py's ALLOWED table for the split.
+# It is NOT a privileged role. It used to be — it could edit project
+# descriptions and review AI-extracted changes — and both of those moved to
+# hr, on the reasoning that administering the system that holds people's
+# records is not the same as owning the records. An "it" caller now sees and
+# writes exactly what an "employee" caller does; hr is the only privileged
+# role left. See app/permissions.py's ALLOWED and EDITABLE tables.
 Role = Literal["employee", "manager", "hr", "it"]
 VALID_ROLES: set[str] = {"employee", "manager", "hr", "it"}
 
@@ -108,7 +111,8 @@ _jwks_cache: dict[str, object] = {"keys": None, "fetched_at": 0.0}
 # Entra app-role -> internal directory role. The app registration must
 # define app roles named exactly "employee" / "manager" / "hr" / "it";
 # anything else falls back to "employee" (least privilege), never to "hr"
-# or "it".
+# -- which, since "it" now carries employee-level access, is the only
+# assignment that grants anything at all.
 _ENTRA_ROLE_MAP: dict[str, Role] = {
     "employee": "employee", "manager": "manager", "hr": "hr", "it": "it",
 }

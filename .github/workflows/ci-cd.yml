@@ -288,6 +288,7 @@ jobs:
               OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
               OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
               OTEL_SERVICE_NAME="quadrant-directory-api"
+              ALLOW_DEV_AUTH=1
 
       # A web app recreated by Terraform (e.g. after a forced-replacement
       # change like a location move) comes up with no explicit runtime

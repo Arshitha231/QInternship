@@ -1,4 +1,4 @@
-"""Write endpoints: HR internal-field edits and IT project descriptions.
+"""Write endpoints: HR internal-field edits and HR project descriptions.
 
 The point of these tests is that authorization is enforced on the WRITE
 itself. Every denial case below calls the endpoint directly with whatever
@@ -201,30 +201,30 @@ async def test_denied_write_leaves_no_audit_row(client, db_session):
 
 
 # ---------------------------------------------------------------------------
-# IT, work mode: project descriptions.
+# HR, work mode: project descriptions.
 # ---------------------------------------------------------------------------
 
-async def test_it_can_set_project_description(client, db_session, atlas_id):
+async def test_hr_can_set_project_description(client, db_session, atlas_id):
     resp = await client.put(
         f"/projects/{atlas_id}/description", params={"view_mode": "work"},
-        json={"description": "Rewritten by IT."},
-        headers=auth_headers("it", "it-writer-1"),
+        json={"description": "Rewritten by HR."},
+        headers=auth_headers("hr", "hr-writer-1"),
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["project_desc"] == "Rewritten by IT."
+    assert resp.json()["project_desc"] == "Rewritten by HR."
 
     db_session.expire_all()
-    assert db_session.get(Project, atlas_id).description == "Rewritten by IT."
+    assert db_session.get(Project, atlas_id).description == "Rewritten by HR."
 
 
-async def test_it_can_clear_project_description(client, db_session, atlas_id):
+async def test_hr_can_clear_project_description(client, db_session, atlas_id):
     await client.put(
         f"/projects/{atlas_id}/description", params={"view_mode": "work"},
-        json={"description": "temporary"}, headers=auth_headers("it"),
+        json={"description": "temporary"}, headers=auth_headers("hr"),
     )
     resp = await client.delete(
         f"/projects/{atlas_id}/description", params={"view_mode": "work"},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     assert resp.status_code == 200
 
@@ -235,15 +235,16 @@ async def test_it_can_clear_project_description(client, db_session, atlas_id):
     await client.put(
         f"/projects/{atlas_id}/description", params={"view_mode": "work"},
         json={"description": "Internal migration of the billing ledger to the new platform."},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
 
 
-@pytest.mark.parametrize("role", ["employee", "manager", "hr"])
-async def test_only_it_can_edit_project_descriptions(client, db_session, atlas_id, role):
-    """HR is included deliberately: HR is the more privileged role for pay
-    data and still may not touch a project description. Privilege in this
-    system is a table, not a ladder."""
+@pytest.mark.parametrize("role", ["employee", "manager", "it"])
+async def test_only_hr_can_edit_project_descriptions(client, db_session, atlas_id, role):
+    """IT is included deliberately: IT used to be the ONLY role that could
+    write a project description, and now holds no more than an employee
+    does. Privilege in this system is a table, not a ladder — and one that
+    can be rewritten."""
     original = db_session.get(Project, atlas_id).description
     resp = await client.put(
         f"/projects/{atlas_id}/description", params={"view_mode": "work"},
@@ -255,11 +256,11 @@ async def test_only_it_can_edit_project_descriptions(client, db_session, atlas_i
     assert db_session.get(Project, atlas_id).description == original
 
 
-async def test_it_cannot_edit_project_description_in_employee_mode(client, db_session, atlas_id):
+async def test_hr_cannot_edit_project_description_in_employee_mode(client, db_session, atlas_id):
     original = db_session.get(Project, atlas_id).description
     resp = await client.put(
         f"/projects/{atlas_id}/description", params={"view_mode": "employee"},
-        json={"description": "employee mode write"}, headers=auth_headers("it"),
+        json={"description": "employee mode write"}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 403
 
