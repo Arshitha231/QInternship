@@ -38,7 +38,7 @@ async def test_unknown_role_still_rejected(client):
 @pytest.mark.parametrize("role,view_mode,expected_present", [
     ("hr", "work", True),
     ("hr", "employee", False),
-    ("it", "work", False),      # the headline case: IT is privileged, not paid-privileged
+    ("it", "work", False),      # unreachable now: it is pinned to employee mode
     ("it", "employee", False),
     ("employee", "work", False),
     ("manager", "work", False),
@@ -71,7 +71,7 @@ async def test_it_cannot_see_salary_but_hr_can(client):
 # ---------------------------------------------------------------------------
 # project_desc: visible to every role in every view_mode — moved into
 # BASE_FIELDS so "available to all employees" holds in the mode that
-# literally represents what an employee sees. Editable by it, work mode
+# literally represents what an employee sees. Editable by hr, work mode
 # only (edit side lives in the write-endpoint tests) — visibility widened,
 # editing did not.
 # ---------------------------------------------------------------------------
@@ -97,8 +97,9 @@ async def test_project_desc_not_editable_by_a_role_that_can_now_see_it():
 
     assert can_edit("employee", "employee", "project_desc") is False
     assert can_edit("employee", "work", "project_desc") is False
-    assert can_edit("hr", "work", "project_desc") is False
-    assert can_edit("it", "work", "project_desc") is True
+    assert can_edit("it", "work", "project_desc") is False
+    assert can_edit("hr", "employee", "project_desc") is False
+    assert can_edit("hr", "work", "project_desc") is True
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +188,14 @@ async def test_own_salary_still_visible_in_employee_mode(client):
 # Server-side forcing: the client's parameter never widens the view.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("role", ["employee", "manager"])
+@pytest.mark.parametrize("role", ["employee", "manager", "it"])
 async def test_work_mode_is_forced_to_employee_for_unprivileged_roles(client, role):
-    """Asking for work mode directly, bypassing any UI, changes nothing."""
+    """Asking for work mode directly, bypassing any UI, changes nothing.
+
+    `it` is in this list rather than beside `hr`: administering the
+    directory stopped being a reason to read more of it than the people in
+    it can, so an it caller is pinned exactly like an employee.
+    """
     forced = await client.get(
         "/people/stranger-1", params={"view_mode": "work"}, headers=auth_headers(role))
     natural = await client.get(
@@ -200,6 +206,32 @@ async def test_work_mode_is_forced_to_employee_for_unprivileged_roles(client, ro
         assert field not in forced.json()
 
 
+async def test_it_reads_exactly_what_an_employee_reads(client):
+    """The headline of the IT/HR privilege move, stated on its own so a
+    regression reads as this failure rather than as a parametrize case.
+
+    An it caller asking for everything it can ask for gets, field for
+    field, what an ordinary employee gets — including no salary, and
+    including the review/upload surfaces being closed to it (those are
+    HTTP-tested in test_proposed_changes.py).
+    """
+    it_body = (await client.get(
+        "/people/stranger-1", params={"view_mode": "work"},
+        headers=auth_headers("it", "caller-x"))).json()
+    employee_body = (await client.get(
+        "/people/stranger-1", params={"view_mode": "employee"},
+        headers=auth_headers("employee", "caller-x"))).json()
+
+    assert it_body == employee_body
+    assert "salary" not in it_body
+
+
+def test_hr_is_the_only_role_that_can_choose_a_view_mode():
+    from app.permissions import WORK_MODE_ROLES
+
+    assert WORK_MODE_ROLES == {"hr"}
+
+
 @pytest.mark.parametrize("role,requested,expected", [
     ("employee", "work", "employee"),
     ("manager", "work", "employee"),
@@ -207,9 +239,13 @@ async def test_work_mode_is_forced_to_employee_for_unprivileged_roles(client, ro
     ("hr", "work", "work"),
     ("hr", "employee", "employee"),
     ("it", "employee", "employee"),
-    # Unset: hr/it keep the full view they had before view modes existed.
+    # it asking for work mode is pinned like any other unprivileged role —
+    # this is the line that used to read ("it", "work", "work").
+    ("it", "work", "employee"),
+    # Unset: hr keeps the full view it had before view modes existed; it
+    # gets the ordinary employee view like everyone else.
     ("hr", None, "work"),
-    ("it", None, "work"),
+    ("it", None, "employee"),
     # Garbage narrows, never widens — and never 400s.
     ("hr", "administrator", "work"),
     ("employee", "administrator", "employee"),

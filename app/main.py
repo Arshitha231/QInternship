@@ -751,7 +751,7 @@ def set_project_description_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """IT, work mode: add or edit a project description."""
+    """HR, work mode: add or edit a project description."""
     mode = resolve_view_mode(user.role, view_mode)
     try:
         project = set_project_description_service(db, user, project_id, body.description, mode)
@@ -770,7 +770,7 @@ def clear_project_description_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """IT, work mode: remove a project description.
+    """HR, work mode: remove a project description.
 
     Removes the description, not the project — see app/writes.py for why
     deleting the Project row is out of scope for a role whose editable set
@@ -795,7 +795,7 @@ def upsert_project_history_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """IT, work mode: add or correct anyone's project history — except
+    """HR, work mode: add or correct anyone's project history — except
     their own (see app/writes.py's _refuse_own_record).
 
     PUT rather than POST/PATCH because (person_id, project_id) fully
@@ -834,7 +834,7 @@ def remove_project_history_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Response:
-    """IT, work mode: remove anyone's project membership — except their own.
+    """HR, work mode: remove anyone's project membership — except their own.
 
     Removes the membership, not the project: the Project row and everyone
     else staffed on it are untouched, same scoping reasoning as
@@ -1269,7 +1269,7 @@ def acknowledge_hr_review_route(
 
 
 # ---------------------------------------------------------------------------
-# Doc upload -> AI extraction -> IT review.
+# Doc upload -> AI extraction -> HR review.
 # ---------------------------------------------------------------------------
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -1312,16 +1312,16 @@ async def upload_doc_route(
 ) -> dict:
     """Upload a document, parse it, and queue what it says for review.
 
-    IT-only in work mode, same gate as the review endpoints — uploading is
+    HR-only in work mode, same gate as the review endpoints — uploading is
     the first step of the review workflow, not a separate capability.
 
     Nothing here reaches EmployeeProject or EmployeeSkill: the response is a
     count of *pending* rows, every one of which needs an explicit accept.
     """
     mode = resolve_view_mode(user.role, view_mode)
-    if user.role != "it" or mode != "work":
+    if user.role != "hr" or mode != "work":
         raise HTTPException(
-            status_code=403, detail="Uploading documents for extraction is an IT action in work mode")
+            status_code=403, detail="Uploading documents for extraction is an HR action in work mode")
 
     data = await _read_upload_capped(file)
     if not data:
@@ -1515,7 +1515,7 @@ def reject_proposed_change_route(
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """Reject a proposal. IT's fallback is the manual edit endpoints
+    """Reject a proposal. HR's fallback is the manual edit endpoints
     (PATCH /employees/{id}, PUT /projects/{id}/description)."""
     return _review_action(
         reject_proposal, db, user, proposal_id, resolve_view_mode(user.role, view_mode))

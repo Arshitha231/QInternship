@@ -64,7 +64,7 @@ class ProjectHistoryItem(BaseModel):
     # This person's own one-line account of what they did on the project —
     # EmployeeProject.contribution, not Project.description (project_desc
     # above). Same visibility precedent as project_desc: EDITABLE gates who
-    # may WRITE it (it/work, see app.permissions and app.proposals'
+    # may WRITE it (hr/work, see app.permissions and app.proposals'
     # FIELD_FOR_CHANGE_TYPE), but nothing narrows who may READ it beyond
     # project_history's own BASE_FIELDS gate — it was simply missing from
     # this model entirely, which is why accepting a document's contribution

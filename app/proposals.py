@@ -1,4 +1,4 @@
-"""Review workflow for AI-extracted changes. IT only, work mode only.
+"""Review workflow for AI-extracted changes. HR only, work mode only.
 
 Two stages, two staging tables. app/doc_extraction.py creates both
 doc_subject_matches (who a document mentions) and proposed_changes (what it
@@ -59,9 +59,9 @@ from app.search_reindex import reindex_employee_id
 AI_EXTRACTION_SOURCE = "ai_extraction"
 
 # Which EDITABLE field name gates committing each change_type — see
-# app/permissions.py's ("it", "work") entry, which lists these three
-# alongside project_desc as IT's write surface. accept()/edit() check this
-# per row rather than the module hardcoding "role == it" the way the first
+# app/permissions.py's ("hr", "work") entry, which lists these three
+# alongside project_desc as HR's curation surface. accept()/edit() check
+# this per row rather than the module hardcoding a role the way the first
 # version of this file did; that was a real gap (accept() could write to
 # EmployeeSkill without EDITABLE ever being consulted) and this closes it.
 FIELD_FOR_CHANGE_TYPE: dict[ChangeType, str] = {
@@ -72,7 +72,7 @@ FIELD_FOR_CHANGE_TYPE: dict[ChangeType, str] = {
 
 
 class ReviewDenied(Exception):
-    """Caller is not it, or not in work mode, or (for accept/edit) the
+    """Caller is not hr, or not in work mode, or (for accept/edit) the
     resolved EDITABLE table doesn't grant this change_type."""
 
 
@@ -100,19 +100,24 @@ class ProposalNotActionable(Exception):
 
 
 def _authorize(caller: AuthenticatedUser, view_mode: ViewMode) -> None:
-    """Reviewing is an IT action, in work mode. This is the SCREEN-level
+    """Reviewing is an HR action, in work mode. This is the SCREEN-level
     gate — can this caller see/act on the review queue at all — checked
     here rather than in the route for the same reason app/writes.py does
     it: this is the enforcement point, and a rule living only in a FastAPI
     decorator applies only to callers who came through FastAPI.
 
+    It used to read `it`. The review queue writes to people's real skills,
+    contributions and project memberships, which is HR's record to keep;
+    IT's claim on it was that IT administered the system, not that IT owned
+    the data.
+
     accept()/edit() layer an additional, FIELD-level check on top of this
     one (see _authorize_commit below) — this function alone is not enough
     to authorize an actual write.
     """
-    if caller.role != "it" or view_mode != "work":
+    if caller.role != "hr" or view_mode != "work":
         raise ReviewDenied(
-            f"Reviewing proposed changes is an IT action in work mode "
+            f"Reviewing proposed changes is an HR action in work mode "
             f"(role={caller.role}, view_mode={view_mode})"
         )
 
@@ -418,7 +423,7 @@ def _refuse_self_commit(caller: AuthenticatedUser, employee_id: str) -> None:
     anyone's record" path (update_employee, request_restriction,
     request_deactivation), and it belongs here for the same reason: this
     pipeline writes to EmployeeSkill and EmployeeProject, so without it an
-    IT reviewer can upload a document about themselves and accept it onto
+    HR reviewer can upload a document about themselves and accept it onto
     their own profile.
 
     Checked at COMMIT time rather than at resolve/reassign time on purpose.
@@ -884,7 +889,7 @@ def reject(
 ) -> ProposedChange:
     """Reject a proposal. Kept, not deleted — a rejected proposal is the
     most informative row in the table when someone asks why extraction
-    quality is poor. IT's fallback is the manual edit endpoints
+    quality is poor. HR's fallback is the manual edit endpoints
     (PATCH /employees/{id}, PUT /projects/{id}/description)."""
     _authorize(caller, view_mode)
     proposal = _load_pending(db, proposal_id)
