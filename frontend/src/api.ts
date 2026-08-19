@@ -1,7 +1,7 @@
 import type {
-  BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
-  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode, PersonDetail,
-  PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
+  AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut,
+  EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode,
+  PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
   UpdateEmployeeChanges, UploadDocResult, ViewMode,
 } from "./types";
 
@@ -211,6 +211,52 @@ export function getHrReviewQueue(
   }
   const qs = params.toString();
   return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs ? `?${qs}` : ""}`, identity);
+}
+
+// Silences the reminder sweep for this record's current due date only — not
+// the same as performing the review (see AuthorizationRecordOut's comment).
+export function acknowledgeHrReview(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/review-queue/${recordId}/acknowledge`, identity, {
+    method: "POST",
+  });
+}
+
+// Write path for WorkAuthorizationRecord itself — submit / confirm / reject.
+// Enters pending_verification; has no effect on continuity analysis or the
+// review queue until confirmed (app/continuity.py's write-path section).
+export interface SubmitAuthorizationRecordBody {
+  authorization_type: string;
+  effective_from: string;
+  effective_until?: string | null;
+  next_hr_review_date?: string | null;
+  source_document_type?: string | null;
+  internal_notes?: string | null;
+}
+
+export function submitAuthorizationRecord(
+  identity: Identity, employeeId: string, body: SubmitAuthorizationRecordBody,
+): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/employees/${employeeId}/authorization-records`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// The verification gate: makes a pending record current, superseding
+// whichever record was current before it — the action that changes what
+// continuity computes.
+export function confirmAuthorizationRecord(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/authorization-records/${recordId}/confirm`, identity, {
+    method: "POST",
+  });
+}
+
+// Reject a pending submission. Kept, not deleted.
+export function rejectAuthorizationRecord(identity: Identity, recordId: number): Promise<AuthorizationRecordOut> {
+  return request<AuthorizationRecordOut>(`/continuity/authorization-records/${recordId}/reject`, identity, {
+    method: "POST",
+  });
 }
 
 // --- AI-assisted doc upload for IT — IT-only, work mode only. Every call

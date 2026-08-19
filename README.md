@@ -70,6 +70,14 @@ optional `X-Dev-User-Id`, `X-Dev-Name`), enforced by the same `get_current_user`
 dependency the real Entra JWT-validation path uses — so nothing downstream
 changes when `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` show up later.
 
+Landing on `dev` mode by simply forgetting the two Entra vars is a full auth
+bypass in a real deployment, so the app refuses to start that way unless it
+was reached on purpose — `.env.example` sets `ALLOW_DEV_AUTH=1` for you, so
+local dev keeps working out of the box, but a real deploy must set
+`ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` (never `ALLOW_DEV_AUTH`) or it will
+crash-loop at startup by design. See `assert_dev_auth_is_intentional` in
+`app/auth.py`.
+
 ```bash
 curl http://127.0.0.1:8000/health
 curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami

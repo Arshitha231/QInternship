@@ -214,16 +214,20 @@ class NotificationKind(str, enum.Enum):
     """Which trigger produced a notification (see app/notifications.py).
 
     The first two fire off the same course-status-change event and differ in
-    audience, in what they're allowed to say, and in when they fire. The last
-    two are date-driven rather than event-driven: nothing changes in the
-    database on someone's birthday, so a sweep has to go looking. Kept as
-    distinct kinds so which trigger fired stays inspectable after the fact.
+    audience, in what they're allowed to say, and in when they fire. The
+    middle two are date-driven rather than event-driven: nothing changes in
+    the database on someone's birthday, so a sweep has to go looking. The
+    last is also a sweep, over WorkAuthorizationRecord.next_hr_review_date
+    rather than a birthday/anniversary — see notify_upcoming_hr_reviews.
+    Kept as distinct kinds so which trigger fired stays inspectable after
+    the fact.
     """
 
     employee_course_reminder = "employee_course_reminder"
     manager_course_report = "manager_course_report"
     birthday_reminder = "birthday_reminder"
     work_anniversary_reminder = "work_anniversary_reminder"
+    hr_review_reminder = "hr_review_reminder"
 
 
 # Years of service worth telling HR about: the first one, then every fifth.

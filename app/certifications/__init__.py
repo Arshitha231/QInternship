@@ -22,6 +22,7 @@ from app.certifications.factory import get_provider
 from app.certifications.requirements import required_courses
 from app.certifications.service import (
     LocalStatusWritesDisabled,
+    RecordCourseStatusDenied,
     employee_training_status,
     record_course_status,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "CertStatus",
     "CertificationProvider",
     "LocalStatusWritesDisabled",
+    "RecordCourseStatusDenied",
     "SyntheticCertProvider",
     "UnknownCourse",
     "employee_training_status",

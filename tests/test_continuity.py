@@ -31,6 +31,7 @@ from app.continuity import (
     _compute_delivery_dependencies,
     _compute_employee_engagement_entries,
     _compute_engagement_exposure,
+    _due_review_records,
     _find_internal_backups,
     _get_current_authorization_record,
     _get_relevant_client_assignments,
@@ -40,6 +41,7 @@ from app.continuity import (
     _review_intersects_assignment,
     _severity_for_dependency,
     _severity_for_redundancy,
+    acknowledge_hr_review,
     confirm_authorization_record,
     get_employee_continuity,
     get_engagement_exposure,
@@ -49,8 +51,8 @@ from app.continuity import (
     submit_authorization_record,
 )
 from app.models import (
-    AuditLog, Employee, EmployeeProject, EmployeeSkill, OrgUnit, Office, Project, ProjectSkillRequirement,
-    Skill, WorkAuthorizationRecord,
+    AuditLog, Employee, EmployeeProject, EmployeeSkill, Notification, OrgUnit, Office, Project,
+    ProjectSkillRequirement, Skill, WorkAuthorizationRecord,
 )
 from app.models.enums import (
     AvailabilityStatus,
@@ -63,6 +65,7 @@ from app.models.enums import (
     VerificationStatus,
     WorkAuthorizationType,
 )
+from app.notifications import NotifyHrReviewsDenied, notify_upcoming_hr_reviews
 
 HR = AuthenticatedUser(id="cont-fixture-hr", role="hr", name="Test HR")
 EMPLOYEE_CALLER = AuthenticatedUser(id="cont-fixture-employee-caller", role="employee", name="Someone")
@@ -796,6 +799,7 @@ def test_review_queue_sorted_by_days_until_review_ascending():
                 id=1, authorization_type="h1b", effective_from=TODAY, effective_until=None,
                 next_hr_review_date=TODAY + timedelta(days=days), verification_status="verified",
                 is_current=True, verified_at=None,
+                hr_review_acknowledged_at=None, hr_review_acknowledged_by=None,
             ),
             days_until_hr_review=days, engagements_affected=0, highest_exposure="none",
         )
@@ -1090,3 +1094,269 @@ def test_reject_writes_audit_row(fx, db_session):
 
     row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
     assert row.action == "continuity.authorization_rejected"
+
+
+# --- Reminder acknowledgement -----------------------------------------------
+# Deliberately lighter than submit/confirm/reject above: acknowledging never
+# creates a row or touches next_hr_review_date/verification_status/is_current
+# -- it only silences app/notifications.py's sweep for fx.high's current due
+# date. fx.high carries a current, verified record (next_hr_review_date =
+# TODAY + 10) from the fixture, same starting point the write-path tests use.
+
+def test_acknowledge_sets_timestamp_and_actor(fx, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    assert current.hr_review_acknowledged_at is None
+
+    out = acknowledge_hr_review(db_session, HR, current.id)
+
+    assert out.hr_review_acknowledged_at is not None
+    assert out.hr_review_acknowledged_by == HR.id
+    row = db_session.get(WorkAuthorizationRecord, current.id)
+    assert row.hr_review_acknowledged_at is not None
+    assert row.hr_review_acknowledged_by == HR.id
+
+
+def test_acknowledge_does_not_touch_review_date_or_status(fx, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    review_date_before = current.next_hr_review_date
+
+    acknowledge_hr_review(db_session, HR, current.id)
+
+    row = db_session.get(WorkAuthorizationRecord, current.id)
+    assert row.next_hr_review_date == review_date_before
+    assert row.verification_status == VerificationStatus.verified
+    assert row.is_current is True
+
+
+def test_acknowledge_does_not_remove_it_from_the_review_queue(fx, db_session):
+    """Acknowledging silences the reminder, not the queue -- the record is
+    still due and HR still needs to see it there until it's actually
+    superseded via confirm_authorization_record."""
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    acknowledge_hr_review(db_session, HR, current.id)
+
+    cfg = ThresholdConfig(rule_version=1, lookahead_days=90, high_max_redundancy=0, medium_max_redundancy=2)
+    items = _list_review_queue_items(db_session, cfg, TODAY)
+    assert any(i.employee.id == fx.high.id for i in items)
+
+
+def test_reacknowledge_is_idempotent_not_an_error(fx, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    first = acknowledge_hr_review(db_session, HR, current.id)
+    second = acknowledge_hr_review(db_session, HR, current.id)
+    assert second.hr_review_acknowledged_at >= first.hr_review_acknowledged_at
+
+
+def test_acknowledge_unknown_record_raises_not_found(fx, db_session):
+    with pytest.raises(AuthorizationRecordNotFound):
+        acknowledge_hr_review(db_session, HR, 999999999)
+
+
+def test_acknowledge_superseded_record_raises_not_actionable(fx, db_session):
+    """fx.history_old is a superseded (is_current=False) row -- there's no
+    live reminder for it to silence."""
+    with pytest.raises(AuthorizationRecordNotActionable):
+        acknowledge_hr_review(db_session, HR, fx.history_old.id)
+
+
+def test_acknowledge_pending_record_raises_not_actionable(fx, db_session):
+    """fx.pending_only is is_current=True but still pending_verification --
+    the read path (and the review queue) never surfaces it, so there's
+    nothing to acknowledge."""
+    pending_record = (
+        db_session.query(WorkAuthorizationRecord)
+        .filter_by(employee_id=fx.pending_only.id).one()
+    )
+    with pytest.raises(AuthorizationRecordNotActionable):
+        acknowledge_hr_review(db_session, HR, pending_record.id)
+
+
+@pytest.mark.parametrize("caller", [EMPLOYEE_CALLER, MANAGER_CALLER])
+def test_acknowledge_forbidden_for_non_hr(fx, db_session, caller):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    with pytest.raises(ContinuityForbidden):
+        acknowledge_hr_review(db_session, caller, current.id)
+
+
+def test_acknowledge_writes_audit_row_without_leaking_dates_or_type(fx, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    before = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    acknowledge_hr_review(db_session, HR, current.id)
+    after = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
+    assert after == before + 1
+
+    row = db_session.query(AuditLog).filter_by(actor_id=HR.id).order_by(AuditLog.id.desc()).first()
+    assert row.action == "continuity.hr_review_acknowledged"
+    assert row.query_text == fx.high.id
+    for leaky in ("h1b", "opt", "stem_opt", str(TODAY), str(current.next_hr_review_date)):
+        assert leaky not in row.query_text.lower()
+
+
+# --- Upcoming-review notification sweep -------------------------------------
+# notify_upcoming_hr_reviews (app/notifications.py) reuses fx's own
+# WorkAuthorizationRecord fixtures for "who's due" -- fx.high is due in 10
+# days, well inside config/continuity_thresholds.yml's real lookahead_days:
+# 90 (the sweep has no window_days override, unlike _list_review_queue_items,
+# so it always reads the real config file). hr_recipients() resolves from a
+# real org-tree unit rather than a caller claim, so these tests need an
+# actual Employee in "HR Operations" -- the exact org unit
+# config.hr_org_unit_name() defaults to (see tests/test_people_data.py's
+# notify_date_milestones fixture, which does the same thing for its own
+# module).
+
+@pytest.fixture
+def hr_recipient(db_session):
+    company = db_session.query(OrgUnit).filter(OrgUnit.name == "TestCo").one()
+    hr_unit = db_session.query(OrgUnit).filter(OrgUnit.name == "HR Operations").first()
+    created_unit = hr_unit is None
+    if created_unit:
+        hr_unit = OrgUnit(name="HR Operations", parent_id=company.id, unit_type="department")
+        db_session.add(hr_unit)
+        db_session.flush()
+
+    recipient = _mkemp(db_session, "hr-recipient", "Fixture HR Recipient", hr_unit.id, None)
+    db_session.commit()
+    yield recipient
+
+    db_session.query(Notification).filter(Notification.recipient_id == recipient.id).delete()
+    db_session.query(Employee).filter(Employee.id == recipient.id).delete()
+    if created_unit:
+        db_session.query(OrgUnit).filter(OrgUnit.id == hr_unit.id).delete()
+    db_session.commit()
+
+
+def test_notify_hr_reviews_sends_for_due_unacknowledged_record(fx, hr_recipient, db_session):
+    created = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+
+    mine = [n for n in created if n.subject_employee_id == fx.high.id]
+    assert mine
+    assert all(n.recipient_id == hr_recipient.id for n in mine)
+    assert all(n.kind.value == "hr_review_reminder" for n in mine)
+
+
+def test_notify_hr_reviews_skips_records_outside_the_window(fx, hr_recipient, db_session):
+    far = _mkemp(db_session, "far-review", "Fixture Far Review", fx.high.org_unit_id, fx.high.office_id)
+    db_session.flush()
+    _mkrecord(db_session, far.id, is_current=True, verification_status=VerificationStatus.verified,
+             next_hr_review_date=TODAY + timedelta(days=200))  # beyond lookahead_days: 90
+    db_session.commit()
+
+    created = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+
+    assert not any(n.subject_employee_id == far.id for n in created)
+
+
+def test_notify_hr_reviews_skips_an_acknowledged_record(fx, hr_recipient, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    acknowledge_hr_review(db_session, HR, current.id)
+
+    created = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+
+    assert not any(n.subject_employee_id == fx.high.id for n in created)
+
+
+def test_notify_hr_reviews_same_day_rerun_sends_nothing_further(fx, hr_recipient, db_session):
+    first = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+    assert any(n.subject_employee_id == fx.high.id for n in first)
+
+    second = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+    assert not any(n.subject_employee_id == fx.high.id for n in second)
+
+
+def test_notify_hr_reviews_refires_on_a_later_day_if_still_unacknowledged(fx, hr_recipient, db_session):
+    notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+
+    tomorrow = TODAY + timedelta(days=1)
+    second = notify_upcoming_hr_reviews(db_session, HR, tomorrow)
+    db_session.commit()
+
+    assert any(n.subject_employee_id == fx.high.id for n in second)
+
+
+def test_notify_hr_reviews_body_never_leaks_authorization_type_or_date(fx, hr_recipient, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    created = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+
+    mine = [n for n in created if n.subject_employee_id == fx.high.id]
+    assert mine
+    for n in mine:
+        assert current.authorization_type.value not in n.body
+        assert str(current.next_hr_review_date) not in n.body
+        assert str(TODAY) not in n.body
+
+
+@pytest.mark.parametrize("caller", [EMPLOYEE_CALLER, MANAGER_CALLER])
+def test_notify_hr_reviews_forbidden_for_non_hr(fx, hr_recipient, db_session, caller):
+    with pytest.raises(NotifyHrReviewsDenied):
+        notify_upcoming_hr_reviews(db_session, caller, TODAY)
+
+
+def test_notify_hr_reviews_writes_audit_row(fx, hr_recipient, db_session):
+    before = db_session.query(AuditLog).filter(AuditLog.action == "notify_upcoming_hr_reviews").count()
+    notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+    after = db_session.query(AuditLog).filter(AuditLog.action == "notify_upcoming_hr_reviews").count()
+    assert after == before + 1
+
+
+def test_due_review_records_unacknowledged_only_excludes_the_acknowledged_row(fx, db_session):
+    """Direct check on the query helper the sweep depends on, separate from
+    the higher-level sweep test above -- this is the one place a filter
+    could silently go missing while that test still passed for an
+    unrelated reason (e.g. a self-skip or dedup masking the same result)."""
+    current = _get_current_authorization_record(db_session, fx.high.id)
+
+    before = _due_review_records(db_session, CFG, TODAY, unacknowledged_only=True)
+    assert any(r.id == current.id for r, _emp, _days in before)
+
+    acknowledge_hr_review(db_session, HR, current.id)
+
+    after = _due_review_records(db_session, CFG, TODAY, unacknowledged_only=True)
+    assert not any(r.id == current.id for r, _emp, _days in after)
+
+    # unacknowledged_only=False is what the review queue itself calls with --
+    # acknowledgement must silence the sweep and nothing else.
+    still_due = _due_review_records(db_session, CFG, TODAY, unacknowledged_only=False)
+    assert any(r.id == current.id for r, _emp, _days in still_due)
+
+
+def test_confirmed_replacement_record_starts_unacknowledged_and_fires_fresh(fx, hr_recipient, db_session):
+    """Acknowledgement lives on the WorkAuthorizationRecord row, not the
+    employee -- confirming a new record supersedes the old (acknowledged)
+    one, and the new row is a fresh INSERT that never copies
+    hr_review_acknowledged_at across. That's meant to fall out for free from
+    the column living on the row rather than the employee, but it's exactly
+    the kind of thing that fails silently if confirm ever starts copying
+    fields forward, so it gets its own test rather than an assumption.
+    """
+    old_current = _get_current_authorization_record(db_session, fx.high.id)
+    acknowledge_hr_review(db_session, HR, old_current.id)
+
+    # Confirm the sweep is silent for the old due date first, so the later
+    # assertion is unambiguously about the NEW record, not a leftover.
+    silenced = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+    assert not any(n.subject_employee_id == fx.high.id for n in silenced)
+
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+        next_hr_review_date=TODAY + timedelta(days=20),
+    )
+    confirmed = confirm_authorization_record(db_session, HR, pending.id)
+
+    new_row = db_session.get(WorkAuthorizationRecord, confirmed.id)
+    assert new_row.id != old_current.id
+    assert new_row.hr_review_acknowledged_at is None  # starts fresh, not inherited
+    assert new_row.hr_review_acknowledged_by is None
+
+    fired = notify_upcoming_hr_reviews(db_session, HR, TODAY)
+    db_session.commit()
+    mine = [n for n in fired if n.subject_employee_id == fx.high.id]
+    assert mine, "the new, unacknowledged record should fire its own reminder"

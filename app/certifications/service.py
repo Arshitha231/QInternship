@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import config
+from app.auth import AuthenticatedUser
 from app.certifications.base import CertProviderUnavailable, CertStatus, UnknownCourse
 from app.certifications.factory import get_provider
 from app.certifications.requirements import required_courses
@@ -94,9 +95,22 @@ class LocalStatusWritesDisabled(RuntimeError):
     diverging truth."""
 
 
+class RecordCourseStatusDenied(Exception):
+    """Caller's role may not record a course status.
+
+    Checked here, not just in the route — the same reasoning app.writes'
+    module docstring gives: a rule that lives only in a FastAPI decorator
+    applies only to callers who happen to come through FastAPI. A future
+    webhook handler (the "seam" this function's own docstring describes) or
+    a batch import calling this directly gets the same enforcement the HR
+    route gets today, not an unauthenticated write.
+    """
+
+
 def record_course_status(
     db: Session,
     *,
+    caller: AuthenticatedUser,
     employee: Employee,
     course_code: str,
     status: CourseStatus,
@@ -111,12 +125,19 @@ def record_course_status(
     is what makes the notification behaviour demoable on synthetic data.
     When the webhook-vs-poll question is settled, the handler for it calls
     this same function with the same (previous, current) transition and
-    nothing downstream changes.
+    nothing downstream changes — including `caller`, which that handler
+    would construct to represent the training system's own identity rather
+    than a human HR user.
 
     Refuses to run once ENABLE_TRAINING_API_SYNC is on: at that point their
     system owns the status and our table is a cache, so accepting a local
     write would mean two sources of truth disagreeing quietly.
     """
+    if caller.role != "hr":
+        raise RecordCourseStatusDenied(
+            f"role '{caller.role}' may not record course status (hr only)"
+        )
+
     # Imported here rather than at module scope: app.notifications reaches
     # app.org_chart -> app.people, and app.people imports this package for
     # the profile's read path, so a top-level import would close that cycle.

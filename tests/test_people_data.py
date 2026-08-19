@@ -9,12 +9,19 @@ from decimal import Decimal
 
 import pytest
 
+from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, Notification, OrgUnit
 from app.models.enums import EmploymentType, is_milestone_year
-from app.notifications import _falls_on, hr_recipients, notify_date_milestones
+from app.notifications import NotifyDateMilestonesDenied, _falls_on, hr_recipients, notify_date_milestones
 from tests.conftest import auth_headers
 
 TODAY = date.today()
+
+# notify_date_milestones enforces (role == "hr") itself now, same as
+# record_course_status — direct-call tests below stand in for the route (or
+# a future scheduler), so they pass a caller the same way the route's own
+# auth dependency would.
+_HR_CALLER = AuthenticatedUser(id="hr-caller-test", role="hr")
 
 HR_ONE = "hrdata-hr-1"
 HR_TWO = "hrdata-hr-2"
@@ -179,7 +186,7 @@ def test_hr_recipients_resolved_from_the_org_tree(db_session):
 
 
 def test_sweep_notifies_hr_about_birthdays_and_anniversaries(db_session):
-    created = notify_date_milestones(db_session, TODAY)
+    created = notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
 
     by_recipient = {}
@@ -197,7 +204,7 @@ def test_sweep_notifies_hr_about_birthdays_and_anniversaries(db_session):
 
 
 def test_birthday_message_reveals_neither_age_nor_date(db_session):
-    created = notify_date_milestones(db_session, TODAY)
+    created = notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
     birthday_bodies = [n.body for n in created if n.kind.value == "birthday_reminder"]
     assert birthday_bodies
@@ -208,7 +215,7 @@ def test_birthday_message_reveals_neither_age_nor_date(db_session):
 
 
 def test_hr_person_is_not_told_about_their_own_birthday(db_session):
-    created = notify_date_milestones(db_session, TODAY)
+    created = notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
     own = [n for n in created
            if n.recipient_id == HR_WITH_BIRTHDAY and n.subject_employee_id == HR_WITH_BIRTHDAY]
@@ -219,10 +226,10 @@ def test_hr_person_is_not_told_about_their_own_birthday(db_session):
 
 
 def test_sweep_is_idempotent(db_session):
-    first = notify_date_milestones(db_session, TODAY)
+    first = notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
     assert first
-    second = notify_date_milestones(db_session, TODAY)
+    second = notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
     assert second == [], "a re-run must not produce a second birthday message"
 
@@ -231,15 +238,24 @@ def test_sweep_on_a_quiet_date_notifies_nobody(db_session):
     quiet = TODAY + timedelta(days=1)
     if any(_falls_on(d, quiet) for d in (_years_ago(33), _years_ago(5), _years_ago(40))):
         pytest.skip("tomorrow happens to be a seeded milestone")
-    assert notify_date_milestones(db_session, quiet) == []
+    assert notify_date_milestones(db_session, _HR_CALLER, quiet) == []
 
 
 def test_sweep_writes_an_audit_entry(db_session):
     before = db_session.query(AuditLog).filter(AuditLog.action == "notify_date_milestones").count()
-    notify_date_milestones(db_session, TODAY)
+    notify_date_milestones(db_session, _HR_CALLER, TODAY)
     db_session.commit()
     after = db_session.query(AuditLog).filter(AuditLog.action == "notify_date_milestones").count()
     assert after == before + 1
+
+
+def test_service_denies_a_non_hr_caller_even_without_a_route(db_session):
+    """The route already blocks this, but the service must too — a future
+    scheduler calling this directly gets the same refusal unless it
+    constructs an hr-role caller identity of its own."""
+    non_hr = AuthenticatedUser(id="manager-caller-test", role="manager")
+    with pytest.raises(NotifyDateMilestonesDenied):
+        notify_date_milestones(db_session, non_hr, TODAY)
 
 
 # ---------------------------------------------------------------------------

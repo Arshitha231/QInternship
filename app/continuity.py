@@ -72,9 +72,15 @@ class AuthorizationRecordNotFound(Exception):
 
 
 class AuthorizationRecordNotActionable(Exception):
-    """The record isn't pending_verification -- already verified, already
-    superseded, already rejected, or already expired. confirm/reject only
-    ever act on a still-pending submission."""
+    """The record isn't in the state this action requires.
+
+    Two unrelated callers share this exception rather than each minting
+    their own: confirm/reject need pending_verification (already verified,
+    superseded, rejected, or expired all raise it), and
+    acknowledge_hr_review needs is_current AND verified (a superseded or
+    still-pending row raises it too) -- both are "wrong state for this
+    action," just different states, and the route layer already maps this
+    one exception to 409 for both."""
 
 
 def _require_hr(caller: AuthenticatedUser) -> None:
@@ -173,7 +179,47 @@ def _to_record_out(record: WorkAuthorizationRecord) -> AuthorizationRecordOut:
         next_hr_review_date=record.next_hr_review_date,
         verification_status=record.verification_status.value,
         is_current=record.is_current, verified_at=record.verified_at,
+        hr_review_acknowledged_at=record.hr_review_acknowledged_at,
+        hr_review_acknowledged_by=record.hr_review_acknowledged_by,
     )
+
+
+# --- Reminder acknowledgement ---------------------------------------------
+# Deliberately lighter than the submit/confirm/reject cycle above: that
+# workflow is the actual compliance re-verification (a new authorization
+# record, HR-confirmed) and can reasonably take days to complete. This is
+# just "I've seen the reminder, I'm on it, stop pinging me about THIS due
+# date" -- it never touches next_hr_review_date, verification_status, or
+# is_current, and it never creates a row. It only ever silences
+# app/notifications.py's sweep (see hr_review_acknowledged_at's column
+# docstring in app/models/work_authorization_record.py); GET
+# /continuity/review-queue keeps listing the record for as long as it's
+# actually due, acknowledged or not -- HR still has to close it out for
+# real via confirm_authorization_record eventually.
+
+def acknowledge_hr_review(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+    _require_hr(caller)
+    record = db.get(WorkAuthorizationRecord, record_id)
+    if record is None:
+        raise AuthorizationRecordNotFound(str(record_id))
+    if not record.is_current or record.verification_status is not VerificationStatus.verified:
+        raise AuthorizationRecordNotActionable(
+            f"authorization record {record_id} is not the employee's current, verified record"
+        )
+
+    # Re-acknowledging just moves the timestamp -- unlike confirm/reject,
+    # nothing else changes, so there's no "already done" state worth
+    # rejecting; HR clicking it twice is harmless.
+    record.hr_review_acknowledged_at = datetime.now()
+    record.hr_review_acknowledged_by = caller.id
+    db.commit()
+    db.refresh(record)
+
+    _write_audit(
+        db, caller, "continuity.hr_review_acknowledged", record.employee_id, 1,
+        {"hr_review_acknowledged_at", "hr_review_acknowledged_by"},
+    )
+    return _to_record_out(record)
 
 
 # --- Engagement intersection ---------------------------------------------
@@ -643,12 +689,22 @@ def _list_engagement_exposures(
 # this is the complementary view that does, because HR still needs to
 # track and verify that record regardless of its delivery consequence.
 
-def _list_review_queue_items(
+def _due_review_records(
     db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None, *,
-    authorization_type: str | None = None, exposure: str | None = None,
+    authorization_type: str | None = None,
     next_review_from: date | None = None, next_review_to: date | None = None,
-    engagements_min: int | None = None, engagements_max: int | None = None,
-) -> list[HrReviewQueueItem]:
+    unacknowledged_only: bool = False,
+) -> list[tuple[WorkAuthorizationRecord, Employee, int]]:
+    """Every (record, employee, days_until_hr_review) triple for a current,
+    HR-verified record whose review falls within the window -- the one
+    "who's due" definition both the review queue and
+    app/notifications.py's notify_upcoming_hr_reviews build on, so
+    "delivery, not analysis" is actually true: one due-soon query, not two
+    that could drift apart. unacknowledged_only is the one extra condition
+    the notify sweep needs and the queue never does -- the queue always
+    shows a due record regardless of acknowledgement (see
+    acknowledge_hr_review's docstring), the sweep must not re-nag about one.
+    """
     effective_window = window_days if window_days is not None else cfg.lookahead_days
 
     query = (
@@ -661,24 +717,39 @@ def _list_review_queue_items(
             Employee.is_active == True,  # noqa: E712
         )
     )
-    # authorization_type and the review-date range are real WorkAuthorizationRecord
-    # columns, filtered in SQL like the rest of this query. exposure/engagements_*
-    # only exist after _compute_employee_engagement_entries runs below, so those
-    # stay a post-computation filter, same split _list_engagement_exposures uses
-    # for its own computed-vs-column filters.
     if authorization_type:
         query = query.filter(WorkAuthorizationRecord.authorization_type == authorization_type)
     if next_review_from:
         query = query.filter(WorkAuthorizationRecord.next_hr_review_date >= next_review_from)
     if next_review_to:
         query = query.filter(WorkAuthorizationRecord.next_hr_review_date <= next_review_to)
-    rows = query.all()
+    if unacknowledged_only:
+        query = query.filter(WorkAuthorizationRecord.hr_review_acknowledged_at.is_(None))
+
+    due: list[tuple[WorkAuthorizationRecord, Employee, int]] = []
+    for record, employee in query.all():
+        days_until = (record.next_hr_review_date - today).days
+        if days_until <= effective_window:
+            due.append((record, employee, days_until))
+    return due
+
+
+def _list_review_queue_items(
+    db: Session, cfg: ThresholdConfig, today: date, window_days: int | None = None, *,
+    authorization_type: str | None = None, exposure: str | None = None,
+    next_review_from: date | None = None, next_review_to: date | None = None,
+    engagements_min: int | None = None, engagements_max: int | None = None,
+) -> list[HrReviewQueueItem]:
+    # exposure/engagements_* only exist after _compute_employee_engagement_entries
+    # runs below, so those stay a post-computation filter, same split
+    # _list_engagement_exposures uses for its own computed-vs-column filters.
+    due = _due_review_records(
+        db, cfg, today, window_days,
+        authorization_type=authorization_type, next_review_from=next_review_from, next_review_to=next_review_to,
+    )
 
     items: list[HrReviewQueueItem] = []
-    for record, employee in rows:
-        days_until = (record.next_hr_review_date - today).days
-        if days_until > effective_window:
-            continue
+    for record, employee, days_until in due:
         entries = _compute_employee_engagement_entries(db, employee, record, cfg, today)
         intersecting = [e for e in entries if e.exposure != "none"]
         highest = max(
