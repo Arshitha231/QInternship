@@ -604,8 +604,14 @@ class ResolvedToolCall(BaseModel):
 
 
 class AssistantTurn(BaseModel):
+    """`off_contract_text` records prose the model returned instead of a tool
+    call or the fixed refusal. It is deliberately NOT rendered anywhere --
+    it exists so an operator can see, in logs, that the model tried to
+    answer from its own context, without that text ever reaching a caller."""
+
     tool_call: ResolvedToolCall | None = None
     message: str | None = None  # set only when there's no tool call
+    off_contract_text: str | None = None  # logged, never rendered
 
 
 def _mode() -> str:
@@ -1067,7 +1073,24 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
         return AssistantTurn(tool_call=ResolvedToolCall(
             name=call.function.name, arguments=arguments, needs_followup=needs_followup,
             tool_call_id=call.id))
-    return AssistantTurn(message=choice.content or OUT_OF_SCOPE_MESSAGE)
+    # Model prose is NEVER passed through as an answer. Every real answer in
+    # this system comes from a permission-filtered tool result; text with no
+    # tool call behind it has no source, no citations, and no cards -- and
+    # the system prompt's one sanctioned use of this path is the fixed
+    # out-of-scope refusal.
+    #
+    # Not hypothetical. Asking the exact text of a chain few-shot ("who does
+    # the owner of the Billing API report to") made the model replay that
+    # example's conclusion as prose -- "Diego Hernandez reports to Priya
+    # Sharma" -- with no call, no card and no citation behind it. The
+    # few-shots are in the same conversation the model is answering from,
+    # so their contents are reachable as if they were retrieved facts. That
+    # is exactly the "never answer from your own knowledge" rule the prompt
+    # states and could not previously enforce.
+    content = (choice.content or "").strip()
+    if content and content != OUT_OF_SCOPE_MESSAGE:
+        return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE, off_contract_text=content)
+    return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
 
 
 def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
@@ -1079,7 +1102,31 @@ def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
     return "llm_plan_tool" if tool_call.name == "search_people" else "llm_fixed_tool"
 
 
-def resolve_intent(message: str) -> AssistantTurn:
+def names_a_real_person(db: Session, turn: AssistantTurn | None) -> bool:
+    """Whether a deterministic route that names a person names a REAL one.
+
+    The router's relationship branch keys on the bare word "report" and its
+    name group is greedy, so it happily produces a person named "the owner
+    of the Billing API" or "someone good with dashboards and". Those are not
+    confident matches, they are the regex reaching past what it can parse --
+    and the model, given the same question, chains correctly.
+
+    Returning False here means "defer to the model", never "answer empty":
+    resolve_intent falls through to _real_resolve exactly as it does for a
+    phrasing the router never matched at all.
+
+    A name matching SEVERAL people is still confident -- "which of the three
+    Michaels did you mean?" is a real answer, and the model cannot do better.
+    """
+    if turn is None or turn.tool_call is None:
+        return True
+    person = turn.tool_call.arguments.get("person")
+    if turn.tool_call.name != "get_org_chain" or not person or person == "self":
+        return True
+    return not resolve_person(db, person).is_unknown
+
+
+def resolve_intent(message: str, db: Session | None = None) -> AssistantTurn:
     """Deterministic router first, always — tried whether AI_MODE is real
     or mock, per ARCHITECTURE_2.md §6's "promote it to primary": an exact
     pattern match is strictly better (10ms, free, deterministic) than a
@@ -1101,7 +1148,10 @@ def resolve_intent(message: str) -> AssistantTurn:
     the service functions downstream of it.
     """
     deterministic = _deterministic_resolve(message)
-    if deterministic is not None:
+    # `db` is optional only so existing callers and tests that never needed
+    # a session keep working; every production call site passes one, and
+    # without it a route naming a person nobody has cannot be caught here.
+    if deterministic is not None and (db is None or names_a_real_person(db, deterministic)):
         if deterministic.tool_call is not None:
             deterministic.tool_call.routed_via = "deterministic"
         return deterministic
@@ -1586,7 +1636,21 @@ def execute_chain(
     chain_id = uuid.uuid4().hex
     attempt = first_call
     extra_messages: list[dict] = []
+    # One entry per executed step, for callers that render a trace. Additive
+    # to the response contract -- /ask consumers that only read
+    # message/tool_call/arguments/result are unaffected -- and it is what
+    # lets the search overview show "resolved the team, then filtered it"
+    # instead of only the final call, which on its own looks like the
+    # question was answered by a filter nobody asked for.
+    steps_taken: list[dict] = []
     step = 0
+
+    def _record(call: ResolvedToolCall, result: Any) -> None:
+        steps_taken.append({
+            "tool": call.name,
+            "arguments": call.arguments,
+            "result_count": len(result) if isinstance(result, list) else (0 if result is None else 1),
+        })
 
     while True:
         step += 1
@@ -1598,6 +1662,7 @@ def execute_chain(
             return {
                 "message": "I found a matching action but couldn't complete it — try rephrasing.",
                 "tool_call": attempt.name, "arguments": attempt.arguments, "result": None,
+                "steps": steps_taken,
             }
 
         result, attempt = outcome
@@ -1615,6 +1680,7 @@ def execute_chain(
                 _write_audit(
                     db, caller, f"{message} -> {attempt.name}({attempt.arguments})",
                     1 if result else 0, attempt.routed_via, chain_id, step)
+                _record(attempt, result)
                 attempt = next_turn.tool_call
                 continue
             # Model is done (plain text, no function call) or degraded
@@ -1622,7 +1688,16 @@ def execute_chain(
             # and finalize THIS step instead, without having double-
             # audited it above.
 
-        return _finish_with_broadening(db, caller, attempt, result, message, chain_id, step)
+        _record(attempt, result)
+        final = _finish_with_broadening(db, caller, attempt, result, message, chain_id, step)
+        # Broadening can replace the final result (a skill/language miss
+        # answered with related people) -- recount from what is actually
+        # being returned, so the trace never reports a step size the
+        # response doesn't contain.
+        broadened = final.get("result")
+        steps_taken[-1]["result_count"] = (
+            len(broadened) if isinstance(broadened, list) else (0 if broadened is None else 1))
+        return {**final, "steps": steps_taken}
 
 
 def answer(
@@ -1644,7 +1719,7 @@ def answer(
     an ordinary successful call, only when the model itself already asked
     for more in its first response.
     """
-    turn = resolve_intent(message)
+    turn = resolve_intent(message, db)
 
     if turn.tool_call is None:
         _write_audit(db, caller, message, 0)

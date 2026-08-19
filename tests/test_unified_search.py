@@ -281,7 +281,7 @@ async def test_org_chain_cards_omit_unset_fields_not_null(client, monkeypatch):
 
     monkeypatch.setattr(
         "app.unified_search.resolve_intent",
-        lambda _msg: AssistantTurn(
+        lambda _msg, _db=None: AssistantTurn(
             tool_call=ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up"})
         ),
     )
@@ -403,7 +403,7 @@ async def test_coordination_across_values_takes_the_assisted_path(client, monkey
     without a question mark and seven with one."""
     captured = {}
 
-    def _fake_resolve(message):
+    def _fake_resolve(message, _db=None):
         captured["message"] = message
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="search_people",
@@ -503,3 +503,59 @@ def test_trace_reasons_are_written_for_people_not_lifted_from_tool_schemas():
     for tool, reason in _TOOL_REASONS.items():
         assert len(reason) < 120, f"{tool} reason is too long to read in a trace line"
         assert "op=" not in reason and "filter_groups" not in reason
+
+
+# ---------------------------------------------------------------------------
+# The bounded chain, reachable from /search. It was built, tested and eval'd
+# and then only ever callable from POST /ask, which the frontend never calls.
+# ---------------------------------------------------------------------------
+
+async def test_a_chained_answer_shows_every_step_it_took(client, monkeypatch):
+    """A chained answer that showed only its final call read as though the
+    question had been answered by a filter nobody asked for -- the step that
+    resolved the team into an actual team is most of the explanation."""
+    def _fake_resolve(message, _db=None):
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="get_org_chain",
+            arguments={"person": "Morgan Manager", "direction": "down", "depth": 1},
+            needs_followup=True,
+        ))
+
+    def _fake_next(message, extra_messages=None):
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": "Riley Report"}))
+
+    monkeypatch.setattr("app.unified_search.resolve_intent", _fake_resolve)
+    monkeypatch.setattr("app.tool_calling._real_resolve", _fake_next)
+
+    resp = await client.get(
+        "/search", params={"q": "who on Morgan Manager's team is available"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    trace = resp.json()["overview"]["trace"]
+    assert [step["tool"] for step in trace] == ["get_org_chain", "find_people"]
+    # The intermediate step says what it was FOR, not just what it was.
+    assert "filled in the next step" in trace[0]["reason"]
+
+
+async def test_a_single_call_request_still_takes_exactly_one_call(client, monkeypatch):
+    """The chain trigger is the model's own needs_followup on its first
+    response, so nothing here re-prompts speculatively after an ordinary
+    successful call."""
+    calls = []
+
+    def _fake_resolve(message, _db=None):
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": "Riley Report"}))
+
+    def _must_not_run(message, extra_messages=None):
+        calls.append(message)
+        raise AssertionError("a single-call request must not re-prompt the model")
+
+    monkeypatch.setattr("app.unified_search.resolve_intent", _fake_resolve)
+    monkeypatch.setattr("app.tool_calling._real_resolve", _must_not_run)
+
+    resp = await client.get("/search", params={"q": "who is Riley Report?"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200
+    assert len(resp.json()["overview"]["trace"]) == 1
+    assert calls == []

@@ -741,3 +741,45 @@ def test_chain_feedback_never_leaks_a_field_the_caller_could_not_see(db_session)
         "a real, restricted phone number reached the text handed to the model -- "
         "the feedback mechanism must never carry more than the already-filtered response object"
     )
+
+
+# ---------------------------------------------------------------------------
+# Model prose is never an answer. The few-shot examples live in the same
+# conversation the model answers from, so their contents are reachable as if
+# they were retrieved facts.
+# ---------------------------------------------------------------------------
+
+def _fake_content_response(content: str):
+    message = SimpleNamespace(tool_calls=None, content=content)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _content_client(content: str):
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **_kwargs: _fake_content_response(content))))
+
+
+def test_model_prose_is_replaced_with_the_refusal_not_rendered(monkeypatch):
+    """Asking the exact text of a chain few-shot made the model replay that
+    example's conclusion as prose -- a specific, plausible, entirely
+    unsourced claim about two named colleagues, with no tool call, no card
+    and no citation behind it."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: _content_client("Diego Hernandez reports to Priya Sharma."))
+    turn = tool_calling._real_resolve("who does the owner of the Billing API report to")
+    assert turn.tool_call is None
+    assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
+    assert "Diego Hernandez" not in turn.message
+    # Kept for operators, deliberately not for callers.
+    assert turn.off_contract_text == "Diego Hernandez reports to Priya Sharma."
+
+
+def test_the_real_refusal_still_passes_through_unchanged(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client", lambda: _content_client(tool_calling.OUT_OF_SCOPE_MESSAGE))
+    turn = tool_calling._real_resolve("what's the weather")
+    assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
+    assert turn.off_contract_text is None

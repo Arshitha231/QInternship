@@ -34,7 +34,6 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.models import Employee
-from app.org_chart import resolve_person
 from app.people import find_people
 from app.permissions import ViewMode
 from app.schemas import (
@@ -47,7 +46,9 @@ from app.tool_calling import (
     TOOLS,
     describes_a_problem,
     _deterministic_resolve,
+    names_a_real_person,
     ResolvedToolCall,
+    execute_chain,
     execute_with_fallback,
     execute_with_retry,
     resolve_intent,
@@ -176,12 +177,11 @@ def _has_confident_route(db: Session, text: str) -> bool:
     Only a name matching nobody disqualifies the route.
     """
     turn = _deterministic_resolve(text)
-    if turn is None or turn.tool_call is None:
-        return turn is not None  # a plain refusal message is still a decision
-    person = turn.tool_call.arguments.get("person")
-    if turn.tool_call.name == "get_org_chain" and person and person != "self":
-        return not resolve_person(db, person).is_unknown
-    return True
+    if turn is None:
+        return False
+    # Shared with resolve_intent, so the gate and the router can never
+    # disagree about whether a route is trustworthy.
+    return names_a_real_person(db, turn)
 
 
 # Short, static, per-tool descriptions of *why* a tool was selected. Not the
@@ -266,7 +266,7 @@ def _assisted(
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
 ) -> dict:
     started = time.monotonic()
-    turn = resolve_intent(text)
+    turn = resolve_intent(text, db)
     if turn.tool_call is None:
         return {
             "mode": "assisted",
@@ -281,7 +281,17 @@ def _assisted(
     # chip shouldn't silently override what the user just typed.
     if clean_filters and turn.tool_call.name == "find_people":
         turn.tool_call.arguments = {**clean_filters, **turn.tool_call.arguments}
-    raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
+    # The bounded multi-step chain was built, tested and eval'd, and then
+    # only ever reachable from POST /ask -- which the frontend never calls.
+    # So "who on Priya's team knows Terraform" was unanswerable in the
+    # actual product while working in an endpoint nothing used. Same
+    # trigger as app.tool_calling.answer(): only when the model itself
+    # asked for a follow-up in its first response, so single-call requests
+    # keep costing exactly one call.
+    if turn.tool_call.needs_followup:
+        raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
+    else:
+        raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
     return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
@@ -301,9 +311,38 @@ def _build_assisted(
         "overview": {
             "answer": answer_text,
             "citations": citations,
-            "trace": [{"tool": tool_name, "reason": reason, "args": raw["arguments"] or {}, "latency_ms": elapsed_ms}],
+            "trace": _trace(raw, reason, elapsed_ms),
         },
     }
+
+
+def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
+    """One entry per call actually made. A chained answer that showed only
+    its final step read as though the question had been answered by a
+    filter nobody asked for -- the step that resolved "Priya's team" into
+    an actual team is most of the explanation.
+
+    latency_ms is the whole turn's, attributed to the last step rather than
+    split across them: the steps are sequential and only the total was
+    measured, and inventing a per-step split would be presenting a guess as
+    a measurement.
+    """
+    steps = raw.get("steps")
+    if not steps:
+        return [{"tool": raw["tool_call"], "reason": reason,
+                 "args": raw["arguments"] or {}, "latency_ms": elapsed_ms}]
+    trace = []
+    for i, step in enumerate(steps):
+        last = i == len(steps) - 1
+        trace.append({
+            "tool": step["tool"],
+            "reason": reason if last else (
+                f"{_TOOL_REASONS.get(step['tool'], 'Matched a directory function.')} "
+                f"Its result filled in the next step."),
+            "args": step["arguments"] or {},
+            "latency_ms": elapsed_ms if last else 0,
+        })
+    return trace
 
 
 def _resolve_summaries(
