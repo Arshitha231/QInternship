@@ -414,7 +414,7 @@ def create_employee_route(
     mode = resolve_view_mode(user.role, view_mode)
     fields = body.model_dump(exclude_unset=True)
     try:
-        employee = create_employee_service(db, user, fields, mode)
+        employee = request_creation_service(db, user, fields, mode)
     except WriteDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DuplicateEmail as exc:
