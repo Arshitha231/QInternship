@@ -249,7 +249,7 @@ export function ProfilePage({
     setDeactivateError(null);
     setBlockedReports(null);
     setDeactivateRequest(null);
-    Promise.all([getPerson(identity, personId, viewMode), getOrgChart(identity, personId, "down", 1)])
+    Promise.all([getPerson(identity, personId, viewMode), getOrgChart(identity, personId, "down", viewMode, 1)])
       .then(([person, chain]) => {
         if (cancelled) return;
         setDetail(person);

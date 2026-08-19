@@ -1143,3 +1143,247 @@ async def test_unresolved_subjects_content_is_not_searchable(client, project_doc
     # and test_ranked_candidates_never_auto_assign. This just confirms the
     # upload itself didn't error the search path.
     assert isinstance(found.json(), list)
+
+
+# ---------------------------------------------------------------------------
+# Multi-round extraction (the real/model path).
+#
+# Everything above runs on the mock extractor. This section is the only
+# place that exercises _real_extract_project_doc, because the bug it
+# guards is invisible to the mock: the mock is a regex over the whole
+# document and always sees every line, whereas the model chooses for
+# itself how many of its one-call-per-person calls to fit in a single
+# response. On a plain list of contributors it frequently emits only the
+# FIRST person and stops with finish_reason="tool_calls" -- a normal,
+# successful response, not an error or a truncation -- so a single-shot
+# read of choices[0] silently loses everyone after them, and the reviewer
+# gets a document that "didn't find all the people".
+#
+# No model API is touched here either: the client is faked at
+# app.tool_calling._get_openai_client, which is where doc_extraction
+# imports it from.
+# ---------------------------------------------------------------------------
+
+class _FakeFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, call_id, name, arguments):
+        self.id = call_id
+        self.type = "function"
+        self.function = _FakeFunction(name, arguments)
+
+
+class _FakeMessage:
+    def __init__(self, tool_calls):
+        self.content = "" if tool_calls else "DONE"
+        self.tool_calls = tool_calls or None
+
+
+class _FakeCompletions:
+    """Replays a scripted list of rounds, one per create() call. Each round
+    is a list of (name, project) pairs, or an Exception to raise instead.
+    Records the messages it was handed so a test can assert the loop fed
+    the previous round back rather than re-asking the same question."""
+
+    def __init__(self, rounds):
+        self.rounds = list(rounds)
+        self.calls_made = 0
+        self.seen_messages = []
+
+    def create(self, **kwargs):
+        self.seen_messages.append(kwargs["messages"])
+        self.calls_made += 1
+        round_spec = self.rounds.pop(0) if self.rounds else []
+        if isinstance(round_spec, Exception):
+            raise round_spec
+        tool_calls = [
+            _FakeToolCall(
+                f"call-{self.calls_made}-{i}", "propose_project_update",
+                json.dumps({
+                    "member_name_guess": name, "project": project,
+                    "contribution": f"{name} did work on {project}.",
+                    "skills_gained": ["Terraform"], "confidence": 0.9,
+                }),
+            )
+            for i, (name, project) in enumerate(round_spec)
+        ]
+        return type("R", (), {"choices": [type("C", (), {"message": _FakeMessage(tool_calls)})()]})()
+
+
+class _FakeClient:
+    def __init__(self, rounds):
+        self.completions = _FakeCompletions(rounds)
+        self.chat = type("Chat", (), {"completions": self.completions})()
+
+
+def _fake_model(monkeypatch, rounds):
+    from app import tool_calling
+    client = _FakeClient(rounds)
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: client)
+    monkeypatch.setattr(tool_calling, "OPENAI_CHAT_DEPLOYMENT", "fake-deployment")
+    return client
+
+
+def test_extraction_collects_people_across_rounds(monkeypatch):
+    """The regression. The model names one person, stops, and only names
+    the next when asked again — exactly the observed gpt-5 behaviour that
+    made a 3-person document resolve to 1. All three must survive."""
+    from app import doc_extraction
+
+    client = _fake_model(monkeypatch, [
+        [("Isabela Krishnan", "Project Big Bird")],
+        [("Amara Zhao", "Project Big Bird")],
+        [("Charlotte Thompson", "Project Big Bird")],
+        [],  # model answers in prose -- document finished
+    ])
+    calls = doc_extraction._real_extract_project_doc("...document text...")
+
+    assert [c.member_name_guess for c in calls] == [
+        "Isabela Krishnan", "Amara Zhao", "Charlotte Thompson"]
+    assert client.completions.calls_made == 4
+    # Each person keeps their OWN skills -- the rounds are accumulated, not
+    # overwritten by the last one.
+    assert all(c.skills_gained == ["Terraform"] for c in calls)
+
+
+def test_extraction_feeds_prior_rounds_back_to_the_model(monkeypatch):
+    """Continuation is native assistant/tool message pairs (same shape as
+    app/tool_calling.py's _chain_step_messages), not a re-ask of the
+    original question — otherwise round two just re-emits round one."""
+    from app import doc_extraction
+
+    client = _fake_model(monkeypatch, [
+        [("Isabela Krishnan", "Project Big Bird")],
+        [],
+    ])
+    doc_extraction._real_extract_project_doc("...document text...")
+
+    second_round = client.completions.seen_messages[1]
+    assert [m["role"] for m in second_round] == ["system", "user", "assistant", "tool"]
+    assert second_round[2]["tool_calls"][0]["function"]["name"] == "propose_project_update"
+    assert second_round[3]["tool_call_id"] == second_round[2]["tool_calls"][0]["id"]
+
+
+def test_extraction_deduplicates_a_re_emitted_person(monkeypatch):
+    """A model that re-emits someone it already named must not produce a
+    second subject card for the same human — (name, project) is the pair
+    record_project_doc_proposals keys a subject on."""
+    from app import doc_extraction
+
+    client = _fake_model(monkeypatch, [
+        [("Isabela Krishnan", "Project Big Bird")],
+        [("isabela krishnan", "project big bird")],  # same person, different case
+        [("Amara Zhao", "Project Big Bird")],
+    ])
+    calls = doc_extraction._real_extract_project_doc("...document text...")
+
+    assert [c.member_name_guess for c in calls] == ["Isabela Krishnan"]
+    # A round that added nobody new ends the loop -- asking again would
+    # only repeat it, so Amara's scripted round is never reached.
+    assert client.completions.calls_made == 2
+
+
+def test_extraction_is_bounded_by_max_rounds(monkeypatch):
+    """A model that never stops naming people must still cost a bounded
+    number of completions."""
+    from app import doc_extraction
+
+    client = _fake_model(monkeypatch, [
+        [(f"Person {i}", "Project Big Bird")] for i in range(50)
+    ])
+    calls = doc_extraction._real_extract_project_doc("...document text...")
+
+    assert client.completions.calls_made == doc_extraction.MAX_EXTRACTION_ROUNDS
+    assert len(calls) == doc_extraction.MAX_EXTRACTION_ROUNDS
+
+
+def test_extraction_keeps_earlier_rounds_when_a_later_one_fails(monkeypatch):
+    """A failure in round three keeps the two rounds that worked. Falling
+    back to the regex mock here would throw away real extractions and
+    replace them with a worse read of the same document."""
+    from openai import OpenAIError
+
+    from app import doc_extraction
+
+    _fake_model(monkeypatch, [
+        [("Isabela Krishnan", "Project Big Bird")],
+        [("Amara Zhao", "Project Big Bird")],
+        OpenAIError("upstream blew up"),
+    ])
+    calls = doc_extraction._real_extract_project_doc("...document text...")
+
+    assert [c.member_name_guess for c in calls] == ["Isabela Krishnan", "Amara Zhao"]
+
+
+def test_extraction_falls_back_to_mock_when_the_first_round_fails(monkeypatch):
+    """Nothing extracted at all still degrades to the mock, unchanged —
+    that is the existing no-Azure-resources behaviour every other test in
+    this module relies on."""
+    from openai import OpenAIError
+
+    from app import doc_extraction
+
+    _fake_model(monkeypatch, [OpenAIError("upstream blew up")])
+    calls = doc_extraction._real_extract_project_doc(PROJECT_DOC_TEXT)
+
+    assert {c.member_name_guess for c in calls} == {
+        "Alex Kim", "Jamie Doubleton", "Robin Nobody"}
+
+
+# ---------------------------------------------------------------------------
+# Candidate identity — what a reviewer picks BETWEEN.
+# ---------------------------------------------------------------------------
+
+async def test_same_named_candidates_are_distinguishable(client, project_doc):
+    """The point of the ranked-candidate design is that a human confirms
+    who a document meant. Two Jamie Doubletons match the same name with
+    the same evidence, so full_name, confidence and match_reason are
+    identical for both by construction -- if those are all the screen
+    gets, the human is asked to choose with nothing to choose on."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    candidates = jamie["candidates"]
+    assert len(candidates) == 2
+
+    # The premise: the document-derived fields genuinely cannot separate them.
+    assert len({c["full_name"] for c in candidates}) == 1
+    # The fix: directory identity can.
+    assert {c["job_title"] for c in candidates} == {"Software Engineer", "Data Engineer"}
+    assert all(c["org_unit"] for c in candidates)
+    assert all(c["is_active"] is True for c in candidates)
+
+
+async def test_candidate_details_are_read_at_display_time(client, project_doc, db_session):
+    """Stored candidate_employee_ids is an extraction-time snapshot of the
+    ranking. Identity is resolved when the screen is read, so a document
+    staged before a promotion doesn't ask a reviewer to confirm someone by
+    a job title they no longer hold."""
+    from app.models import Employee
+
+    employee = db_session.get(Employee, "extract-dup-1")
+    employee.job_title = "Principal Engineer"
+    db_session.commit()
+
+    subjects = await _subjects(client, project_doc["doc_id"])
+    jamie = next(s for s in subjects if s["extracted_name"] == "Jamie Doubleton")
+    titles = {c["job_title"] for c in jamie["candidates"]}
+    assert "Principal Engineer" in titles
+    assert "Software Engineer" not in titles
+
+
+async def test_candidate_details_stay_within_the_always_visible_field_set(client, project_doc):
+    """A candidate list must not become a way to read more about somebody
+    than searching for them would -- app/people.py's SUMMARY_FIELDS is the
+    always-visible set, and salary/hire_date/etc. are not in it."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    allowed = {
+        "employee_id", "full_name", "confidence", "match_reason",
+        "job_title", "org_unit", "office", "is_active",
+    }
+    for subject in subjects:
+        for candidate in subject["candidates"]:
+            assert set(candidate) <= allowed, f"leaked {set(candidate) - allowed}"

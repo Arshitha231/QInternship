@@ -27,7 +27,7 @@ from app.auth import AuthenticatedUser
 from app.models import Project, ProjectSkillRequirement, Skill
 from app.models.enums import ProjectClassification, SkillLevel
 from app.people import resolve_skill
-from app.permissions import can_see_confidential_project
+from app.permissions import ViewMode, can_see_confidential_project, effective_role
 from app.schemas import ProjectSkillRequirementIn, ProjectSkillRequirementOut
 
 
@@ -41,24 +41,36 @@ class UnknownSkill(Exception):
         super().__init__(f"Unrecognized skill: {name}")
 
 
-def _visible_project(db: Session, caller: AuthenticatedUser, project_id: int) -> Project | None:
+def _visible_project(
+    db: Session, caller: AuthenticatedUser, project_id: int, view_mode: ViewMode = "work",
+) -> Project | None:
     """None whether the project doesn't exist or is confidential and the
     caller isn't a member/hr — same "restricted looks like absent" shape
-    used throughout this app, not a distinguishable 403/404 split."""
+    used throughout this app, not a distinguishable 403/404 split.
+
+    HR's blanket exemption for confidential projects is a role privilege, so
+    it collapses in employee mode like every other one (effective_role) — it
+    used to read caller.role directly, which let an hr caller keep seeing a
+    confidential project's requirements while claiming to be looking at the
+    ordinary-colleague view. Membership is untouched by the mode: it's an
+    ABAC grant keyed on identity, and those deliberately survive employee
+    mode (README, "ABAC survives employee mode"), so somebody actually
+    staffed on the project still sees it either way.
+    """
     project = db.get(Project, project_id)
     if project is None:
         return None
     if (project.classification == ProjectClassification.confidential
-            and caller.role != "hr"
+            and effective_role(caller.role, view_mode) != "hr"
             and not can_see_confidential_project(db, caller, project_id)):
         return None
     return project
 
 
 def get_required_skills(
-    db: Session, caller: AuthenticatedUser, project_id: int,
+    db: Session, caller: AuthenticatedUser, project_id: int, view_mode: ViewMode = "work",
 ) -> list[ProjectSkillRequirementOut] | None:
-    if _visible_project(db, caller, project_id) is None:
+    if _visible_project(db, caller, project_id, view_mode) is None:
         return None
     rows = (
         db.query(ProjectSkillRequirement, Skill)
@@ -72,6 +84,7 @@ def get_required_skills(
 
 def set_required_skills(
     db: Session, caller: AuthenticatedUser, project_id: int, requirements: list[ProjectSkillRequirementIn],
+    view_mode: ViewMode = "work",
 ) -> list[ProjectSkillRequirementOut] | None:
     """Replaces the full set for this project — not an incremental add, so
     re-recording requirements can't accidentally leave a stale one behind.
@@ -79,10 +92,13 @@ def set_required_skills(
     caller (confidential, non-member); raises ProjectNotWritable if it's
     visible but the caller isn't its owner or hr; raises UnknownSkill on
     the first name that doesn't resolve, before writing anything."""
-    project = _visible_project(db, caller, project_id)
+    project = _visible_project(db, caller, project_id, view_mode)
     if project is None:
         return None
-    if caller.role != "hr" and caller.id != project.owner_id:
+    # Ownership is identity, not role, so it survives employee mode; HR's
+    # role privilege does not, matching every other write in the app (nothing
+    # is editable in employee mode -- app.permissions.EDITABLE).
+    if effective_role(caller.role, view_mode) != "hr" and caller.id != project.owner_id:
         raise ProjectNotWritable("Only the project's owner or HR can set its required skills")
 
     # Keyed by skill id, not appended to a list: two input rows naming the

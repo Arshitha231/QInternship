@@ -221,6 +221,57 @@ class AmbiguousProjectMatch(BaseModel):
     matches: list[str]
 
 
+class PersonChoice(BaseModel):
+    """One disambiguation candidate — enough to tell two people apart, and
+    nothing more. Deliberately not a PersonSummary: this is a "which one did
+    you mean" prompt, not a search result, and it must not become a way to
+    read attributes about people the caller never actually asked for.
+    Populated only from fields every role can already see.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+
+
+class AmbiguousPersonMatch(BaseModel):
+    """A name matched several people and no single one is the obvious
+    answer — returned instead of a chain/profile, exactly like
+    AmbiguousProjectMatch above does for projects.
+
+    This is the type that stops the silent-wrong-person failure: "Anderson"
+    matches five employees in this directory and "Mike" matches three
+    preferred names, and the resolver used to pick whichever rapidfuzz
+    ranked first. Naming the candidates costs one extra turn and is the only
+    honest answer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    matches: list[PersonChoice]
+
+
+class UnknownPerson(BaseModel):
+    """No active employee matched the name at all — distinct from
+    AmbiguousPersonMatch (too many matched) and from an empty chain (the
+    person exists, but has nobody above/below them, or that direction is
+    restricted for this caller).
+
+    Those three were previously indistinguishable: every one of them
+    produced "Nobody found above them in the org chart (or that direction is
+    restricted for your role)", which is a confidently wrong answer for the
+    first two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+
+
 class MentorCandidate(BaseModel):
     """One find_mentor result. `reason` is always populated — the system
     finds people who match requirements, it never claims to rank the "best"
@@ -317,6 +368,14 @@ class RecordCourseStatusRequest(BaseModel):
     status: Literal["not_started", "in_progress", "failed", "completed"]
     attempted_on: date | None = None
     completed_on: date | None = None
+
+
+class LoginRequest(BaseModel):
+    """Demo login body. Not a credential type worth modelling further — see
+    app/demo_auth.py's module docstring for what this is and isn't."""
+
+    email: str
+    password: str
 
 
 class UpdateBioRequest(BaseModel):

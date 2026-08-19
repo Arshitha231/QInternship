@@ -228,6 +228,22 @@ def _seed() -> None:
         mkemp("dup-name-1", "Dana Ambiguous", "Software Engineer", "danaambiguous1@example.test")
         mkemp("dup-name-2", "Dana Ambiguous", "Product Manager", "danaambiguous2@example.test")
 
+        # --- nicknames: preferred_name is the only string a colleague would
+        # actually type for these people. resolve_person (app/org_chart.py)
+        # matched full_name only, so "Nick" found nobody at all.
+        mkemp("nick-1", "Nicholas Rivera", "Software Engineer", "nrivera@example.test",
+              preferred_name="Nick")
+        # Two people sharing one nickname must be ambiguous, not a coin flip.
+        mkemp("nick-2", "Robert Lang", "Data Analyst", "rlang@example.test", preferred_name="Bob")
+        mkemp("nick-3", "Roberta Sandoval", "QA Engineer", "rsandoval@example.test",
+              preferred_name="Bob")
+
+        # --- shared surname: a bare surname must not silently pick one of
+        # them. Three is enough to make the fuzzy tier's tie obvious.
+        mkemp("surname-1", "Amara Okonkwo", "Software Engineer", "aokonkwo@example.test")
+        mkemp("surname-2", "Chidi Okonkwo", "Product Manager", "cokonkwo@example.test")
+        mkemp("surname-3", "Ngozi Okonkwo", "Design Lead", "nokonkwo@example.test")
+
         # --- search fixtures (step 8 hybrid search tests) ------------------
         satellite_office = Office(name="Satellite Office", city="Satellite City", country="Testland", timezone="UTC")
         db.add(satellite_office)

@@ -77,6 +77,82 @@ curl -H "X-Dev-Role: manager" http://127.0.0.1:8000/auth/whoami
 pytest   # runs against a throwaway temp SQLite db, never directory.db
 ```
 
+### Signing in
+
+The UI has a login form; `POST /auth/login` turns an email and password into
+the same `{id, role, name}` the dev headers carry, and the frontend sends
+those headers for every call afterwards. **It is a demo shim, not
+authentication** — there is no password column, no hashing, and no reset
+flow (`app/demo_auth.py` says so at length). The route 404s as soon as
+`ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` are set, because signing in is then
+Entra's job and these credentials must not be a second way in.
+
+**Any active employee can sign in**, with their work email and one shared
+password: `orghub2026`, overridable with `DEMO_LOGIN_PASSWORD` in `.env`. So
+"can you show me someone else's view?" is answerable with any of the ~545
+seeded people, not just a shortlist. A deactivated employee cannot sign in.
+
+These four are the ones worth demoing, one per role:
+
+| Role | Email | What they get |
+|---|---|---|
+| `hr` | `naomi.lewis@example.com` | Salary fields, Continuity, Admin, work/employee toggle |
+| `it` | `shaun.iyer@example.com` | Review queue, work/employee toggle, no salary access |
+| `manager` | `sean.wilson@example.com` | Real direct reports, so the downward org chart renders |
+| `employee` | `joshua.liu@example.com` | Plain IC — the restricted view |
+
+`xiomara.mensah@example.com` and `minjun.sanchez@example.com` are worth
+knowing too: Xiomara → Sean → Min-jun is one reporting chain, so a
+training-status change on Xiomara notifies all three, which is what makes
+the certification notifications demoable from the UI.
+
+#### Where the role comes from
+
+Role is not a column on `Employee` and deliberately never will be — it is a
+per-request claim that production takes from an Entra app-role assignment
+(`app/auth.py`). The shim has no claim to read, so it derives one from the
+org tree, the same signal `config.hr_org_unit_name()` already uses to decide
+who counts as HR for notification sweeps. In order:
+
+| Rule | Role | Seeded count |
+|---|---|---|
+| In the `IT` division or below (`IT_ORG_UNIT_NAME`) | `it` | 30 |
+| In `HR Operations` or below (`HR_ORG_UNIT_NAME`) | `hr` | 18 |
+| Has at least one **active** direct report | `manager` | 70 |
+| Everyone else | `employee` | 427 |
+
+IT and HR outrank manager because directors in those units manage people
+too, and being HR's director is the more specific fact about them. Reports
+count only while active, so managing one person who has since been
+deactivated doesn't leave someone holding a manager's view of an empty team.
+Both unit names fail closed: a name matching no unit grants nothing.
+
+This is why signing in as a VP can yield `manager` rather than something
+grander — the directory role is an access claim, not a rung on the org chart.
+
+#### One credential list, both databases
+
+Accounts are keyed by **work email, and the employee id is looked up at login
+time** against whatever database the API is pointed at. `seed.py` draws names
+from a fixed RNG seed but ids from `uuid4`, so local SQLite and deployed
+Azure SQL hold the same people under different ids — one credential list
+works against both, and re-seeding either needs no code change.
+
+Wrong password, unknown email and deactivated employee all return the same
+401 with the same message, on purpose.
+
+**Free-text search returns nothing locally, and that's expected.** The
+project has one Azure AI Search index and it belongs to the deployed app.
+`seed.py` generates the same synthetic people every run but fresh UUIDs, so
+your local database shares names with the indexed data and shares no ids —
+ranked hits resolve to nobody, and `find_people` degrades to its SQL keyword
+path (name/`preferred_name` substring). Structured filters (`?skill=`,
+`?org_unit=`, `?office=`) are pure SQL and work locally exactly as deployed;
+so do exact-name lookups, which short-circuit before Search is consulted.
+Semantic and misspelling-tolerant matching need the deployed backend
+(`npm run dev:live`). Do **not** rebuild the index from local data — it
+breaks search for everyone using the deployed app.
+
 `.python-version` pins 3.14.6 — Azure App Service's newest Linux runtime
 (`PYTHON|3.14`, confirmed via `az webapp list-runtimes`).
 
@@ -84,8 +160,9 @@ pytest   # runs against a throwaway temp SQLite db, never directory.db
 
 Vite + React + TypeScript, in `frontend/`. Talks to the backend above over
 CORS at `http://127.0.0.1:8000`; dev-mode auth is sent via the same
-`X-Dev-Role` / `X-Dev-User-Id` / `X-Dev-Name` headers, switchable from an
-identity picker in the top bar (no real login yet).
+`X-Dev-Role` / `X-Dev-User-Id` / `X-Dev-Name` headers, obtained from the
+login form (see [Signing in](#signing-in)) and held in `sessionStorage` for
+the tab. Sign out from the account menu in the top bar.
 
 ```bash
 cd frontend
@@ -101,6 +178,7 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 |---|---|
 | `GET /health` | liveness check, used by the deploy pipeline |
 | `GET /auth/whoami` | resolves the caller's identity/role from the active auth mode |
+| `POST /auth/login` | dev-mode only. Any active employee's work email + the shared password → `{id, role, name}`, role derived from the org tree; 404s once Entra is configured (see [Signing in](#signing-in)) |
 | `GET /people` | filtered directory listing, permission-filtered per caller |
 | `GET /people/{id}` | one person's detail, restricted fields genuinely absent (not null) for callers without access |
 | `PATCH /people/{id}/bio` | self-service edit of your own "About" text |
@@ -183,7 +261,7 @@ app/
                        (embeddings + keyword) fused with RRF. Confidential projects are
                        never embedded, so no query can reach one
   project_skills.py   which skills, at what minimum level, a project's delivery needs
-  continuity.py       HR-only staffing continuity: work-authorization review dates against
+  continuity.py       staffing continuity, hr + WORK mode only: work-authorization dates against
                        client engagements, severity from versioned config. No model calls
   community_links.py  each employee's private "who to contact for what" graph; official
                        links are HR-confirmed, personal ones are their own
@@ -250,7 +328,7 @@ frontend/src/
                                 applies the checked ones and clears the doc, an Undo on
                                 anything already accepted, and a ✕ to discard a whole
                                 wrong-file upload
-    ContinuityPage.tsx          HR-only staffing continuity views
+    ContinuityPage.tsx          staffing continuity views; hr in work mode only
     CommunityPage.tsx, CommunityGraphCanvas.tsx   the personal "who to ask" graph
     HelpMenu.tsx, HelpOverlay.tsx   the guided tour and click-to-learn overlay
     GraphPage.tsx               tab switcher for the three graph views below
@@ -693,6 +771,41 @@ Three things are worth knowing before changing any of this:
   left role-aware leaks the caller's privilege back into a view that is
   supposed to be anonymous. The sharp edge: **HR loses its restricted-record
   exemption in employee mode**, so `restricted-1` 404s for them there too.
+- **Whole surfaces disappear in employee mode, not just fields.** Continuity
+  (HR), Review (IT), Admin (HR) and the official-link/mentor-sweep panels (HR)
+  are work-mode surfaces: an ordinary colleague has no work-authorization
+  review dates, no document review queue, no create-employee form and no
+  bootstrapping queue, so neither does anyone previewing that lens. Several
+  had to be retrofitted — their gates read `caller.role` alone, so an HR
+  caller kept full access while claiming to be looking at the ordinary view.
+  They route through `effective_role` now, in the service functions and again
+  at the route layer, so hiding a tab is the cosmetic half of a check that
+  exists on the server. Also retrofitted: the org chart's downward direction
+  (`GET /people/{id}/org-chart` had no `view_mode` parameter *at all*), and
+  HR's blanket exemption for confidential projects in
+  `project_skills._visible_project`.
+- **`manager` has no work mode, and that has a consequence worth stating.**
+  `resolve_view_mode` pins every role outside `WORK_MODE_ROLES` (`hr`/`it`) to
+  employee mode however it asks, and `effective_role` collapses every role
+  there — so a manager sees `direct_reports` through **neither** `find_people`
+  nor the org chart. `find_people` was always like this; the org chart only
+  differed because it had no `view_mode` to pass, and the two disagreed
+  outright for a manager until that was fixed.
+
+  The tempting fix is a carve-out — "employee mode takes away what work mode
+  granted, and a manager never had a work mode, so it takes away nothing".
+  That was written, and it fails
+  `test_employee_mode_list_identical_across_roles` immediately:
+  `direct_reports` present for a manager and absent for an employee is the
+  caller's role leaking back into the view that exists to be anonymous. The
+  identity guarantee wins. Giving managers their team back means giving them
+  a **work mode** (adding `manager` to `WORK_MODE_ROLES`), which is a
+  deliberate product change rather than an exception inside one predicate.
+
+  Note this is only about *role predicates*. A manager's real extra reach is
+  ABAC, which keys on identity and survives employee mode by design — and the
+  field table grants them nothing extra anyway (`ALLOWED[("manager", "work")]`
+  is identical to `ALLOWED[("employee", "work")]`).
 - **ABAC survives employee mode, deliberately.** Own-profile and
   direct-manager grants (personal_mobile, own salary/DOB, training status up
   the chain) key on the caller's *identity*, never their role, so they return
@@ -865,6 +978,33 @@ hire can't delete it, and it ages into a personal link on the same
 
 Leaving the field blank keeps today's behaviour: the sweep picks somebody
 during their first few weeks.
+
+### A link outlives the person it points at
+
+Nothing deletes `community_links` rows when somebody is deactivated or
+restricted, and nothing should — the row is the owner's own note about who to
+ask for what, and it should come back intact if that person returns.
+
+But the link is only a pointer, and the Community graph was the one surface
+that rendered a contact who had since become invisible. `GET /community_links`
+returned every stored row; the client's per-contact profile lookup then 404'd
+for the ones it wasn't allowed to see, and the card fell back to printing the
+**raw contact id** with a green "available" dot — for someone who was neither
+available nor visible. The synthesized manager entry had a narrower version of
+the same hole: it checked `is_active` but not `restricted`.
+
+Both now filter on the same `is_active` + obligations pair every other read
+path uses, at read time rather than by deleting anything. That's why the route
+takes `view_mode`: the check has to agree with the one `GET /people/{id}`
+applies in the same mode, or the list hands back a contact the profile lookup
+refuses — which is exactly the disagreement that produced the bare id. So hr in
+work mode still sees a restricted contact here, and loses it in employee mode,
+consistent with everywhere else.
+
+The frontend stopped being able to express the bug rather than just avoiding
+it: `ContactNode.person` is no longer nullable, and `ContactCard` takes the
+person as a required prop, so a card cannot be constructed for a contact
+nobody can name.
 
 ## Document extraction and review
 

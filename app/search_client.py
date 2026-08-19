@@ -32,7 +32,28 @@ load_dotenv()
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT", "").rstrip("/")
 SEARCH_KEY = os.environ.get("SEARCH_KEY", "")
 SEARCH_API_VERSION = "2024-07-01"
-INDEX_NAME = "employees-index"
+# ONE index exists for this project, and it belongs to the deployed app.
+#
+# The index stores employee ids, and ids are per-database: seed.py generates
+# the same synthetic PEOPLE every run but fresh UUIDs, so a local SQLite
+# dataset and the deployed Azure SQL one share names and share no ids
+# (measured: 197/200 sampled index docs match a local employee by full_name,
+# 5 by id). A local run against this index therefore resolves every ranked
+# hit to nothing, which is why free-text search degrades to the SQL keyword
+# path locally -- see app.people.find_people. That is the intended local
+# behaviour under the one-index limit, not a bug to work around.
+#
+# Two workarounds were considered and rejected. Rebuilding this index from
+# local data breaks search for the deployed app and everyone using it (the
+# collision seed.py's own docstring warns about). Resolving ranked hits by
+# full_name instead of id would make one index serve both, and would also
+# make search silently return the WRONG person whenever two people share a
+# name -- the dataset seeds two "Priya Sharma"s precisely because that case
+# has to stay unresolvable rather than become a coin flip.
+#
+# The env var stays because it costs nothing and is the honest fix the day a
+# second index is available. Default unchanged, so deployment needs no config.
+INDEX_NAME = os.environ.get("SEARCH_INDEX_NAME", "employees-index")
 
 # Its own resource, separate from chat (app/tool_calling.py) — a v1-API
 # Azure AI Foundry endpoint, not a classic per-resource Azure OpenAI

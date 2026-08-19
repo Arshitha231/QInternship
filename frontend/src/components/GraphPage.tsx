@@ -106,7 +106,7 @@ export function GraphPage({
       ) : focusPerson === undefined ? (
         <div className="skel skel-card" style={{ height: 480 }} />
       ) : kind === "department" ? (
-        <DepartmentGraph identity={identity} focusId={focusId} focusPerson={focusPerson ?? null} onNavigate={onFocusChange} />
+        <DepartmentGraph identity={identity} viewMode={viewMode} focusId={focusId} focusPerson={focusPerson ?? null} onNavigate={onFocusChange} />
       ) : kind === "team" ? (
         <TeamGraph
           identity={identity}
