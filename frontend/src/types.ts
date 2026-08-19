@@ -42,6 +42,10 @@ export interface SkillOut {
 }
 
 export interface ProjectHistoryItem {
+  // Addresses the EmployeeProject row for PUT/DELETE
+  // /people/{id}/projects/{project_id}. Always present -- it's ungated on
+  // the backend, same as project_name.
+  project_id: number;
   project_name: string;
   project_type: string;
   role: string;
@@ -312,6 +316,15 @@ export interface DocSubjectCandidate {
   // app/doc_extraction.py's rank_candidates for exactly which strings this
   // can be; rendered as-is, humanised at the display layer.
   match_reason: string;
+  // Who this person actually is, so two same-named candidates are
+  // distinguishable — full_name and confidence describe what the DOCUMENT
+  // said and are identical for both of them. Filled by app/proposals.py's
+  // _candidate_details at display time. Optional because an employee row
+  // deleted since extraction yields none of it.
+  job_title?: string;
+  org_unit?: string | null;
+  office?: string | null;
+  is_active?: boolean;
 }
 
 export interface DocSubjectMatchOut {

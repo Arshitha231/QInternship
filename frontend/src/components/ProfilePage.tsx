@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  ApiError, getOrgChart, getPerson, requestDeactivation, requestRestriction, updateEmployee,
-  updateOwnBio, updateOwnNamePronunciation,
+  ApiError, getOrgChart, getPerson, removeProjectHistory, requestDeactivation, requestRestriction,
+  updateEmployee, updateOwnBio, updateOwnNamePronunciation, upsertProjectHistory,
 } from "../api";
 import type { ActionRequestResult, ActiveDirectReport } from "../api";
 import type {
-  Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode,
+  Identity, OrgChainNode, PersonDetail, ProjectHistoryItem, SkillOut, UpdateEmployeeChanges,
+  ViewMode,
 } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
@@ -183,6 +184,149 @@ export function EditField({ label, badge, children }: { label: string; badge?: s
   );
 }
 
+// ---------------------------------------------------------------------------
+// One project-history row, editable in place by IT in work mode.
+//
+// Scoped to correcting an EXISTING membership (and removing one), which is
+// what "edit project history" means and what PUT/DELETE
+// /people/{id}/projects/{project_id} address. Creating a membership from
+// scratch is a supported backend call but has no control here: it needs a
+// project to point at, and there is no endpoint that lists projects to
+// pick from — a picker built on guessed ids would be worse than no picker.
+//
+// role and contribution are the editable fields. start is deliberately NOT
+// editable here: ProjectHistoryItem publishes month precision only ("never
+// exact dates", see app/schemas.py), so a month picked in this form would
+// silently rewrite the stored day to the 1st. That is acceptable for an
+// end date the reviewer is deliberately setting, and not acceptable for a
+// start date they only meant to leave alone.
+// ---------------------------------------------------------------------------
+
+function ProjectHistoryRowEditor({
+  item, personId, identity, viewMode, onDone,
+}: {
+  item: ProjectHistoryItem;
+  personId: string;
+  identity: Identity;
+  viewMode: ViewMode;
+  onDone: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [role, setRole] = useState(item.role);
+  const [contribution, setContribution] = useState(item.contribution ?? "");
+  const [current, setCurrent] = useState(item.current);
+  const [endMonth, setEndMonth] = useState(item.end_month ?? "");
+
+  function startEdit() {
+    setRole(item.role);
+    setContribution(item.contribution ?? "");
+    setCurrent(item.current);
+    setEndMonth(item.end_month ?? "");
+    setError(null);
+    setEditing(true);
+  }
+
+  async function save() {
+    // Only what actually changed goes on the wire — the backend writes
+    // exactly the keys it receives, so sending an unchanged field would
+    // be a silent no-op write rather than a no-op.
+    const changes: Parameters<typeof upsertProjectHistory>[3] = {};
+    if (role !== item.role) changes.role = role;
+    if (contribution !== (item.contribution ?? "")) changes.contribution = contribution || null;
+    if (current !== item.current || (!current && endMonth !== (item.end_month ?? ""))) {
+      // A month becomes the 1st of that month; "current" clears the date
+      // outright, which is what null means on this column.
+      changes.end_date = current ? null : (endMonth ? `${endMonth}-01` : null);
+    }
+    if (Object.keys(changes).length === 0) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await upsertProjectHistory(identity, personId, item.project_id, changes, viewMode);
+      setEditing(false);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(
+      `Remove ${item.project_name} from this person's project history? This can't be undone.`,
+    )) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await removeProjectHistory(identity, personId, item.project_id, viewMode);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't remove — try again.");
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <>
+        {error && <p className="bio-error">{error}</p>}
+        <div className="project-history-actions">
+          <button className="link-btn" disabled={busy} onClick={startEdit}>Edit</button>
+          <button className="link-btn link-btn-danger" disabled={busy} onClick={remove}>
+            {busy ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="bio-edit project-history-edit">
+      <label className="edit-field">
+        <span className="edit-label">Role</span>
+        <input className="edit-input" value={role} onChange={(e) => setRole(e.target.value)} />
+      </label>
+      <label className="edit-field">
+        <span className="edit-label">Contribution</span>
+        <textarea
+          className="edit-input" rows={3} value={contribution}
+          onChange={(e) => setContribution(e.target.value)}
+        />
+      </label>
+      <label className="edit-check">
+        <input type="checkbox" checked={current} onChange={(e) => setCurrent(e.target.checked)} />
+        <span>Still on this project</span>
+      </label>
+      {!current && (
+        <label className="edit-field">
+          <span className="edit-label">Ended</span>
+          <input
+            className="edit-input" type="month" value={endMonth}
+            onChange={(e) => setEndMonth(e.target.value)}
+          />
+        </label>
+      )}
+      {error && <p className="bio-error">{error}</p>}
+      <div className="bio-actions">
+        <button className="btn" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+        <button className="btn btn-primary" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 export function ProfilePage({
   personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
 }: Props) {
@@ -220,6 +364,12 @@ export function ProfilePage({
   // Same "staged, not applied" shape as restrictRequest above.
   const [deactivateRequest, setDeactivateRequest] = useState<ActionRequestResult | null>(null);
 
+  // Re-fetches the profile after a project-history write. A refetch rather
+  // than patching the row in place: the write returns exact dates while
+  // this page renders month strings and a derived `current` flag, so
+  // reconciling by hand would duplicate the backend's own derivation.
+  const [historyToken, setHistoryToken] = useState(0);
+
   const isOwnProfile = personId === identity.id;
   // Presentation only — mirrors app/writes.py's real gate (EDITABLE table +
   // the person_id == caller.id self-block), which is what actually decides
@@ -227,6 +377,12 @@ export function ProfilePage({
   // would produce a 403 on Save, not a security hole; the server is the
   // only enforcement that matters.
   const canEditEmployee = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
+  // Same presentation-only mirror, of app/writes.py's project-history gate:
+  // EDITABLE grants "project_entry"/"contribution" to it/work, and
+  // _refuse_own_record blocks the caller's own record. !isOwnProfile is the
+  // visible half of that second rule — an IT person looking at their own
+  // profile sees no edit controls at all, rather than buttons that 403.
+  const canEditProjectHistory = identity.role === "it" && viewMode === "work" && !isOwnProfile;
 
   useEffect(() => {
     let cancelled = false;
@@ -263,7 +419,7 @@ export function ProfilePage({
     return () => {
       cancelled = true;
     };
-  }, [personId, identity, viewMode]);
+  }, [personId, identity, viewMode, historyToken]);
 
   if (detail === undefined) {
     return (
@@ -878,6 +1034,12 @@ export function ProfilePage({
                         <p className="job-desc">
                           {p.project_desc || <span className="muted">No description on file</span>}
                         </p>
+                      )}
+                      {canEditProjectHistory && (
+                        <ProjectHistoryRowEditor
+                          item={p} personId={personId} identity={identity}
+                          viewMode={viewMode} onDone={() => setHistoryToken((t) => t + 1)}
+                        />
                       )}
                     </li>
                   ))}

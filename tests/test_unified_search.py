@@ -5,7 +5,7 @@ is actually permitted to see.
 """
 from app.schemas import ProblemExpert
 from app.tool_calling import AssistantTurn, ResolvedToolCall
-from app.unified_search import _TOOL_REASONS, _phrase_experts
+from app.unified_search import _TOOL_REASONS, _humanize_args, _phrase_experts
 from tests.conftest import auth_headers
 
 
@@ -559,3 +559,35 @@ async def test_a_single_call_request_still_takes_exactly_one_call(client, monkey
     assert resp.status_code == 200
     assert len(resp.json()["overview"]["trace"]) == 1
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# The reasoning panel must not read as a query dump. Rewriting the `reason`
+# line left the arg chips still rendering raw {field, op, value} JSON.
+# ---------------------------------------------------------------------------
+
+def test_search_people_args_are_rendered_as_english():
+    args = {"filters": [
+        {"field": "office", "op": "in", "value": ["Bangalore", "Singapore"]},
+        {"field": "skills", "op": "contains", "value": "Kubernetes"},
+    ]}
+    out = _humanize_args("search_people", args)
+    assert out == {"office": "is one of Bangalore or Singapore", "skills": "includes Kubernetes"}
+    # Nothing left that looks like a query.
+    assert "filters" not in out and "op" not in str(out) and "field" not in str(out)
+
+
+def test_two_filters_on_one_field_are_joined_not_clobbered():
+    args = {"filters": [
+        {"field": "job_title", "op": "contains", "value": "Engineer"},
+        {"field": "job_title", "op": "ne", "value": "Engineering Manager"},
+    ]}
+    assert _humanize_args("search_people", args)["job title"] == (
+        "includes Engineer and is not Engineering Manager")
+
+
+def test_other_tools_arguments_are_left_alone():
+    """find_people/get_org_chain arguments are already readable name/value
+    pairs -- rewriting them would be churn, not clarity."""
+    args = {"person": "Zain Nguyen", "direction": "up", "depth": 1}
+    assert _humanize_args("get_org_chain", args) == args
