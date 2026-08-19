@@ -36,7 +36,9 @@ if missing:
 SEARCH_ENDPOINT = os.environ["SEARCH_ENDPOINT"].rstrip("/")
 SEARCH_KEY = os.environ["SEARCH_KEY"]
 SEARCH_API_VERSION = "2024-07-01"
-INDEX_NAME = INDEX_SCHEMA["name"]
+# Honours SEARCH_INDEX_NAME too, so "build an index for my local data"
+# cannot silently overwrite the shared one -- see app/search_client.py.
+INDEX_NAME = os.environ.get("SEARCH_INDEX_NAME", INDEX_SCHEMA["name"])
 
 # Its own resource, separate from chat — see app/search_client.py's comment
 # for why this is the plain OpenAI client (base_url=.../openai/v1/) rather

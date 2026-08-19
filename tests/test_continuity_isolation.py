@@ -150,3 +150,129 @@ async def test_continuity_exposure_route_succeeds_for_hr(client):
 async def test_continuity_employee_route_404s_for_unknown_person(client):
     resp = await client.get("/continuity/employees/does-not-exist", headers=auth_headers("hr"))
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# ...and 403s for hr itself in EMPLOYEE mode.
+#
+# The gate used to be caller.role alone, so an hr caller previewing employee
+# mode kept full continuity access — work-authorization review dates and
+# per-engagement exposure, which is exactly the data that mode exists to
+# demonstrate an ordinary colleague cannot see. The tab was visible too, but
+# the tab was never the control: these are the checks that are.
+# ---------------------------------------------------------------------------
+
+CONTINUITY_ROUTES = [
+    "/continuity/exposure",
+    "/continuity/engagement-exposure",
+    "/continuity/review-queue",
+    f"/continuity/employees/{SUBJECT_ID}",
+]
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_continuity_routes_forbidden_for_hr_in_employee_mode(client, path):
+    resp = await client.get(path, params={"view_mode": "employee"}, headers=auth_headers("hr"))
+    assert resp.status_code == 403, f"{path} leaked continuity data in employee mode"
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_continuity_routes_still_work_for_hr_in_work_mode(client, path):
+    """Explicit work mode, and the default when the parameter is omitted —
+    hr/it default to work mode server-side (resolve_view_mode), and silently
+    narrowing that would look like data loss on a page that worked before."""
+    explicit = await client.get(path, params={"view_mode": "work"}, headers=auth_headers("hr"))
+    assert explicit.status_code == 200, explicit.text
+
+    defaulted = await client.get(path, headers=auth_headers("hr"))
+    assert defaulted.status_code == 200, defaulted.text
+
+
+@pytest.mark.parametrize("path", CONTINUITY_ROUTES)
+async def test_only_an_explicit_employee_mode_closes_continuity(client, path):
+    """An unrecognised view_mode resolves to WORK for hr, exactly as omitting
+    it does — resolve_view_mode's documented rule for the roles that are
+    allowed to choose, applied identically on every route in the app. Pinned
+    here so this endpoint's behaviour is stated rather than assumed: only the
+    literal "employee" narrows, and nothing about a malformed parameter is
+    special-cased for continuity.
+
+    (The "malformed can only narrow" half of resolve_view_mode is about the
+    role gate — a caller outside WORK_MODE_ROLES gets employee mode however
+    they ask, which is what the non-hr 403 tests above already cover.)"""
+    resp = await client.get(path, params={"view_mode": "wOrk; --"}, headers=auth_headers("hr"))
+    assert resp.status_code == 200, resp.text
+
+
+async def test_service_layer_refuses_employee_mode_without_going_through_http(db_session):
+    """The route check is a duplicate, not the enforcement — app.continuity's
+    own functions have to refuse too, since the tool-calling layer and any
+    future caller don't come through FastAPI."""
+    from app.auth import AuthenticatedUser
+    from app.continuity import ContinuityForbidden, get_org_exposure
+
+    hr = AuthenticatedUser(id="hr-continuity-vm", role="hr")
+    with pytest.raises(ContinuityForbidden):
+        get_org_exposure(db_session, hr, view_mode="employee")
+
+    # Same caller, work mode: allowed.
+    assert get_org_exposure(db_session, hr, view_mode="work") is not None
+
+
+# ---------------------------------------------------------------------------
+# The same audit, applied to every other surface gated on a role predicate.
+#
+# Continuity was found by inspection, not by a test — so these pin the rest of
+# the class rather than waiting for each one to be reported. Every route here
+# was verified against a running server to actually leak before the fix.
+# ---------------------------------------------------------------------------
+
+HR_ONLY_READS = [
+    "/suggested_official_links",
+]
+
+
+@pytest.mark.parametrize("path", HR_ONLY_READS)
+async def test_hr_only_reads_close_in_employee_mode(client, path):
+    assert (await client.get(
+        path, params={"view_mode": "work"}, headers=auth_headers("hr"))).status_code == 200
+    assert (await client.get(
+        path, params={"view_mode": "employee"}, headers=auth_headers("hr"))).status_code == 403
+
+
+async def test_hr_confidential_project_bypass_closes_in_employee_mode(db_session):
+    """HR's blanket exemption for confidential projects is a role privilege,
+    so it collapses in employee mode like every other one. Membership does
+    not — that's an ABAC grant keyed on identity, and those survive employee
+    mode by design, so somebody actually staffed on the project still sees
+    it either way."""
+    from app.auth import AuthenticatedUser
+    from app.models import Project
+    from app.models.enums import ProjectClassification
+    from app.project_skills import get_required_skills
+
+    project = (
+        db_session.query(Project)
+        .filter(Project.classification == ProjectClassification.confidential)
+        .first()
+    )
+    assert project is not None, "fixture set has no confidential project to test with"
+
+    hr = AuthenticatedUser(id="hr-conf-vm", role="hr")
+    assert get_required_skills(db_session, hr, project.id, "work") is not None
+    assert get_required_skills(db_session, hr, project.id, "employee") is None
+
+    # An unrelated ordinary employee never saw it in either mode.
+    outsider = AuthenticatedUser(id="stranger-conf-vm", role="employee")
+    assert get_required_skills(db_session, outsider, project.id, "work") is None
+
+
+async def test_hr_writes_outside_the_editable_table_close_in_employee_mode(client):
+    """POST /notifications/date-milestones and the training write are the two
+    writes that don't go through EDITABLE, which is empty for every role in
+    employee mode. Without their own collapse they'd be the only writes an hr
+    caller could still make while previewing the ordinary view."""
+    resp = await client.post(
+        "/notifications/date-milestones",
+        params={"view_mode": "employee", "on": "2026-01-01"}, headers=auth_headers("hr"))
+    assert resp.status_code == 403

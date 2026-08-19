@@ -67,7 +67,11 @@ interface ContactNode {
   link: CommunityLinkOut;
   x: number;
   y: number;
-  person: PersonDetail | null | undefined; // undefined = still loading
+  // undefined = still loading. Never null: a link whose contact resolved to
+  // "not visible to you" is dropped before nodes are built, so no node can
+  // exist without a person to name it. That used to be a `| null` case, and
+  // the card fell back to rendering the raw contact id.
+  person: PersonDetail | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,17 +83,22 @@ interface ContactNode {
 // ---------------------------------------------------------------------------
 
 function ContactCard({
-  node, editMode, busy, onOpenProfile, onRemove,
+  node, person, editMode, busy, onOpenProfile, onRemove,
 }: {
   node: ContactNode;
+  // Required, and separate from `node`, so this card cannot be rendered for
+  // a contact nobody could name. Both the name and the status below used to
+  // fall back to a placeholder when this was missing — the id, and a green
+  // "available" dot for someone who was neither available nor visible.
+  person: PersonDetail;
   editMode: boolean;
   busy: boolean;
   onOpenProfile: (id: string, name: string) => void;
   onRemove: (linkId: number) => void;
 }) {
-  const { link, person } = node;
-  const name = person?.full_name ?? link.contact_employee_id;
-  const status = person?.availability_status ?? "available";
+  const { link } = node;
+  const name = person.full_name;
+  const status = person.availability_status;
   const isPersonal = link.source === "personal";
 
   return (
@@ -118,11 +127,18 @@ function ContactCard({
       )}
       <span className="avatar" aria-hidden="true">{initials(name)}</span>
       <p className="tree-node-name">{name}</p>
-      <p className="tree-node-role">{person?.job_title ?? link.role_label}</p>
-      <p className="tree-node-status">
-        <span className={`status-dot status-${status}`} />
-        {STATUS_LABEL[status] ?? status}
-      </p>
+      <p className="tree-node-role">{person.job_title ?? link.role_label}</p>
+      {/* No status line at all when the field isn't on the payload, rather
+          than a default. This used to fall back to "available", which
+          reported a cheerful green dot for people who were restricted or
+          gone — the status was the part of that bug most likely to mislead,
+          since a missing name at least looks broken. */}
+      {status && (
+        <p className="tree-node-status">
+          <span className={`status-dot status-${status}`} />
+          {STATUS_LABEL[status] ?? status}
+        </p>
+      )}
       <p className="community-node-what">{link.role_label}</p>
       {editMode && (
         // Exact, unambiguous text per source -- never a shared badge an
@@ -242,7 +258,7 @@ export function CommunityGraphCanvas({
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    listCommunityLinks(identity)
+    listCommunityLinks(identity, viewMode)
       .then((rows) => {
         if (cancelled) return;
         setLinks(rows);
@@ -277,7 +293,18 @@ export function CommunityGraphCanvas({
     }
   }
 
-  const radius = useMemo(() => radiusForCount((links ?? []).length), [links]);
+  // Links we can actually draw. The server already drops contacts you can't
+  // see, so this should be every link — it stays as a second line of defence
+  // because the alternative failure mode is silent and ugly: a node with a
+  // raw id where a name goes. A `null` here means the profile lookup refused
+  // someone the link list still returned, which is a real disagreement
+  // between two endpoints and not something to paper over on the canvas.
+  const visibleLinks = useMemo(
+    () => (links ?? []).filter((l) => peopleById.get(l.contact_employee_id) !== null),
+    [links, peopleById],
+  );
+
+  const radius = useMemo(() => radiusForCount(visibleLinks.length), [visibleLinks]);
   // The canvas's own coordinate space grows with the radius, so a large
   // ring never clips against a fixed-size drawing surface -- the outer
   // frame (fixed FRAME_HEIGHT, overflow:hidden) is what actually bounds
@@ -286,18 +313,20 @@ export function CommunityGraphCanvas({
   const center = { x: size / 2, y: size / 2 };
 
   const nodes: ContactNode[] = useMemo(() => {
-    const rows = links ?? [];
-    return rows.map((link, i) => {
-      const angle = (2 * Math.PI * i) / Math.max(rows.length, 1) - Math.PI / 2;
+    return visibleLinks.map((link, i) => {
+      const angle = (2 * Math.PI * i) / Math.max(visibleLinks.length, 1) - Math.PI / 2;
       return {
         link,
         x: center.x + radius * Math.cos(angle),
         y: center.y + radius * Math.sin(angle),
-        person: peopleById.has(link.contact_employee_id) ? peopleById.get(link.contact_employee_id) : undefined,
+        // `?? undefined` collapses "not fetched yet" and "fetched as null"
+        // into the loading state — but a null can no longer reach here,
+        // since visibleLinks filtered it out above.
+        person: peopleById.get(link.contact_employee_id) ?? undefined,
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [links, peopleById, radius]);
+  }, [visibleLinks, peopleById, radius]);
 
   if (error) {
     return (
@@ -357,7 +386,8 @@ export function CommunityGraphCanvas({
               <div key={n.link.id} className="community-canvas-node skel skel-card" style={{ left: n.x, top: n.y, width: 154, height: 90 }} />
             ) : (
               <ContactCard
-                key={n.link.id} node={n} editMode={editMode} busy={removingId === n.link.id}
+                key={n.link.id} node={n} person={n.person}
+                editMode={editMode} busy={removingId === n.link.id}
                 onOpenProfile={onOpenProfile} onRemove={removeLink}
               />
             ),

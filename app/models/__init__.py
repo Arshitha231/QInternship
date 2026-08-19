@@ -4,6 +4,7 @@ from app.models.course_requirement import CourseRequirement
 from app.models.doc_subject_match import DocSubjectMatch
 from app.models.employee import Employee
 from app.models.employee_certification import EmployeeCertification
+from app.models.employee_action_request import EmployeeActionRequest
 from app.models.employee_course_status import EmployeeCourseStatus
 from app.models.employee_project import EmployeeProject
 from app.models.employee_skill import EmployeeSkill
@@ -27,6 +28,7 @@ __all__ = [
     "CourseRequirement",
     "DocSubjectMatch",
     "Employee",
+    "EmployeeActionRequest",
     "EmployeeCertification",
     "EmployeeCourseStatus",
     "EmployeeProject",

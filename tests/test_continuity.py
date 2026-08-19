@@ -890,6 +890,16 @@ def test_submit_forbidden_for_non_hr(fx, db_session, caller):
         submit_authorization_record(db_session, caller, fx.high.id, authorization_type="opt", effective_from=TODAY)
 
 
+def test_submit_forbidden_for_hr_previewing_employee_mode(fx, db_session):
+    # An HR caller with view_mode="employee" must collapse to an ordinary
+    # employee here too (app.permissions.effective_role) -- same gate the
+    # read endpoints enforce, now threaded through the write path as well.
+    with pytest.raises(ContinuityForbidden):
+        submit_authorization_record(
+            db_session, HR, fx.high.id, authorization_type="opt", effective_from=TODAY, view_mode="employee",
+        )
+
+
 def test_submit_writes_audit_row_without_leaking_authorization_type(fx, db_session):
     before = db_session.query(AuditLog).filter_by(actor_id=HR.id).count()
     submit_authorization_record(db_session, HR, fx.high.id, authorization_type="h1b", effective_from=TODAY)
@@ -1022,6 +1032,14 @@ def test_confirm_forbidden_for_non_hr(fx, db_session, caller):
         confirm_authorization_record(db_session, caller, pending.id)
 
 
+def test_confirm_forbidden_for_hr_previewing_employee_mode(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    with pytest.raises(ContinuityForbidden):
+        confirm_authorization_record(db_session, HR, pending.id, view_mode="employee")
+
+
 def test_confirm_writes_audit_row(fx, db_session):
     pending = submit_authorization_record(
         db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
@@ -1081,6 +1099,14 @@ def test_reject_forbidden_for_non_hr(fx, db_session, caller):
     )
     with pytest.raises(ContinuityForbidden):
         reject_authorization_record(db_session, caller, pending.id)
+
+
+def test_reject_forbidden_for_hr_previewing_employee_mode(fx, db_session):
+    pending = submit_authorization_record(
+        db_session, HR, fx.high.id, authorization_type="stem_opt", effective_from=TODAY,
+    )
+    with pytest.raises(ContinuityForbidden):
+        reject_authorization_record(db_session, HR, pending.id, view_mode="employee")
 
 
 def test_reject_writes_audit_row(fx, db_session):
@@ -1176,6 +1202,12 @@ def test_acknowledge_forbidden_for_non_hr(fx, db_session, caller):
     current = _get_current_authorization_record(db_session, fx.high.id)
     with pytest.raises(ContinuityForbidden):
         acknowledge_hr_review(db_session, caller, current.id)
+
+
+def test_acknowledge_forbidden_for_hr_previewing_employee_mode(fx, db_session):
+    current = _get_current_authorization_record(db_session, fx.high.id)
+    with pytest.raises(ContinuityForbidden):
+        acknowledge_hr_review(db_session, HR, current.id, view_mode="employee")
 
 
 def test_acknowledge_writes_audit_row_without_leaking_dates_or_type(fx, db_session):

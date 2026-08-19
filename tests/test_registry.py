@@ -65,7 +65,7 @@ def test_covers_schema_against_the_conftest_seeded_schema(db_session):
 
 def test_ignored_columns_exact_contents():
     assert IGNORED_COLUMNS == frozenset({
-        "directory_object_id", "is_active", "created_at", "updated_at",
+        "directory_object_id", "is_active", "deactivated_at", "created_at", "updated_at",
         "timezone", "away_until", "org_unit_id", "office_id", "manager_id", "delegate_id",
     })
 

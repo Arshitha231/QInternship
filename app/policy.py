@@ -136,15 +136,39 @@ def enforce(plan: PeopleQuery, caller: AuthenticatedUser, view_mode: ViewMode = 
 
 def can_see_direct_reports(role: str, view_mode: ViewMode = "work") -> bool:
     """The one shared decision behind app.people's find_people enrichment and
-    app.org_chart's get_org_chain(direction="down") gate -- previously two
-    independently-written inline checks (`acting_role in ("manager", "hr")`
-    vs `caller.role not in ("manager", "hr")`) that had already drifted:
-    people.py's collapsed via effective_role for employee view mode,
-    org_chart.py's didn't, since get_org_chain has no view_mode parameter at
-    all. Lives here rather than app/registry.py because direct_reports isn't
-    a field with a sensitivity tier -- registry.py's own ALLOWED_SENSITIVITY
-    comment already frames this as a row-scoping obligation, not broader
-    field access, which is exactly this module's job.
+    app.org_chart's get_org_chain(direction="down") gate. Lives here rather
+    than app/registry.py because direct_reports isn't a field with a
+    sensitivity tier -- registry.py's own ALLOWED_SENSITIVITY comment already
+    frames this as a row-scoping obligation, not broader field access, which
+    is exactly this module's job.
+
+    Consolidating the two callers was supposed to stop them drifting, and it
+    only half worked: they agreed on the ANSWER but were handed different
+    questions, because get_org_chain had no view_mode parameter to pass. Once
+    it got one, the two surfaces disagreed outright for a manager --
+    find_people withheld direct_reports (raw employee mode -> collapsed to
+    "employee"), the org chart returned them.
+
+    The resolution is effective_role, collapsing ANY role in employee mode --
+    NOT a carve-out that lets a manager keep this because they never had a
+    work mode to lose. That carve-out is tempting (it preserves every
+    manager's own team chart) and it is wrong: employee mode's central
+    guarantee is that its output is identical whoever is looking
+    (tests/test_view_modes.py::test_employee_mode_list_identical_across_roles),
+    and direct_reports appearing for a manager and not an employee is
+    precisely a caller's role leaking back into the anonymous view. Tried it,
+    watched that test fail, reverted.
+
+    The consequence is real and worth stating: because resolve_view_mode pins
+    managers to employee mode permanently, a manager sees direct_reports
+    through NEITHER surface today. find_people was already like this; the org
+    chart only differed because it had no view_mode to pass. Giving managers
+    their team back means giving them a work mode (adding "manager" to
+    WORK_MODE_ROLES), which is a deliberate product change to make on its own
+    -- not something to smuggle in through this predicate.
+
+    Both callers pass their caller's real view_mode and get the same answer
+    for the same person, by construction rather than by convention.
     """
     return effective_role(role, view_mode) in ("manager", "hr")
 

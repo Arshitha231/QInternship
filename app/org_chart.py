@@ -4,9 +4,10 @@ Same pipeline and philosophy as find_people/get_person: retrieve -> filter
 records -> (direction/RBAC check) -> cap results -> write audit_log ->
 respond. The org chart is not exempt from any of it — upward (who this
 person reports to) is visible to everyone who can see the record at all;
-downward (who reports to this person) is restricted to manager and hr,
-exactly like the "manager chain | upward: all, downward: manager+" row in
-the field-visibility table. Insufficient role gets an empty list, same
+downward (who reports to this person) is restricted to manager and hr in
+work mode, exactly like the "manager chain | upward: all, downward:
+manager+" row in the field-visibility table — and to nobody in employee
+mode, where every caller is an ordinary colleague. Insufficient role gets an empty list, same
 redact-never-reject treatment as any other restricted field — the root
 record itself is what 404s (mirroring get_person), not the direction.
 """
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session, aliased
 from app.auth import AuthenticatedUser
 from app.models import AuditLog, Employee, OrgUnit
 from app.people import MAX_RESULTS
+from app.permissions import ViewMode
 from app.policy import can_see_direct_reports, enforce, excluded_by_obligations
 from app.query_compiler import enforced_person_ref
 from app.query_plan import PeopleQuery
@@ -176,15 +178,27 @@ def get_org_chain(
     person_id: str,
     direction: Literal["up", "down"],
     depth: int = MAX_DEPTH,
+    view_mode: ViewMode = "work",
 ) -> list[OrgChainNode] | None:
+    """view_mode was missing entirely until now, and that was a real hole
+    rather than an omission of convenience: this function had no way to
+    express employee mode, so an hr/manager caller previewing it kept the
+    downward direction (who reports to this person) that an ordinary
+    colleague never gets, and kept seeing restricted people in the chain.
+    app.policy.can_see_direct_reports' own docstring recorded the drift --
+    find_people collapsed via effective_role, this didn't.
+
+    Both consequences are fixed by threading it through: enforce() picks up
+    the restricted-record obligation for the mode, and the direction gate
+    below finally receives it.
+    """
     effective_depth = max(1, min(depth, MAX_DEPTH))
     result: list[OrgChainNode] = []
     try:
-        # Row-level policy decision, computed once. No view_mode argument --
-        # get_org_chain has no view_mode parameter at all, so this evaluates
-        # as if in work mode, identical to is_record_visible's own default
-        # before this migration.
-        decision = enforce(PeopleQuery(select=["id"]), caller)
+        # Row-level policy decision, computed once, for the caller's mode --
+        # in employee mode this restores the restricted-record obligation
+        # that hr would otherwise keep here alone.
+        decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
 
         # 1. retrieve + 2. filter records — the root person itself. Same
         # "identical whether nonexistent or restricted" shape as get_person.
@@ -193,14 +207,12 @@ def get_org_chain(
             return None
 
         # Direction check (RBAC only — no relationship requirement, same
-        # shape as hire_date/cost_centre being hr-only). Shared with
-        # find_people's direct_reports enrichment via can_see_direct_reports
-        # -- previously two independently-written inline checks that had
-        # already drifted (find_people's collapsed via effective_role for
-        # employee view mode, this one didn't). No view_mode argument here:
-        # get_org_chain has no view_mode parameter at all today, so this
-        # keeps evaluating as if in work mode, same as before this change.
-        if direction == "down" and not can_see_direct_reports(caller.role):
+        # shape as hire_date/cost_centre being hr-only). The caller's real
+        # view_mode goes in: can_see_direct_reports owns the hr-previewing-
+        # employee-mode vs manager-who-has-no-work-mode distinction, so this
+        # call site and find_people's enrichment get the same answer for the
+        # same person without either having to re-derive it.
+        if direction == "down" and not can_see_direct_reports(caller.role, view_mode):
             return []
 
         raw = _traverse(db, person_id, direction, effective_depth)
@@ -257,5 +269,12 @@ def get_org_chain(
     finally:
         # 5. write to audit_log — logged whether visible, role-denied, or
         # fully populated; the audit trail always knows the truth.
-        _write_audit(db, caller, f"person_id={person_id};direction={direction};depth={depth}", len(result))
+        # view_mode recorded too: the same request answers differently in
+        # each lens now, so an audit row without it cannot explain its own
+        # result_count.
+        _write_audit(
+            db, caller,
+            f"person_id={person_id};direction={direction};depth={depth};view_mode={view_mode}",
+            len(result),
+        )
     # 6. respond (via the returns above)

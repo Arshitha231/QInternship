@@ -290,15 +290,42 @@ def test_hr_loses_direct_reports_visibility_in_employee_mode():
 
 
 def test_manager_loses_direct_reports_visibility_in_employee_mode():
+    """No carve-out for the manager role, even though a manager is pinned to
+    employee mode permanently (resolve_view_mode) and this therefore means
+    "a manager never sees direct_reports over HTTP at all".
+
+    Letting managers keep it here is the obvious-looking fix and it breaks
+    the guarantee employee mode exists for: output must be identical whoever
+    is looking (test_view_modes.py::test_employee_mode_list_identical_across_
+    roles), and direct_reports present for a manager and absent for an
+    employee is the caller's role leaking into the anonymous view. Giving
+    managers their team back means giving them a work mode, not an exception
+    here.
+    """
     assert not can_see_direct_reports("manager", "employee")
 
 
 def test_can_see_direct_reports_defaults_to_work_mode():
-    # get_org_chain has no view_mode parameter at all and calls this with
-    # role only -- the default must match its pre-existing (raw-role)
-    # behavior exactly, not silently start collapsing.
+    # Both callers now pass a real view_mode (get_org_chain gained one), so
+    # the default is only a convenience for direct/service-level calls --
+    # it must still mean work mode, not silently start collapsing.
     assert can_see_direct_reports("manager") == can_see_direct_reports("manager", "work")
     assert can_see_direct_reports("hr") == can_see_direct_reports("hr", "work")
+
+
+def test_both_callers_of_the_predicate_ask_the_same_question():
+    """The consolidation this predicate exists for only half worked: the two
+    callers agreed on the answer but were handed different arguments,
+    because get_org_chain had no view_mode to pass and defaulted to work
+    while find_people passed the caller's real mode. Pinned here so a future
+    caller can't reintroduce the split by omitting the argument again."""
+    import inspect
+
+    from app.org_chart import get_org_chain
+    from app.people import find_people
+
+    for fn in (get_org_chain, find_people):
+        assert "view_mode" in inspect.signature(fn).parameters, fn.__name__
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,19 @@ class OfficeOut(BaseModel):
     country: str
 
 
+class OrgUnitOut(BaseModel):
+    """GET /org_units — a flat list, not a tree; the caller (today, the
+    create-employee picker) already has to show every unit regardless of
+    depth, and unit_type/parent_id are enough to label each one
+    ("Platform Engineering — department") without the frontend re-deriving
+    the hierarchy itself."""
+
+    id: int
+    name: str
+    unit_type: str
+    parent_id: int | None
+
+
 class SkillOut(BaseModel):
     name: str
     category: str
@@ -41,6 +54,17 @@ class ProjectHistoryItem(BaseModel):
     # emitting null; Pydantic applies exclude_unset recursively, so nesting it
     # here keeps the same absent-not-null guarantee the top-level fields have.
     project_desc: str | None = None
+
+    # This person's own one-line account of what they did on the project —
+    # EmployeeProject.contribution, not Project.description (project_desc
+    # above). Same visibility precedent as project_desc: EDITABLE gates who
+    # may WRITE it (it/work, see app.permissions and app.proposals'
+    # FIELD_FOR_CHANGE_TYPE), but nothing narrows who may READ it beyond
+    # project_history's own BASE_FIELDS gate — it was simply missing from
+    # this model entirely, which is why accepting a document's contribution
+    # proposal committed the row correctly but it never appeared on anyone's
+    # profile.
+    contribution: str | None = None
 
 
 class TrainingStatusItem(BaseModel):
@@ -295,6 +319,14 @@ class RecordCourseStatusRequest(BaseModel):
     completed_on: date | None = None
 
 
+class LoginRequest(BaseModel):
+    """Demo login body. Not a credential type worth modelling further — see
+    app/demo_auth.py's module docstring for what this is and isn't."""
+
+    email: str
+    password: str
+
+
 class UpdateBioRequest(BaseModel):
     bio: str = Field(max_length=2000)
 
@@ -332,6 +364,52 @@ class UpdateEmployeeRequest(BaseModel):
     cost_centre: str | None = Field(default=None, max_length=50)
     employment_type: Literal["fte", "contractor", "intern"] | None = None
     linkedin_profile: str | None = Field(default=None, max_length=500)
+    # "restricted" is how a profile becomes invisible to everyone but HR
+    # (app.permissions.is_record_visible) — the enforcement already existed;
+    # this is what lets HR actually flip it. Not a general-purpose status
+    # editor: the other two values (available/away) are here too, since one
+    # field can't be write-only in one direction without genuinely being a
+    # separate action (see app/writes.py's own note on why this stayed a
+    # plain field rather than a dedicated restrict/unrestrict endpoint).
+    availability_status: Literal["available", "away", "restricted"] | None = None
+    # Reassigning someone's manager — needed before HR can deactivate a
+    # manager who still has active direct reports (see
+    # app.writes.deactivate_employee's block-until-reassigned rule).
+    manager_id: str | None = None
+
+
+class CreateEmployeeRequest(BaseModel):
+    """POST /employees — HR, work mode. Deliberately a small required set;
+    see app.writes' create section for why the rest (salary, date_of_birth,
+    cost_centre, ...) is a follow-up PATCH /employees/{id} instead of a
+    bigger form here.
+
+    Staging only: this body describes a request for approval, not a person.
+    Nothing lands in `employees` until the requester's resolved approver
+    approves it (app.writes.request_creation)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(max_length=200)
+    job_title: str = Field(max_length=200)
+    org_unit_id: int
+    work_email: str = Field(max_length=320)
+    employment_type: Literal["fte", "contractor", "intern"]
+    preferred_name: str | None = Field(default=None, max_length=200)
+    office_id: int | None = None
+    manager_id: str | None = None
+    work_phone: str | None = Field(default=None, max_length=50)
+    hire_date: date | None = None
+    # Not an employees column — becomes an official community_links row on
+    # approval, the same shape auto_assign_mentors would have created. See
+    # app.writes._apply_creation.
+    mentor_id: str | None = None
+
+
+class RejectActionRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class ProjectDescriptionRequest(BaseModel):
@@ -376,6 +454,18 @@ class ResolveSubjectRequest(BaseModel):
 
     employee_id: str | None = None
     new_hire: bool = False
+
+
+class FinalizeDocumentRequest(BaseModel):
+    """Body of POST /docs/{id}/finalize — the "Update" action. Every id here
+    gets accepted; every OTHER still-pending, employee-resolved proposal
+    from this document gets rejected. An empty list is a valid, meaningful
+    request — "reject everything, I don't want any of this document's
+    suggestions" — not an error, same as unchecking every box would mean."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accept_ids: list[int] = Field(default_factory=list)
 
 
 class BulkProposalRequest(BaseModel):

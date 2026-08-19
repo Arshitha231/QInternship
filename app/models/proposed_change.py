@@ -91,6 +91,16 @@ class ProposedChange(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # JSON-encoded record of exactly what accept()/edit() wrote, captured at
+    # commit time — not reconstructed later, which would be guessing at a
+    # moving target if another row has since touched the same skill or
+    # project membership. This is what app.proposals.undo() reverses; set to
+    # None the moment a successful undo runs, and left None forever on rows
+    # that predate this column (accept()/edit() only started writing it once
+    # undo existed to consume it) — undo() treats that absence as "nothing
+    # recorded to reverse," not as a bug.
+    undo_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     employee = relationship("Employee")
     source_doc = relationship("UploadedDoc")
     subject_match = relationship("DocSubjectMatch", back_populates="proposed_changes")

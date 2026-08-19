@@ -9,6 +9,13 @@ export interface OfficeOut {
   country: string;
 }
 
+export interface OrgUnitOut {
+  id: number;
+  name: string;
+  unit_type: string;
+  parent_id: number | null;
+}
+
 export interface PersonRef {
   id: string;
   full_name: string;
@@ -41,10 +48,19 @@ export interface ProjectHistoryItem {
   start_month: string;
   end_month: string | null;
   current: boolean;
-  // Work mode, hr/it only. Absent (not null) for anyone else -- the backend
-  // serializes with exclude_unset, so `"project_desc" in item` is the honest
-  // test for "am I allowed to see this", and undefined means no.
+  // Visible to every role/view_mode that can see project_history at all --
+  // EDITABLE gates who may WRITE this (it/work only), not who may read it.
+  // Still optional/nullable rather than a plain string: the backend
+  // serializes with exclude_unset, so `"project_desc" in item` stays the
+  // honest test for "did the backend even attempt to set this", separate
+  // from whether it happens to be empty.
   project_desc?: string | null;
+  // This person's own account of what they did -- EmployeeProject.
+  // contribution, not the project's own shared description above. Same
+  // visibility rule as project_desc: readable by anyone who can see
+  // project_history, writable only by it/work (see app/proposals.py's
+  // accept()/edit(), the only two paths that ever set it).
+  contribution?: string | null;
 }
 
 export interface TrainingStatusItem {
@@ -97,6 +113,14 @@ export interface UpdateEmployeeChanges {
   cost_centre?: string | null;
   employment_type?: "fte" | "contractor" | "intern";
   linkedin_profile?: string | null;
+  // "restricted" hides the profile from everyone but HR (see
+  // app/permissions.py's is_record_visible) -- the enforcement is
+  // unconditional and pre-existing; this is the write side of it.
+  availability_status?: "available" | "away" | "restricted";
+  // Reassigning a direct report to a new manager -- the prerequisite
+  // app.writes.deactivate_employee's block-until-reassigned rule requires
+  // before their old manager can be deactivated.
+  manager_id?: string | null;
 }
 
 export interface PersonDetail {
@@ -337,6 +361,21 @@ export interface ProposedChangeGroup {
   employee_id: string;
   employee_name: string | null;
   changes: ProposedChangeOut[];
+}
+
+// GET /uploaded_docs — one row per document ever uploaded. pending_count and
+// unresolved_subject_count are live, computed server-side, so the review
+// screen can tell "still awaiting a decision" apart from "finalized"
+// (content_scrubbed_at set) without re-deriving it from every subject/change
+// row itself.
+export interface UploadedDocSummary {
+  id: number;
+  filename: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  content_scrubbed_at: string | null;
+  pending_count: number;
+  unresolved_subject_count: number;
 }
 
 export interface BulkResultRow {

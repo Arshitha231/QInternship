@@ -16,11 +16,16 @@ of responsibilities ARCHITECTURE_2.md §10 lays out.
 
 Same shape as app/directory_tools.py: small functions, one AuditLog row per
 public call via a local _write_audit, typed Pydantic returns. No ABAC —
-continuity's gate is the simple binary caller.role == "hr", checked in
-every public function here (not only at the route layer — ARCHITECTURE_2.md
+continuity's gate is the simple binary "hr in work mode", checked in every
+public function here (not only at the route layer — ARCHITECTURE_2.md
 invariant #3) and *again* at the route layer in app/main.py for the HTTP
 status shape, matching the existing double-check pattern at
 /notifications/date-milestones and /people/{id}/training/{code}.
+
+The view_mode half of that gate is not cosmetic. Employee mode is the "what
+an ordinary colleague sees" lens, and this module's output — upcoming
+work-authorization review dates, per-engagement delivery exposure — is
+exactly what an ordinary colleague must not see. See _require_hr.
 
 Deliberately outside app/query_plan.py/app/policy.py entirely — this table
 is never joined into find_people/PeopleQuery, so it's structurally
@@ -50,6 +55,7 @@ from app.models.enums import (
 from app.models.office import Office
 from app.models.org_unit import OrgUnit
 from app.models.skill import Skill
+from app.permissions import ViewMode, effective_role
 from app.schemas import (
     AuthorizationRecordOut, BackupCandidate, ContinuityOverview, DeliveryDependency,
     EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, PersonRef,
@@ -64,7 +70,8 @@ _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 class ContinuityForbidden(Exception):
-    """Raised by every public function in this module for a non-hr caller."""
+    """Raised by every public function in this module for a caller who isn't
+    HR in work mode."""
 
 
 class AuthorizationRecordNotFound(Exception):
@@ -83,9 +90,23 @@ class AuthorizationRecordNotActionable(Exception):
     one exception to 409 for both."""
 
 
-def _require_hr(caller: AuthenticatedUser) -> None:
-    if caller.role != "hr":
-        raise ContinuityForbidden("Continuity data is an HR-only view")
+def _require_hr(caller: AuthenticatedUser, view_mode: ViewMode = "work") -> None:
+    """HR in WORK mode, not merely an HR role.
+
+    Employee mode is "what an ordinary colleague sees", and it is not a
+    display preference — every other surface in this app collapses the
+    caller to an ordinary employee there (app.permissions.effective_role),
+    including HR's own exemption for restricted records. Continuity used to
+    check `caller.role` alone, which meant an HR caller previewing employee
+    mode still saw work-authorization review dates and per-engagement
+    exposure: exactly the data the mode exists to demonstrate is hidden.
+
+    Routed through effective_role rather than an inline `view_mode ==
+    "employee"` so this cannot drift from the collapse the rest of the
+    pipeline performs.
+    """
+    if effective_role(caller.role, view_mode) != "hr":
+        raise ContinuityForbidden("Continuity data is an HR-only view, in work mode")
 
 
 def _write_audit(db: Session, caller: AuthenticatedUser, action: str, target: str,
@@ -197,8 +218,10 @@ def _to_record_out(record: WorkAuthorizationRecord) -> AuthorizationRecordOut:
 # actually due, acknowledged or not -- HR still has to close it out for
 # real via confirm_authorization_record eventually.
 
-def acknowledge_hr_review(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
-    _require_hr(caller)
+def acknowledge_hr_review(
+    db: Session, caller: AuthenticatedUser, record_id: int, view_mode: ViewMode = "work",
+) -> AuthorizationRecordOut:
+    _require_hr(caller, view_mode)
     record = db.get(WorkAuthorizationRecord, record_id)
     if record is None:
         raise AuthorizationRecordNotFound(str(record_id))
@@ -780,8 +803,11 @@ def _list_review_queue_items(
 # --- Public functions -- each checks caller.role == "hr", each writes ----
 # --- exactly one AuditLog row via _write_audit ----------------------------
 
-def get_org_exposure(db: Session, caller: AuthenticatedUser, window_days: int | None = None) -> ContinuityOverview:
-    _require_hr(caller)
+def get_org_exposure(
+    db: Session, caller: AuthenticatedUser, window_days: int | None = None,
+    view_mode: ViewMode = "work",
+) -> ContinuityOverview:
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     engagements = _list_engagement_exposures(db, cfg, today, window_days)
@@ -805,8 +831,9 @@ def get_engagement_exposure(
     db: Session, caller: AuthenticatedUser, *, exposure: str | None = None, client: str | None = None,
     project: str | None = None, office: str | None = None, org_unit: str | None = None,
     dependency_type: str | None = None, window_days: int | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[EngagementExposure]:
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     results = _list_engagement_exposures(
@@ -827,13 +854,14 @@ def get_hr_review_queue(
     authorization_type: str | None = None, exposure: str | None = None,
     next_review_from: date | None = None, next_review_to: date | None = None,
     engagements_min: int | None = None, engagements_max: int | None = None,
+    view_mode: ViewMode = "work",
 ) -> list[HrReviewQueueItem]:
     """The proactive "who is nearing a review date" list -- every employee
     with a current, HR-verified record and a scheduled review, whether or
     not it has any client-engagement consequence. Complements
     get_engagement_exposure, which only ever surfaces the subset whose
     review does intersect something."""
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     cfg = _load_thresholds()
     today = date.today()
     items = _list_review_queue_items(
@@ -859,8 +887,10 @@ def get_hr_review_queue(
     return items
 
 
-def get_employee_continuity(db: Session, caller: AuthenticatedUser, employee_id: str) -> EmployeeContinuityDetail | None:
-    _require_hr(caller)
+def get_employee_continuity(
+    db: Session, caller: AuthenticatedUser, employee_id: str, view_mode: ViewMode = "work",
+) -> EmployeeContinuityDetail | None:
+    _require_hr(caller, view_mode)
     employee = db.get(Employee, employee_id)
     result: EmployeeContinuityDetail | None = None
     try:
@@ -918,6 +948,7 @@ def submit_authorization_record(
     authorization_type: WorkAuthorizationType | str, effective_from: date,
     effective_until: date | None = None, next_hr_review_date: date | None = None,
     source_document_type: str | None = None, internal_notes: str | None = None,
+    view_mode: ViewMode = "work",
 ) -> AuthorizationRecordOut:
     """Enters a new record as pending_verification. Never touches
     is_current or any other row for this employee -- see this section's
@@ -927,7 +958,7 @@ def submit_authorization_record(
     current at submission time, so a second pending submission for the
     same employee getting confirmed first can't leave this one pointing at
     a record that's no longer current."""
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     employee = db.get(Employee, employee_id)
     if employee is None or not employee.is_active:
         raise AuthorizationRecordNotFound(employee_id)
@@ -952,7 +983,9 @@ def submit_authorization_record(
     return _to_record_out(record)
 
 
-def confirm_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+def confirm_authorization_record(
+    db: Session, caller: AuthenticatedUser, record_id: int, view_mode: ViewMode = "work",
+) -> AuthorizationRecordOut:
     """The verification gate closing: this is the only place a
     WorkAuthorizationRecord's is_current is ever set to True, and it does
     so atomically with retiring whichever record was current before it.
@@ -974,7 +1007,7 @@ def confirm_authorization_record(db: Session, caller: AuthenticatedUser, record_
     actually current right now, even if another pending record for the
     same employee was confirmed in between submit and this call.
     """
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     record = _load_pending_record(db, record_id)
 
     previous = _get_current_authorization_record(db, record.employee_id)
@@ -998,7 +1031,9 @@ def confirm_authorization_record(db: Session, caller: AuthenticatedUser, record_
     return _to_record_out(record)
 
 
-def reject_authorization_record(db: Session, caller: AuthenticatedUser, record_id: int) -> AuthorizationRecordOut:
+def reject_authorization_record(
+    db: Session, caller: AuthenticatedUser, record_id: int, view_mode: ViewMode = "work",
+) -> AuthorizationRecordOut:
     """Rejected rows are kept, not deleted -- same reasoning as
     ProposedChangeStatus.rejected and SuggestedLinkStatus.rejected
     elsewhere in this codebase: a rejected submission is itself useful
@@ -1008,7 +1043,7 @@ def reject_authorization_record(db: Session, caller: AuthenticatedUser, record_i
     never was. Who rejected it and when lives in the audit row, the same
     system of record AuditLog already is for actor/timestamp everywhere
     else in this module."""
-    _require_hr(caller)
+    _require_hr(caller, view_mode)
     record = _load_pending_record(db, record_id)
 
     record.verification_status = VerificationStatus.rejected

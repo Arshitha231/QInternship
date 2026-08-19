@@ -228,6 +228,41 @@ class NotificationKind(str, enum.Enum):
     birthday_reminder = "birthday_reminder"
     work_anniversary_reminder = "work_anniversary_reminder"
     hr_review_reminder = "hr_review_reminder"
+    # app.writes' restrict/deactivate approval flow — a maker-checker
+    # control, not a course or date trigger, but the same "the row is the
+    # delivery" reasoning applies, so it shares this table rather than a
+    # second one.
+    action_approval_requested = "action_approval_requested"
+    action_approved = "action_approved"
+    action_rejected = "action_rejected"
+
+
+class EmployeeActionType(str, enum.Enum):
+    """What app.writes' maker-checker flow is being asked to do.
+
+    `create` joined the other two rather than staying single-actor as
+    originally reasoned ("the lower-risk, additive direction"): adding a
+    person is what mints a real identity in the directory, and a fabricated
+    one is not cheaply undone — deactivating it later leaves the record, its
+    audit trail, and anything already linked to it in place. reactivate_
+    employee is still single-actor, and genuinely is the low-risk undo
+    direction: it can only restore somebody the same two-person control
+    already approved removing.
+
+    `create` is also the only member whose request has no target_employee_id
+    — there is no employee to point at until the approval lands. See
+    EmployeeActionRequest.payload.
+    """
+
+    restrict = "restrict"
+    deactivate = "deactivate"
+    create = "create"
+
+
+class EmployeeActionStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
 
 
 # Years of service worth telling HR about: the first one, then every fifth.

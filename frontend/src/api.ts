@@ -1,8 +1,8 @@
 import type {
   AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut,
-  EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OrgChainNode,
-  PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut, UnifiedSearchResponse,
-  UpdateEmployeeChanges, UploadDocResult, ViewMode,
+  EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OfficeOut,
+  OrgChainNode, OrgUnitOut, PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut,
+  UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -11,11 +11,20 @@ import type {
 // deployed data without running uvicorn locally.
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+export const UNAUTHORIZED_EVENT = "orghub:unauthorized";
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  // The raw, still-structured response body's "detail" key -- most routes
+  // send a plain string there and `message` alone is enough, but a few (see
+  // deactivateEmployee's 409) send a structured object so the caller can
+  // act on it (e.g. render the list of direct reports blocking it) instead
+  // of re-parsing a stringified message.
+  detail?: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -33,9 +42,40 @@ async function request<T>(path: string, identity: Identity, init?: RequestInit):
     headers: { ...headers(identity), ...(init?.headers ?? {}) },
   });
   if (!res.ok) {
+    // A 401 means the identity these headers carry is no longer accepted --
+    // the backend was restarted into entra mode, say. Broadcast it so App
+    // can drop the session and show the login form, rather than leaving
+    // every panel showing its own error. Dispatched, not imported: session.ts
+    // imports API_BASE from this module, and calling into it here would make
+    // the pair circular.
+    if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     throw new ApiError(res.status, `${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<T>;
+}
+
+// --- Sign-in (POST /auth/login). The only call in this file that doesn't
+// take an Identity -- it's what produces one. 404s if the backend is
+// running real auth, where sign-in is Entra's job; see app/demo_auth.py.
+
+export async function login(email: string, password: string): Promise<Identity> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    // Pass the server's own message through rather than mapping status codes
+    // here: a wrong password, an unknown email and a deactivated employee all
+    // come back as the same 401, and that sameness is deliberate (see
+    // app/demo_auth.py's DemoLoginDenied).
+    const detail = typeof body?.detail === "string" ? body.detail : `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail, body?.detail);
+  }
+  // The response is an AuthenticatedUser; Identity is the subset the
+  // request headers actually carry.
+  return { id: body.id, role: body.role, name: body.name };
 }
 
 export interface SearchFilters {
@@ -110,14 +150,191 @@ export function updateEmployee(
   });
 }
 
+// The plain summary app/main.py's _employee_action_result returns —
+// deliberately not PersonDetail, since get_person returns nothing for an
+// inactive record (the very state deactivate/reactivate transition
+// through), for every caller including HR.
+export interface EmployeeActionResult {
+  id: string;
+  full_name: string;
+  job_title: string;
+  is_active: boolean;
+  availability_status: string;
+  deactivated_at: string | null;
+}
+
+export interface ActiveDirectReport {
+  id: string;
+  full_name: string;
+}
+
+export interface CreateEmployeeFields {
+  full_name: string;
+  job_title: string;
+  org_unit_id: number;
+  work_email: string;
+  employment_type: "fte" | "contractor" | "intern";
+  preferred_name?: string;
+  office_id?: number;
+  manager_id?: string;
+  work_phone?: string;
+  hire_date?: string;
+  // Not a field on the employee — becomes an official mentor link in their
+  // community graph when the request is approved (app.writes._apply_creation).
+  mentor_id?: string;
+}
+
+export function listOrgUnits(identity: Identity): Promise<OrgUnitOut[]> {
+  return request<OrgUnitOut[]>("/org_units", identity);
+}
+
+export function listOffices(identity: Identity): Promise<OfficeOut[]> {
+  return request<OfficeOut[]>("/offices", identity);
+}
+
+// Stages a request; creates nobody. Returns the pending approval, not an
+// employee — adding a person is a two-person action, same as restricting or
+// deactivating one (app.writes.request_creation).
+export function requestEmployeeCreation(
+  identity: Identity, fields: CreateEmployeeFields, viewMode: ViewMode,
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employees?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+}
+
+// Bespoke fetch, not the generic request<T> helper — a blocked deactivation
+// (409) sends a structured body ({message, active_direct_reports}), and the
+// generic helper's ApiError only ever carries a plain string built from the
+// status line, discarding the parsed JSON entirely. The caller (ProfilePage)
+// needs the actual list to render an inline reassignment picker, not just
+// the fact that it was blocked.
+// The shape app/main.py's _action_request_result returns for restrict/
+// deactivate/create — a staged request, not an applied change. Nothing here
+// takes effect until the resolved approver (approver_id/approver_name) acts
+// on it — see approveActionRequest/rejectActionRequest below.
+export interface ActionRequestResult {
+  request_id: number;
+  action_type: "restrict" | "deactivate" | "create";
+  status: "pending" | "approved" | "rejected";
+  // Null for a pending "create": the person being proposed has no id until
+  // the approval creates them. target_name is always populated (read from
+  // the request's payload in that case), so render that, never target_id.
+  target_id: string | null;
+  target_name: string;
+  approver_id: string | null;
+  approver_name: string | null;
+  requested_by: string;
+  requested_by_name: string;
+  created_at: string;
+  resolved_at: string | null;
+  rejection_reason: string | null;
+}
+
+// Bespoke fetch, not the generic request<T> helper — a blocked request
+// (409, active direct reports still assigned) sends a structured body
+// ({message, active_direct_reports}), and the generic helper's ApiError
+// only ever carries a plain string built from the status line, discarding
+// the parsed JSON entirely. The caller (ProfilePage) needs the actual list
+// to render an inline reassignment picker, not just the fact it was blocked.
+async function requestEmployeeAction(
+  identity: Identity, path: string, viewMode: ViewMode,
+): Promise<ActionRequestResult> {
+  const res = await fetch(`${API_BASE}${path}?view_mode=${viewMode}`, {
+    method: "POST",
+    headers: headers(identity),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail;
+    const message = typeof detail === "string" ? detail : (detail?.message ?? `${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, message, detail);
+  }
+  return res.json() as Promise<ActionRequestResult>;
+}
+
+// Stages a restrict request — the profile is NOT restricted by this call.
+// Only approveActionRequest, called by the resolved approver, applies it.
+export const requestRestriction = (identity: Identity, personId: string, viewMode: ViewMode) =>
+  requestEmployeeAction(identity, `/employees/${personId}/restrict`, viewMode);
+
+// Stages a deactivate request — the employee is NOT deactivated by this
+// call. Still blocked (409) up front while they manage anyone active.
+export const requestDeactivation = (identity: Identity, personId: string, viewMode: ViewMode) =>
+  requestEmployeeAction(identity, `/employees/${personId}/deactivate`, viewMode);
+
+export function approveActionRequest(
+  identity: Identity, requestId: number, viewMode: ViewMode,
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employee_action_requests/${requestId}/approve?view_mode=${viewMode}`, identity, {
+    method: "POST",
+  });
+}
+
+export function rejectActionRequest(
+  identity: Identity, requestId: number, viewMode: ViewMode, reason?: string,
+): Promise<ActionRequestResult> {
+  return request<ActionRequestResult>(`/employee_action_requests/${requestId}/reject?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
+}
+
+// No view_mode — identity-scoped, not role-scoped (see
+// app.writes.list_my_pending_approvals: whoever the requester's reporting
+// chain names as approver sees these, whatever role header they're using).
+export function listPendingApprovals(identity: Identity): Promise<{ requests: ActionRequestResult[] }> {
+  return request(`/employee_action_requests`, identity);
+}
+
+// Narrow by design — see app.writes.DEACTIVATED_FIELDS. Identity and
+// placement only; this is the one carve-out that sees is_active=false
+// records at all, so it stays as small as it can.
+export interface DeactivatedEmployee {
+  id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string | null;
+  work_email: string;
+  deactivated_at: string | null;
+}
+
+// The only call that surfaces deactivated employees. Every other read in
+// this app treats them as nonexistent, which is what made reactivate
+// unreachable from the UI without knowing an id by heart.
+export function listDeactivatedEmployees(
+  identity: Identity, viewMode: ViewMode,
+): Promise<{ employees: DeactivatedEmployee[] }> {
+  return request(`/employees/deactivated?view_mode=${viewMode}`, identity);
+}
+
+export function reactivateEmployee(
+  identity: Identity, personId: string, viewMode: ViewMode,
+): Promise<EmployeeActionResult> {
+  return request<EmployeeActionResult>(`/employees/${personId}/reactivate?view_mode=${viewMode}`, identity, {
+    method: "POST",
+  });
+}
+
+// viewMode matters for direction="down": an hr/it caller previewing the
+// ordinary view loses the downward chain, exactly as they lose every other
+// privilege there. (A manager keeps their own team chart — they are pinned
+// to employee mode permanently and never had a work mode to give up; see
+// app.policy.is_previewing_ordinary_view.)
 export async function getOrgChart(
   identity: Identity,
   personId: string,
   direction: "up" | "down",
+  viewMode: ViewMode,
   depth = 10,
 ): Promise<OrgChainNode[]> {
   try {
-    return await request<OrgChainNode[]>(`/people/${personId}/org-chart?direction=${direction}&depth=${depth}`, identity);
+    return await request<OrgChainNode[]>(
+      `/people/${personId}/org-chart?direction=${direction}&depth=${depth}&view_mode=${viewMode}`,
+      identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return [];
     throw e;
@@ -152,12 +369,22 @@ export function unifiedSearch(
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
-// --- Staffing Continuity Intelligence — HR-only. Every call here 403s for
-// a non-"hr" identity; App.tsx never renders the calling UI at all for one.
+// --- Staffing Continuity Intelligence — HR in WORK mode only. Every call
+// here 403s for any other (role, view_mode); App.tsx never renders the
+// calling UI at all outside that pair.
+//
+// viewMode is a real argument, not decoration: employee mode is "what an
+// ordinary colleague sees", and work-authorization review dates are exactly
+// what an ordinary colleague must not see. The server decides (it collapses
+// every role to employee in that mode) — this just stops the UI asking for
+// something it will be refused.
 
-export function getContinuityOverview(identity: Identity, windowDays?: number): Promise<ContinuityOverview> {
-  const qs = windowDays !== undefined ? `?window_days=${windowDays}` : "";
-  return request<ContinuityOverview>(`/continuity/exposure${qs}`, identity);
+export function getContinuityOverview(
+  identity: Identity, viewMode: ViewMode, windowDays?: number,
+): Promise<ContinuityOverview> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (windowDays !== undefined) params.set("window_days", String(windowDays));
+  return request<ContinuityOverview>(`/continuity/exposure?${params}`, identity);
 }
 
 export interface ContinuityFilters {
@@ -171,21 +398,21 @@ export interface ContinuityFilters {
 }
 
 export function getEngagementExposure(
-  identity: Identity, filters: ContinuityFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: ContinuityFilters = {},
 ): Promise<EngagementExposure[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<EngagementExposure[]>(`/continuity/engagement-exposure${qs ? `?${qs}` : ""}`, identity);
+  return request<EngagementExposure[]>(`/continuity/engagement-exposure?${params}`, identity);
 }
 
 export async function getEmployeeContinuity(
-  identity: Identity, employeeId: string,
+  identity: Identity, employeeId: string, viewMode: ViewMode,
 ): Promise<EmployeeContinuityDetail | null> {
   try {
-    return await request<EmployeeContinuityDetail>(`/continuity/employees/${employeeId}`, identity);
+    return await request<EmployeeContinuityDetail>(
+      `/continuity/employees/${employeeId}?view_mode=${viewMode}`, identity);
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
@@ -203,14 +430,13 @@ export interface HrReviewQueueFilters {
 }
 
 export function getHrReviewQueue(
-  identity: Identity, filters: HrReviewQueueFilters = {},
+  identity: Identity, viewMode: ViewMode, filters: HrReviewQueueFilters = {},
 ): Promise<HrReviewQueueItem[]> {
-  const params = new URLSearchParams();
+  const params = new URLSearchParams({ view_mode: viewMode });
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "") params.set(k, String(v));
   }
-  const qs = params.toString();
-  return request<HrReviewQueueItem[]>(`/continuity/review-queue${qs ? `?${qs}` : ""}`, identity);
+  return request<HrReviewQueueItem[]>(`/continuity/review-queue?${params}`, identity);
 }
 
 // Silences the reminder sweep for this record's current due date only — not
@@ -285,6 +511,22 @@ export async function uploadDoc(
   return res.json() as Promise<UploadDocResult>;
 }
 
+export function listUploadedDocs(
+  identity: Identity, viewMode: ViewMode,
+): Promise<{ documents: UploadedDocSummary[] }> {
+  return request(`/uploaded_docs?view_mode=${viewMode}`, identity);
+}
+
+export function finalizeDocument(
+  identity: Identity, docId: number, acceptIds: number[], viewMode: ViewMode,
+): Promise<{ doc_id: number; results: BulkResultRow[]; content_scrubbed_at: string }> {
+  return request(`/docs/${docId}/finalize?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ accept_ids: acceptIds }),
+  });
+}
+
 export function listDocSubjectMatches(
   identity: Identity, viewMode: ViewMode, filters: { docId?: number; status?: string } = {},
 ): Promise<{ doc_id: number | null; subjects: DocSubjectMatchOut[] }> {
@@ -337,6 +579,11 @@ export const editProposedChange = (
 export const rejectProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
   proposedChangeAction(identity, id, "reject", viewMode);
 
+// Only valid on an accepted/edited row, and only while its source document
+// hasn't been finalized yet — see app/proposals.py's undo().
+export const undoProposedChange = (identity: Identity, id: number, viewMode: ViewMode) =>
+  proposedChangeAction(identity, id, "undo", viewMode);
+
 export const reassignProposedChange = (
   identity: Identity, id: number, employeeId: string, viewMode: ViewMode,
 ) => proposedChangeAction(identity, id, "reassign", viewMode, { employee_id: employeeId });
@@ -369,8 +616,14 @@ export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode
 // own graph; there is no person-id parameter anywhere below that could ask
 // for someone else's (see app/community_links.py's visibility guarantee).
 
-export function listCommunityLinks(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links", identity);
+// viewMode is forwarded because the server drops links whose contact is no
+// longer visible, using the same check getPerson applies — passing a
+// different mode to each would hand back a contact the profile lookup then
+// refuses, which is what used to render a bare id in the graph.
+export function listCommunityLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(`/community_links?view_mode=${viewMode}`, identity);
 }
 
 export function createCommunityLink(
@@ -409,28 +662,41 @@ export async function deleteCommunityLink(identity: Identity, linkId: number): P
 // Continuity's HR-only calls carry.
 
 export function listSuggestedOfficialLinks(
-  identity: Identity, officeId?: number,
+  identity: Identity, viewMode: ViewMode, officeId?: number,
 ): Promise<SuggestedOfficialLinkOut[]> {
-  const qs = officeId !== undefined ? `?office_id=${officeId}` : "";
-  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links${qs}`, identity);
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (officeId !== undefined) params.set("office_id", String(officeId));
+  return request<SuggestedOfficialLinkOut[]>(`/suggested_official_links?${params}`, identity);
 }
 
-export function generateSuggestedOfficialLinks(identity: Identity): Promise<SuggestedOfficialLinkOut[]> {
-  return request<SuggestedOfficialLinkOut[]>("/suggested_official_links/generate", identity, { method: "POST" });
+export function generateSuggestedOfficialLinks(
+  identity: Identity, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut[]> {
+  return request<SuggestedOfficialLinkOut[]>(
+    `/suggested_official_links/generate?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function confirmSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/confirm`, identity, { method: "POST" });
+export function confirmSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/confirm?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
-export function rejectSuggestedOfficialLink(identity: Identity, id: number): Promise<SuggestedOfficialLinkOut> {
-  return request<SuggestedOfficialLinkOut>(`/suggested_official_links/${id}/reject`, identity, { method: "POST" });
+export function rejectSuggestedOfficialLink(
+  identity: Identity, id: number, viewMode: ViewMode,
+): Promise<SuggestedOfficialLinkOut> {
+  return request<SuggestedOfficialLinkOut>(
+    `/suggested_official_links/${id}/reject?view_mode=${viewMode}`, identity, { method: "POST" });
 }
 
 // Mentor auto-assignment sweep for new hires -- unlike the office/role
 // suggestions above, this creates the official mentor link directly (no
 // confirm step); see app/community_links.py's auto_assign_mentors for why.
 // HR-only, same gate as the rest of this section.
-export function autoAssignMentors(identity: Identity): Promise<CommunityLinkOut[]> {
-  return request<CommunityLinkOut[]>("/community_links/auto_assign_mentors", identity, { method: "POST" });
+export function autoAssignMentors(
+  identity: Identity, viewMode: ViewMode,
+): Promise<CommunityLinkOut[]> {
+  return request<CommunityLinkOut[]>(
+    `/community_links/auto_assign_mentors?view_mode=${viewMode}`, identity, { method: "POST" });
 }

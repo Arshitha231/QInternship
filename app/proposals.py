@@ -37,6 +37,7 @@ from app.models import (
     Project,
     ProposedChange,
     Skill,
+    UploadedDoc,
 )
 from app.models.enums import (
     ChangeType,
@@ -79,6 +80,17 @@ class ProposalNotFound(Exception):
 
 class SubjectNotFound(Exception):
     pass
+
+
+class DocumentNotFound(Exception):
+    pass
+
+
+class DocumentAlreadyFinalized(Exception):
+    """content_scrubbed_at is already set — finalize_document is a one-shot
+    action, not idempotent: a second call would silently reject nothing
+    (every target row is already terminal) and re-stamp a timestamp that
+    should mark the one real event, not the latest double-click."""
 
 
 class ProposalNotActionable(Exception):
@@ -374,11 +386,12 @@ def accept(
         raise ProposalNotActionable(f"employee {proposal.employee_id} is not an active record")
 
     value = json.loads(proposal.proposed_value)
-    _commit(db, proposal.employee_id, proposal.change_type, value)
+    effect = _commit(db, proposal.employee_id, proposal.change_type, value)
 
     proposal.status = ProposedChangeStatus.accepted
     proposal.reviewed_by = caller.id
     proposal.reviewed_at = datetime.now()
+    proposal.undo_state = json.dumps(effect)
     db.commit()
     db.refresh(proposal)
 
@@ -413,13 +426,14 @@ def edit(
     if employee is None or not employee.is_active:
         raise ProposalNotActionable(f"employee {proposal.employee_id} is not an active record")
 
-    _commit(db, proposal.employee_id, proposal.change_type, edited_value)
+    effect = _commit(db, proposal.employee_id, proposal.change_type, edited_value)
 
     # The edited value replaces proposed_value permanently — the record of
     # what was committed is the edited version, not a copy the AI proposed
     # and a human overrode invisibly. What the AI originally said is still
     # recoverable from the audit trail's history if ever needed.
     proposal.proposed_value = json.dumps(edited_value)
+    proposal.undo_state = json.dumps(effect)
     proposal.status = ProposedChangeStatus.edited
     proposal.reviewed_by = caller.id
     proposal.reviewed_at = datetime.now()
@@ -430,6 +444,74 @@ def edit(
 
     _audit(db, caller, "edit_proposed_change", f"proposed_change_id={proposal.id}",
            [proposal.change_type.value], source=AI_EXTRACTION_SOURCE)
+    return proposal
+
+
+# ---------------------------------------------------------------------------
+# POST /proposed_changes/{id}/undo — reverse an accept()/edit(), while the
+# source document is still under review.
+# ---------------------------------------------------------------------------
+
+def undo(
+    db: Session, caller: AuthenticatedUser, proposal_id: int, view_mode: ViewMode
+) -> ProposedChange:
+    """Flips an accepted/edited proposal back to pending and reverses
+    exactly what its stored undo_state says was written — never re-reads
+    proposed_value to figure out what to undo, since for an edited row
+    that's the reviewer's typed value, not necessarily what _commit() saw
+    at the time it ran (a later proposal could have moved the same field
+    again since).
+
+    Only reachable while the source document hasn't been finalized yet —
+    the same gate app.proposals.correct() already applies, for the mirror-
+    image reason: finalize_document scrubs the document's own text and
+    treats that as the review session's real close. An accepted change on
+    a finalized document is meant to be done, not a draft indefinitely
+    reopenable from a review screen that no longer even shows that
+    document (see app/components/ReviewPage.tsx — a finalized document's
+    rows aren't rendered as interactive ChangeRows at all past that point).
+
+    A row accepted/edited before this column existed carries no
+    undo_state — refused outright rather than guessed at, the same
+    never-re-derive-it principle undo_state exists to satisfy in the
+    first place.
+    """
+    _authorize(caller, view_mode)
+    proposal = db.get(ProposedChange, proposal_id)
+    if proposal is None:
+        raise ProposalNotFound(str(proposal_id))
+    if proposal.status not in (ProposedChangeStatus.accepted, ProposedChangeStatus.edited):
+        raise ProposalNotActionable(
+            f"proposed change {proposal_id} is {proposal.status.value} — only an accepted "
+            f"or edited change can be undone"
+        )
+    _authorize_commit(caller, view_mode, proposal.change_type)
+
+    doc = db.get(UploadedDoc, proposal.source_doc_id)
+    if doc is not None and doc.content_scrubbed_at is not None:
+        raise ProposalNotActionable(
+            f"document {doc.id} was finalized at {doc.content_scrubbed_at} — its accepted "
+            f"changes can no longer be undone from here"
+        )
+    if not proposal.undo_state:
+        raise ProposalNotActionable(
+            f"proposed change {proposal_id} has no recorded undo state to reverse "
+            f"(it predates this feature)"
+        )
+
+    effect = json.loads(proposal.undo_state)
+    _reverse_commit(db, proposal.employee_id, effect)
+
+    proposal.status = ProposedChangeStatus.pending
+    proposal.reviewed_by = None
+    proposal.reviewed_at = None
+    proposal.undo_state = None
+    db.commit()
+    db.refresh(proposal)
+
+    reindex_employee_id(db, proposal.employee_id)
+
+    _audit(db, caller, "undo_proposed_change", f"proposed_change_id={proposal.id}", [proposal.change_type.value])
     return proposal
 
 
@@ -488,7 +570,7 @@ def _parse_date(value) -> date | None:
         return None
 
 
-def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
+def _commit_skill(db: Session, employee_id: str, value: dict) -> dict:
     """Skills land as `self`-sourced at `Learning`, never higher.
 
     A document saying somebody used Terraform is evidence they touched it,
@@ -496,6 +578,14 @@ def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
     the directory already has for exactly this distinction. Anything
     stronger would let an uploaded document manufacture expertise that
     find_mentor then recommends people to.
+
+    Returns the effect actually applied — {"kind": "skill", "created": bool,
+    "skill_id": int} — for app.proposals.undo() to reverse later.
+    "created" is False when the employee already held this skill (never
+    downgraded, so nothing here was actually written); undo() must never
+    delete a skill row it didn't create, since a duplicate proposal from a
+    second document could easily target the same (employee, skill) pair
+    after the first one already committed it.
     """
     skill_name = (value.get("skill") or "").strip()
     if not skill_name:
@@ -517,30 +607,53 @@ def _commit_skill(db: Session, employee_id: str, value: dict) -> None:
         .first()
     )
     if existing is not None:
-        return  # never downgrade a level somebody already holds
+        return {"kind": "skill", "created": False, "skill_id": skill_id}  # never downgrade a level somebody already holds
 
     db.add(EmployeeSkill(
         employee_id=employee_id, skill_id=skill_id,
         level=SkillLevel.learning, source=SkillSource.self_reported, verified_at=None,
     ))
+    return {"kind": "skill", "created": True, "skill_id": skill_id}
 
 
-def _commit_contribution(db: Session, employee_id: str, value: dict) -> None:
+def _commit_contribution(db: Session, employee_id: str, value: dict) -> dict:
+    """Returns {"kind": "contribution", "project_id": int, "previous":
+    str | None} — the contribution text this write overwrote (None if the
+    membership had none, including a membership this same call just
+    created), for undo() to restore. The membership row itself is never
+    deleted on undo, even if this call is what created it: a project_entry
+    proposal for the same (employee, project) may have since set the role/
+    dates on that same row, and deleting it would destroy that unrelated,
+    still-accepted change too. Reverting just the contribution field is
+    what "remove the specific field it wrote" means for a shared row.
+    """
     project_name = (value.get("project") or "").strip()
     contribution = (value.get("contribution") or "").strip()
     if not project_name or not contribution:
         raise ProposalNotActionable("proposed contribution is missing a project or text")
     project = _get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
+    previous = membership.contribution
     membership.contribution = contribution
+    return {"kind": "contribution", "project_id": project.id, "previous": previous}
 
 
-def _commit_project_entry(db: Session, employee_id: str, value: dict) -> None:
+def _commit_project_entry(db: Session, employee_id: str, value: dict) -> dict:
+    """Returns {"kind": "project_entry", "project_id": int, "previous":
+    {"role", "start_date", "end_date"}} — the role/dates this write
+    overwrote, for undo() to restore. Same "revert the field, never delete
+    the shared row" reasoning as _commit_contribution above.
+    """
     project_name = (value.get("project") or "").strip()
     if not project_name:
         raise ProposalNotActionable("proposed project entry has no project name")
     project = _get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
+    previous = {
+        "role": membership.role,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
     if value.get("role"):
         membership.role = str(value["role"])[:150]
     start = _parse_date(value.get("start_date"))
@@ -549,15 +662,66 @@ def _commit_project_entry(db: Session, employee_id: str, value: dict) -> None:
     end = _parse_date(value.get("end_date"))
     if end is not None:
         membership.end_date = end
+    return {"kind": "project_entry", "project_id": project.id, "previous": previous}
 
 
-def _commit(db: Session, employee_id: str, change_type: ChangeType, value: dict) -> None:
+def _commit(db: Session, employee_id: str, change_type: ChangeType, value: dict) -> dict:
     if change_type is ChangeType.skill:
-        _commit_skill(db, employee_id, value)
+        return _commit_skill(db, employee_id, value)
     elif change_type is ChangeType.contribution:
-        _commit_contribution(db, employee_id, value)
+        return _commit_contribution(db, employee_id, value)
     else:
-        _commit_project_entry(db, employee_id, value)
+        return _commit_project_entry(db, employee_id, value)
+
+
+def _reverse_commit(db: Session, employee_id: str, effect: dict) -> None:
+    """Reverses exactly what _commit() recorded, from its own returned
+    effect dict — see undo() for why this never re-derives what to undo
+    from the proposal's current proposed_value instead.
+
+    Never deletes an EmployeeProject row (see _commit_contribution's and
+    _commit_project_entry's own docstrings for why a shared membership row
+    can't be safely deleted just because THIS proposal happened to create
+    it) — only an EmployeeSkill row, and only when this exact proposal is
+    the one that created it.
+    """
+    kind = effect.get("kind")
+    if kind == "skill":
+        if effect.get("created"):
+            row = (
+                db.query(EmployeeSkill)
+                .filter(EmployeeSkill.employee_id == employee_id, EmployeeSkill.skill_id == effect["skill_id"])
+                .first()
+            )
+            if row is not None:
+                db.delete(row)
+        return  # created=False: this proposal never wrote a row, nothing to reverse
+    if kind == "contribution":
+        membership = (
+            db.query(EmployeeProject)
+            .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == effect["project_id"])
+            .first()
+        )
+        if membership is not None:
+            membership.contribution = effect.get("previous")
+        return
+    if kind == "project_entry":
+        membership = (
+            db.query(EmployeeProject)
+            .filter(EmployeeProject.employee_id == employee_id, EmployeeProject.project_id == effect["project_id"])
+            .first()
+        )
+        if membership is not None:
+            previous = effect.get("previous") or {}
+            membership.role = previous.get("role") or membership.role
+            membership.start_date = _parse_date(previous.get("start_date"))
+            membership.end_date = _parse_date(previous.get("end_date"))
+        return
+    # Deliberately not a silent no-op — same "raise on an obligation shape
+    # you don't recognize" discipline app/search_client.py's
+    # _apply_required_filter uses: an undo_state kind this function doesn't
+    # know how to reverse should fail loudly, not pretend to have undone it.
+    raise ProposalNotActionable(f"don't know how to undo effect kind {kind!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +773,19 @@ def correct(
 ) -> ProposedChange:
     _authorize(caller, view_mode)
     proposal = _load_pending(db, proposal_id)
+
+    # correct_call re-reads doc.extracted_text to re-run extraction with the
+    # reviewer's hint attached — once finalize_document has scrubbed it,
+    # that text is gone (by design), so a re-extract has nothing left to
+    # work from. Checked here rather than left to silently ask the model to
+    # correct an empty document: /edit is still available for exactly this
+    # case, since it commits the reviewer's own typed value directly.
+    doc = db.get(UploadedDoc, proposal.source_doc_id)
+    if doc is not None and doc.content_scrubbed_at is not None:
+        raise ProposalNotActionable(
+            f"document {doc.id} was finalized at {doc.content_scrubbed_at} and its content was cleared — "
+            f"use /edit to set a value directly instead of re-extracting"
+        )
 
     from app.doc_extraction import correct_call
 
@@ -695,3 +872,123 @@ def bulk_reject(
         except (ProposalNotFound, ProposalNotActionable, ReviewDenied) as exc:
             results.append({"id": proposal_id, "ok": False, "error": str(exc)})
     return results
+
+
+# ---------------------------------------------------------------------------
+# GET /docs — every uploaded document, with the live counts a review screen
+# needs to tell "still awaiting a decision" apart from "finalized" without a
+# second round trip per document.
+# ---------------------------------------------------------------------------
+
+def _serialize_document(db: Session, doc: UploadedDoc) -> dict:
+    pending_count = (
+        db.query(ProposedChange)
+        .filter(
+            ProposedChange.source_doc_id == doc.id,
+            ProposedChange.status == ProposedChangeStatus.pending,
+            ProposedChange.employee_id.isnot(None),  # only what's actually actionable right now
+        )
+        .count()
+    )
+    unresolved_subject_count = (
+        db.query(DocSubjectMatch)
+        .filter(
+            DocSubjectMatch.source_doc_id == doc.id,
+            DocSubjectMatch.resolution_status == ResolutionStatus.unresolved,
+        )
+        .count()
+    )
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "uploaded_by": doc.uploaded_by,
+        "uploaded_at": doc.uploaded_at,
+        "content_scrubbed_at": doc.content_scrubbed_at,
+        "pending_count": pending_count,
+        "unresolved_subject_count": unresolved_subject_count,
+    }
+
+
+def list_documents(db: Session, caller: AuthenticatedUser, view_mode: ViewMode) -> list[dict]:
+    _authorize(caller, view_mode)
+    docs = db.query(UploadedDoc).order_by(UploadedDoc.uploaded_at.desc()).all()
+    return [_serialize_document(db, doc) for doc in docs]
+
+
+def _load_document(db: Session, doc_id: int) -> UploadedDoc:
+    doc = db.get(UploadedDoc, doc_id)
+    if doc is None:
+        raise DocumentNotFound(str(doc_id))
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# POST /docs/{id}/finalize — the "Update" action. One decisive pass over
+# everything currently actionable for this document, then the document's
+# own content is gone.
+# ---------------------------------------------------------------------------
+
+def finalize_document(
+    db: Session, caller: AuthenticatedUser, doc_id: int, view_mode: ViewMode,
+    accept_ids: list[int],
+) -> dict:
+    """Accept every row in accept_ids; reject every OTHER still-pending,
+    employee-resolved row for this document — an unchecked suggestion is a
+    rejected one, not a skipped one, same "shopping cart" contract the
+    frontend presents. A subject that's still unresolved (no employee_id
+    yet) is untouched either way: its proposed_changes rows stay pending
+    and remain decidable later, independently of what happens to the
+    document's content here — resolving it later still works, since
+    accept()/edit()/reject() never read source_doc.extracted_text (only
+    /correct does, and /correct on a scrubbed document is refused, see
+    app.doc_extraction.correct_call).
+
+    Then the document's extracted_text is wiped and content_scrubbed_at is
+    stamped — once. Calling this again on an already-finalized document
+    raises DocumentAlreadyFinalized rather than quietly doing nothing.
+
+    Per-row failures are collected exactly like bulk_accept/bulk_reject
+    already do (a stale row — e.g. an employee who went inactive mid-
+    review — is reported, not raised) and never block the scrub: a single
+    bad row shouldn't leave a document's content stuck un-scrubbable
+    forever. An id in accept_ids that isn't actually one of this
+    document's pending, employee-resolved rows (wrong doc, already
+    decided, subject still unresolved) is silently ignored — the only ids
+    a well-behaved reviewer UI can ever send are exactly the ones this
+    function would already process as targets.
+    """
+    _authorize(caller, view_mode)
+    doc = _load_document(db, doc_id)
+    if doc.content_scrubbed_at is not None:
+        raise DocumentAlreadyFinalized(f"document {doc_id} was already finalized at {doc.content_scrubbed_at}")
+
+    accept_set = set(accept_ids)
+    target_ids = [
+        row[0] for row in
+        db.query(ProposedChange.id)
+        .filter(
+            ProposedChange.source_doc_id == doc_id,
+            ProposedChange.status == ProposedChangeStatus.pending,
+            ProposedChange.employee_id.isnot(None),
+        )
+        .all()
+    ]
+
+    results: list[dict] = []
+    for proposal_id in target_ids:
+        try:
+            if proposal_id in accept_set:
+                proposal = accept(db, caller, proposal_id, view_mode)
+            else:
+                proposal = reject(db, caller, proposal_id, view_mode)
+            results.append({"id": proposal_id, "ok": True, "status": proposal.status.value})
+        except (ProposalNotFound, ProposalNotActionable, ReviewDenied) as exc:
+            results.append({"id": proposal_id, "ok": False, "error": str(exc)})
+
+    doc.extracted_text = ""
+    doc.content_scrubbed_at = datetime.now()
+    db.commit()
+    db.refresh(doc)
+
+    _audit(db, caller, "finalize_document", f"doc_id={doc_id}", ["content_scrubbed_at"])
+    return {"doc_id": doc_id, "results": results, "content_scrubbed_at": doc.content_scrubbed_at}
