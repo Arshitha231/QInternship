@@ -397,6 +397,42 @@ async def test_a_route_naming_nobody_is_not_confident(client, monkeypatch):
     assert resp.json()["mode"] == "direct"
 
 
+async def test_statement_shaped_attribute_query_is_answered_without_the_model(client, monkeypatch):
+    """"engineers in Testville" is not question-shaped, describes no
+    problem, and matches no deterministic route, so the gate declines to
+    spend a model call -- and find_people can only match it against NAMES.
+    It used to return nothing. app.text_filters now reads it as the
+    structured request it is, still on the direct path and still without
+    the model: the escalation this needed was never worth a token."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get(
+        "/search", params={"q": "engineers in Testville"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "direct"
+    assert body["results"], "an attribute query that names real values must not come back empty"
+    assert all("Engineer" in p["job_title"] for p in body["results"])
+
+
+async def test_a_name_that_matches_nobody_is_not_reread_as_filters(client, monkeypatch):
+    """The re-read only fires on an already-empty result, so it must not
+    turn a genuine "no such person" into some loosely-related list. Nothing
+    in this text is a real office, unit, skill or job-title word."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get(
+        "/search", params={"q": "Nobody Named This In The Whole Company"}, headers=auth_headers("employee"),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"mode": "direct", "results": []}
+
+
 async def test_coordination_across_values_takes_the_assisted_path(client, monkeypatch):
     """An OR across values is the one shape find_people cannot express --
     its parameters take a single value each. This returned zero results

@@ -34,7 +34,8 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.models import Employee
-from app.people import find_people
+from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
+from app.text_filters import plan_from_text
 from app.permissions import ViewMode
 from app.schemas import (
     AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
@@ -257,6 +258,45 @@ def unified_search(
         return _build_assisted(db, caller, raw, elapsed_ms,
                                "No exact skill match — broadened to a semantic search across employee profiles.",
                                view_mode)
+
+    # The direct path found nothing and there was free text to interpret.
+    # Before reporting "no such people", try reading that text as the
+    # structured request it may well be.
+    #
+    # What this rescues: statement-shaped attribute queries. "engineers in
+    # Austin" is not question-shaped, describes no problem, and matches no
+    # deterministic route, so _wants_assistant() (correctly) declines to
+    # spend a model call on it -- and then find_people(query=...) can only
+    # match it against NAMES, because that is all its SQL fallback does.
+    # Zero results, while 27 Austin engineers sit in the table. The same
+    # text with a "?" has always worked, which is RC5 (ARCHITECTURE_2.md
+    # §2) leaking back in: punctuation still decides some answers.
+    #
+    # Deliberately NOT a model call. Three tests here assert "model must
+    # not be called" for ordinary free text, and they are right to -- that
+    # cost decision was made on purpose. app.text_filters answers the same
+    # queries deterministically, for no tokens, off real database
+    # vocabulary only, and returns None the moment the text names nothing
+    # real. So `mode` stays "direct" throughout: this is the direct path
+    # getting better at reading, not a second route to the assistant.
+    #
+    # Only reachable on an already-empty result, which is what bounds the
+    # blast radius: it cannot change an answer that currently works, only
+    # supply one where there is currently none.
+    #
+    # An exact identifier is excluded -- find_people short-circuits on it,
+    # so empty there means "that person exists but you may not see them",
+    # an honest flat empty that no amount of re-reading improves.
+    if not results and text and not _is_exact_identifier(db, text):
+        plan = plan_from_text(db, text, select_fields=sorted(SUMMARY_FIELDS), limit=MAX_RESULTS)
+        if plan is not None:
+            try:
+                results = search_people_by_plan(db, caller, plan, view_mode)
+            except ValueError:
+                # enforce()/validate() refused this plan for this caller.
+                # Invariant 5 (ARCHITECTURE_2.md §1): degrade, don't error
+                # -- the flat empty result below is still a correct answer.
+                pass
 
     return {"mode": "direct", "results": results}
 
