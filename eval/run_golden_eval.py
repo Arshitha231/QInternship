@@ -107,7 +107,19 @@ def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None
             choice = response.choices[0].message
             if choice.tool_calls:
                 call = choice.tool_calls[0]
-                arguments = json.loads(call.function.arguments)
+                # Same degrade app.tool_calling._real_resolve holds to on a
+                # malformed/truncated function-call payload -- observed live
+                # here (a real "Unterminated string" from the model on a
+                # chain step), and this file had no equivalent guard: an
+                # uncaught JSONDecodeError killed the whole 57-question run
+                # instead of scoring the one question a miss and continuing,
+                # same principle as every other degrade in this eval (retry
+                # storms and content-filter blocks are already handled, not
+                # left to crash the process).
+                try:
+                    arguments = json.loads(call.function.arguments)
+                except json.JSONDecodeError:
+                    return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
                 # Same lift app.tool_calling._real_resolve performs -- see
                 # that function's own comment. Needed here too so
                 # run_chain_strict below can tell whether the model asked
