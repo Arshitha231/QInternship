@@ -41,6 +41,7 @@ from app.schemas import (
     AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
     UnknownPerson,
 )
+from app.vocabulary import snap_tool_arguments
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
     TOOLS,
@@ -226,6 +227,13 @@ def unified_search(
 
     if text and _wants_assistant(db, text):
         return _assisted(db, caller, text, clean_filters, view_mode)
+
+    # The Filters panel is free-text inputs, not dropdowns fed by the real
+    # vocabulary, so "bangalore" and "cloud operations team" arrive exactly
+    # as typed. The assisted path snaps the model's arguments the same way
+    # (app/tool_calling.py); doing it here too means a filter chip and a
+    # question that mean the same thing resolve the same way.
+    clean_filters, _notes = snap_tool_arguments(db, clean_filters)
 
     results = find_people(db, caller, query=text or None, view_mode=view_mode, **clean_filters)
 

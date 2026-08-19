@@ -225,3 +225,61 @@ def snap(db: Session, plan: PeopleQuery) -> tuple[PeopleQuery, list[SnapNote]]:
         notes.extend(group_notes)
 
     return plan.model_copy(update={"filters": new_filters, "filter_groups": new_groups}), notes
+
+
+# ---------------------------------------------------------------------------
+# snap_tool_arguments() -- the same value correction, for find_people's
+# NAMED arguments rather than a PeopleQuery's filter list.
+# ---------------------------------------------------------------------------
+
+# find_people kwarg -> the registry field whose vocabulary governs it.
+#
+# `language` is deliberately absent. Its miss path is already handled, and
+# handled better: app.people.find_related_language_speakers offers speakers
+# of a linguistically related language and says explicitly that it is a
+# related suggestion, never a substitution. Snapping "Telugu" to whichever
+# seeded language scores highest would replace a careful, honest fallback
+# with a silent guess.
+#
+# `level` is absent for the reason SNAPPABLE_FIELDS gives: it is a fixed
+# enum, so a bad level is a rejection, not a fuzzy guess at which one was
+# meant.
+TOOL_ARGUMENT_VOCABULARIES: dict[str, str] = {
+    "org_unit": "org_unit",
+    "office": "office",
+    "skill": "skills",
+}
+
+
+def snap_tool_arguments(db: Session, arguments: dict) -> tuple[dict, list[SnapNote]]:
+    """Correct free-text values in a find_people-shaped kwargs dict against
+    the real database vocabulary.
+
+    The gap this closes: snap() only ever ran on a PeopleQuery, so
+    search_people got vocabulary correction and find_people -- the tool the
+    router reaches for overwhelmingly more often -- did not. A model asked
+    to guess exact strings from a 75-unit hierarchy it has never been shown
+    emits plausible near-misses: "Cloud Infrastructure" for a department
+    actually called "Infrastructure". find_people's org_unit resolution then
+    returns nothing and it hard-empties, so a question with 7 correct
+    answers returned 0 (golden eval t2-07).
+
+    A value that is already exact is returned unchanged -- _snap_one's first
+    tier is an exact match -- so this cannot alter a request that was
+    already right. A value that resolves to nothing stays as it was and the
+    caller still gets its honest empty result: "Quantum Computing" is not a
+    seeded skill and does not snap to a real one, which is exactly the
+    behaviour that keeps "do we have anyone who knows X" answerable with
+    "no".
+    """
+    snapped = dict(arguments)
+    notes: list[SnapNote] = []
+    for arg_name, field_name in TOOL_ARGUMENT_VOCABULARIES.items():
+        value = arguments.get(arg_name)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        resolved = _snap_one(value, _load_vocab(db, field_name))
+        if resolved is not None and resolved != value:
+            snapped[arg_name] = resolved
+        notes.append(SnapNote(field=arg_name, original=value, resolved=resolved))
+    return snapped, notes

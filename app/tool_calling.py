@@ -48,6 +48,7 @@ from app.project_search import find_experts
 from app.query_compiler import ORDERABLE_FIELDS
 from app.query_plan import Filter, Op, PeopleQuery
 from app.registry import REGISTRY
+from app.vocabulary import snap_tool_arguments
 
 load_dotenv()
 
@@ -1176,7 +1177,17 @@ def execute_tool_call(
     args.pop("needs_followup", None)
 
     if name == "find_people":
-        return find_people(db, caller, view_mode=view_mode, **args)
+        # Snapped BEFORE dispatch, not inside find_people, so tool_call
+        # .arguments carries the corrected value -- the overview's trace
+        # then shows the org unit that was actually searched, rather than
+        # displaying the model's near-miss beside results that came from
+        # something else. search_people has had this via snap() since it
+        # shipped; find_people, which the router picks far more often,
+        # never did.
+        snapped, _notes = snap_tool_arguments(db, args)
+        tool_call.arguments.update(
+            {k: v for k, v in snapped.items() if k in tool_call.arguments})
+        return find_people(db, caller, view_mode=view_mode, **snapped)
     if name == "get_person":
         # "self" is a fixed sentinel the model is taught to use for
         # first-person questions (see the get_person tool description and

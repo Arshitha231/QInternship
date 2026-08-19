@@ -10,7 +10,7 @@ org units "Platform Engineering" / "Finance Operations", offices "Test HQ"
 import pytest
 
 from app.query_plan import Filter, PeopleQuery
-from app.vocabulary import SNAPPABLE_FIELDS, snap, validate
+from app.vocabulary import SNAPPABLE_FIELDS, snap, snap_tool_arguments, validate
 
 # ---------------------------------------------------------------------------
 # validate() -- structural rejection only
@@ -286,3 +286,48 @@ def test_all_snappable_fields_are_registered_as_filterable():
     for field_name in SNAPPABLE_FIELDS:
         assert field_name in REGISTRY
         assert REGISTRY[field_name].filterable
+
+
+# ---------------------------------------------------------------------------
+# snap_tool_arguments(): snap() only ever ran on a PeopleQuery, so
+# search_people got vocabulary correction and find_people -- which the router
+# picks far more often -- did not.
+# ---------------------------------------------------------------------------
+
+def test_a_plausible_but_wrong_org_unit_snaps_to_the_real_one(db_session):
+    """Golden eval t2-07: the model emits "Cloud Infrastructure" for a
+    department actually called "Infrastructure", find_people's org_unit
+    resolution returns nothing, and it hard-empties -- 0 results for a
+    question with real answers."""
+    snapped, _ = snap_tool_arguments(db_session, {"skill": "Terraform", "org_unit": "Engineerin"})
+    assert snapped["org_unit"] == "Engineering"
+
+
+def test_an_already_correct_value_is_left_exactly_alone(db_session):
+    args = {"org_unit": "Engineering", "skill": "Terraform"}
+    snapped, _ = snap_tool_arguments(db_session, args)
+    assert snapped == args
+
+
+def test_an_unresolvable_value_is_kept_so_the_result_stays_honestly_empty(db_session):
+    """"do we have anyone who knows Quantum Computing" must still be
+    answerable with "no" -- snapping it to the nearest real skill would turn
+    an honest empty result into a confidently wrong one."""
+    snapped, notes = snap_tool_arguments(db_session, {"skill": "Underwater Basket Weaving"})
+    assert snapped["skill"] == "Underwater Basket Weaving"
+    assert [n.resolved for n in notes if n.field == "skill"] == [None]
+
+
+def test_language_is_deliberately_not_snapped(db_session):
+    """find_related_language_speakers already handles a language miss, and
+    handles it better: it offers speakers of a related language and says so.
+    Snapping would replace that with a silent guess."""
+    snapped, _ = snap_tool_arguments(db_session, {"language": "Telugu"})
+    assert snapped["language"] == "Telugu"
+
+
+def test_non_string_and_absent_values_are_untouched(db_session):
+    args = {"available": True, "level": "Expert", "name": None}
+    snapped, notes = snap_tool_arguments(db_session, args)
+    assert snapped == args
+    assert notes == []
