@@ -19,7 +19,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-02",
@@ -41,7 +43,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-03",
@@ -71,7 +75,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-04",
@@ -106,7 +112,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-05",
@@ -136,7 +144,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-06",
@@ -163,7 +173,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-07",
@@ -185,7 +197,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-08",
@@ -207,7 +221,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-09",
@@ -229,7 +245,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-10",
@@ -251,7 +269,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-11",
@@ -273,7 +293,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-12",
@@ -295,7 +317,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-13",
@@ -317,7 +341,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-14",
@@ -339,7 +365,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-15",
@@ -359,7 +387,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-16",
@@ -381,7 +411,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-17",
@@ -401,7 +433,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-18",
@@ -423,7 +457,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-19",
@@ -446,7 +482,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-20",
@@ -470,7 +508,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t1-21",
@@ -492,7 +532,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-01",
@@ -512,7 +554,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": true,
+    "unmeasurable_reason": "index/database mismatch (0/100 sampled ids present)"
   },
   {
     "id": "t2-02",
@@ -532,7 +576,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": true,
+    "unmeasurable_reason": "index/database mismatch (0/100 sampled ids present)"
   },
   {
     "id": "t2-03",
@@ -552,7 +598,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": true,
+    "unmeasurable_reason": "index/database mismatch (0/100 sampled ids present)"
   },
   {
     "id": "t2-04",
@@ -572,7 +620,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": true,
+    "unmeasurable_reason": "index/database mismatch (0/100 sampled ids present)"
   },
   {
     "id": "t2-05",
@@ -593,7 +643,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": true,
+    "unmeasurable_reason": "index/database mismatch (0/100 sampled ids present)"
   },
   {
     "id": "t2-06",
@@ -604,8 +656,8 @@
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
-      "skill": "Terraform",
-      "org_unit": "Cloud Operations Team"
+      "org_unit": "Cloud Operations Team",
+      "skill": "Terraform"
     },
     "refusal_message": null,
     "steps": 1,
@@ -622,28 +674,40 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-07",
     "tier": 2,
-    "category": "semantic_query",
+    "category": "vocabulary_snap",
     "text": "I need someone comfortable with Terraform who's part of the cloud infrastructure org",
     "caller": "Eval HR",
     "caller_role": "hr",
     "tool_call": "find_people",
     "arguments": {
       "skill": "Terraform",
-      "org_unit": "Cloud Infrastructure"
+      "org_unit": "Infrastructure"
     },
     "refusal_message": null,
     "steps": 1,
     "relevant_count": 7,
-    "returned_count": 0,
-    "topk_returned": [],
+    "returned_count": 31,
+    "topk_returned": [
+      "32d135ff-cf5c-4d23-aace-2ea2072a5563",
+      "37627fdd-1fee-4ba7-aa59-cdf1acbaaf52",
+      "0a650db7-84b8-49a6-b583-90487f0ffeca",
+      "884c114a-992b-4477-a4f8-3058c010acbb",
+      "a966b221-bc98-4d1c-b01a-13fbe4936679",
+      "0aa7619c-7c77-4851-b7b1-c8c43126e7e1",
+      "fe15e234-327e-46ee-a1e9-b15e728d8db5"
+    ],
     "exec_error": null,
-    "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "recall_at_k": 0.14285714285714285,
+    "precision_at_k": 0.14285714285714285,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-08",
@@ -677,7 +741,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-09",
@@ -717,7 +783,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-10",
@@ -748,7 +816,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-11",
@@ -779,7 +849,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-12",
@@ -808,7 +880,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-13",
@@ -828,7 +902,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-14",
@@ -851,7 +927,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-15",
@@ -873,7 +951,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-16",
@@ -903,7 +983,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-17",
@@ -928,7 +1010,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-18",
@@ -937,54 +1021,31 @@
     "text": "someone who can help with Kubernetes and works in Infrastructure",
     "caller": "Eval HR",
     "caller_role": "hr",
-    "tool_call": "find_people",
+    "tool_call": "search_people",
     "arguments": {
-      "skill": "Kubernetes",
-      "org_unit": "Infrastructure"
+      "filters": [
+        {
+          "field": "skills",
+          "op": "contains",
+          "value": "Kubernetes"
+        },
+        {
+          "field": "org_unit",
+          "op": "contains",
+          "value": "Infrastructure"
+        }
+      ]
     },
     "refusal_message": null,
     "steps": 1,
     "relevant_count": 34,
-    "returned_count": 34,
-    "topk_returned": [
-      "32d135ff-cf5c-4d23-aace-2ea2072a5563",
-      "37627fdd-1fee-4ba7-aa59-cdf1acbaaf52",
-      "884c114a-992b-4477-a4f8-3058c010acbb",
-      "0aa7619c-7c77-4851-b7b1-c8c43126e7e1",
-      "fe15e234-327e-46ee-a1e9-b15e728d8db5",
-      "ccf185ea-b969-4839-a507-4eb691bc30b8",
-      "c005d173-313b-4a18-b713-e597eb48a485",
-      "a4a83ea8-f2c2-40f8-9553-9ebf59a2e4e6",
-      "4a3bad95-aee5-4859-92a7-b1498cbab5d3",
-      "8473b1be-bc60-4bf2-830a-cc50f0bc46eb",
-      "ee841280-21e5-4c51-89ec-578fa5ae17d7",
-      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
-      "33a46488-281b-4602-80ba-c9c27eaccd04",
-      "ebd163b2-639f-4f3f-929e-79b5c5a385cb",
-      "5fa04274-08f0-4a9c-a05f-4530eec15ee7",
-      "2ee5a55b-fc3f-4be8-b05a-c5416788b15c",
-      "11ed3b11-c80e-4b73-ab29-f89d44179d9c",
-      "e9fac671-7c0e-4f77-baed-87af2c1e073b",
-      "e81dac3c-f148-4384-9fd8-b5bb51228116",
-      "6961164e-a22d-4b1f-a5bd-c7f6084f4cf7",
-      "f602a6ff-4f15-4216-bf6e-92636be55297",
-      "adb8046a-63c5-4036-863a-194c2daf0d0a",
-      "9bf484b2-2117-4339-9935-b62990c5955a",
-      "b888d3e2-6476-425e-a60b-8441a17e56db",
-      "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
-      "6a9e5395-9607-4b8f-af87-d7bb91cfc9a7",
-      "b43df0a7-e154-476f-9f80-e6d612c0dcf3",
-      "2dabd545-18f9-4ff9-bfa9-4d1b557abc32",
-      "c7fce051-8537-4be5-b728-8fad8b67eed5",
-      "451e879b-37f1-4f93-b96f-fa53a7993024",
-      "80fbf6f2-7f1d-451b-9a21-56394741f7b2",
-      "b5d5d86e-ee9b-45f2-a9b8-88599900dc26",
-      "4df2b111-2f37-430e-b4df-2deef77728d2",
-      "f996a19c-6467-4437-88da-a08cd884af28"
-    ],
-    "exec_error": null,
-    "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "returned_count": 0,
+    "topk_returned": [],
+    "exec_error": "operator 'contains' not legal for field 'org_unit' (allowed: ['eq', 'in'])",
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-19",
@@ -1064,7 +1125,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 0.37037037037037035,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-20",
@@ -1105,7 +1168,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-21",
@@ -1177,7 +1242,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-22",
@@ -1264,7 +1331,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 0.43103448275862066,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t2-23",
@@ -1346,7 +1415,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-01",
@@ -1372,7 +1443,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-02",
@@ -1398,7 +1471,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-03",
@@ -1424,7 +1499,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-04",
@@ -1450,7 +1527,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-05",
@@ -1476,7 +1555,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-06",
@@ -1498,13 +1579,15 @@
     "relevant_count": 3,
     "returned_count": 3,
     "topk_returned": [
-      "frozenset({('recognized', True), ('skill', 'Rust'), ('expert_count', 0), ('working_count', 0), ('learning_count', 0), ('gap', True)})",
-      "frozenset({('recognized', True), ('working_count', 23), ('learning_count', 0), ('gap', False), ('expert_count', 15), ('skill', 'React')})",
-      "frozenset({('working_count', 17), ('recognized', True), ('expert_count', 13), ('gap', False), ('skill', 'Terraform'), ('learning_count', 1)})"
+      "frozenset({('working_count', 0), ('gap', True), ('skill', 'Rust'), ('recognized', True), ('expert_count', 0), ('learning_count', 0)})",
+      "frozenset({('skill', 'React'), ('expert_count', 15), ('recognized', True), ('learning_count', 0), ('working_count', 23), ('gap', False)})",
+      "frozenset({('learning_count', 1), ('skill', 'Terraform'), ('recognized', True), ('expert_count', 13), ('working_count', 17), ('gap', False)})"
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-07",
@@ -1525,12 +1608,14 @@
     "relevant_count": 2,
     "returned_count": 2,
     "topk_returned": [
-      "frozenset({('skill', 'GDPR'), ('recognized', True), ('gap', False), ('learning_count', 3), ('working_count', 14), ('expert_count', 7)})",
-      "frozenset({('skill', 'SOC 2 Compliance'), ('recognized', True), ('working_count', 13), ('gap', False), ('learning_count', 2), ('expert_count', 8)})"
+      "frozenset({('expert_count', 7), ('recognized', True), ('working_count', 14), ('learning_count', 3), ('gap', False), ('skill', 'GDPR')})",
+      "frozenset({('learning_count', 2), ('expert_count', 8), ('recognized', True), ('skill', 'SOC 2 Compliance'), ('gap', False), ('working_count', 13)})"
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-08",
@@ -1550,7 +1635,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 0.0,
-    "precision_at_k": 0.0
+    "precision_at_k": 0.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-09",
@@ -1568,11 +1655,13 @@
     "relevant_count": 1,
     "returned_count": 1,
     "topk_returned": [
-      "frozenset({('learning_count', 0), ('expert_count', 6), ('working_count', 22), ('skill', 'Site Reliability Engineering'), ('capable_count', 28)})"
+      "frozenset({('working_count', 22), ('learning_count', 0), ('skill', 'Site Reliability Engineering'), ('capable_count', 28), ('expert_count', 6)})"
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-10",
@@ -1588,20 +1677,22 @@
     "relevant_count": 10,
     "returned_count": 10,
     "topk_returned": [
-      "frozenset({('skill', 'Rust'), ('expert_count', 0), ('working_count', 0), ('learning_count', 0), ('capable_count', 0)})",
-      "frozenset({('expert_count', 0), ('working_count', 0), ('learning_count', 0), ('capable_count', 0), ('skill', 'C++')})",
-      "frozenset({('expert_count', 0), ('working_count', 0), ('capable_count', 0), ('learning_count', 0), ('skill', 'Penetration Testing')})",
-      "frozenset({('skill', 'GCP'), ('working_count', 6), ('expert_count', 2), ('learning_count', 2), ('capable_count', 8)})",
-      "frozenset({('working_count', 7), ('capable_count', 8), ('skill', 'Applicant Tracking Systems'), ('expert_count', 1), ('learning_count', 4)})",
-      "frozenset({('skill', 'ETL Pipelines'), ('capable_count', 10), ('expert_count', 2), ('working_count', 8), ('learning_count', 4)})",
-      "frozenset({('expert_count', 3), ('working_count', 9), ('capable_count', 12), ('learning_count', 2), ('skill', 'Content Marketing')})",
-      "frozenset({('learning_count', 0), ('capable_count', 12), ('working_count', 11), ('expert_count', 1), ('skill', 'Payroll Systems')})",
-      "frozenset({('working_count', 6), ('capable_count', 13), ('learning_count', 5), ('skill', 'Tableau'), ('expert_count', 7)})",
-      "frozenset({('working_count', 9), ('expert_count', 5), ('learning_count', 2), ('skill', 'NLP'), ('capable_count', 14)})"
+      "frozenset({('working_count', 0), ('skill', 'Rust'), ('expert_count', 0), ('capable_count', 0), ('learning_count', 0)})",
+      "frozenset({('working_count', 0), ('expert_count', 0), ('capable_count', 0), ('learning_count', 0), ('skill', 'C++')})",
+      "frozenset({('working_count', 0), ('expert_count', 0), ('capable_count', 0), ('learning_count', 0), ('skill', 'Penetration Testing')})",
+      "frozenset({('learning_count', 2), ('working_count', 6), ('capable_count', 8), ('expert_count', 2), ('skill', 'GCP')})",
+      "frozenset({('skill', 'Applicant Tracking Systems'), ('capable_count', 8), ('learning_count', 4), ('expert_count', 1), ('working_count', 7)})",
+      "frozenset({('expert_count', 2), ('learning_count', 4), ('capable_count', 10), ('working_count', 8), ('skill', 'ETL Pipelines')})",
+      "frozenset({('skill', 'Content Marketing'), ('learning_count', 2), ('working_count', 9), ('expert_count', 3), ('capable_count', 12)})",
+      "frozenset({('skill', 'Payroll Systems'), ('expert_count', 1), ('working_count', 11), ('learning_count', 0), ('capable_count', 12)})",
+      "frozenset({('working_count', 6), ('learning_count', 5), ('skill', 'Tableau'), ('capable_count', 13), ('expert_count', 7)})",
+      "frozenset({('learning_count', 2), ('expert_count', 5), ('working_count', 9), ('capable_count', 14), ('skill', 'NLP')})"
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-11",
@@ -1623,13 +1714,15 @@
     "relevant_count": 3,
     "returned_count": 3,
     "topk_returned": [
-      "frozenset({('recognized', True), ('learning_count', 0), ('gap', False), ('expert_count', 6), ('working_count', 22), ('skill', 'Site Reliability Engineering')})",
-      "frozenset({('working_count', 17), ('recognized', True), ('expert_count', 13), ('gap', False), ('skill', 'Terraform'), ('learning_count', 1)})",
-      "frozenset({('recognized', True), ('gap', False), ('expert_count', 12), ('skill', 'Kubernetes'), ('learning_count', 2), ('working_count', 21)})"
+      "frozenset({('working_count', 22), ('recognized', True), ('learning_count', 0), ('skill', 'Site Reliability Engineering'), ('gap', False), ('expert_count', 6)})",
+      "frozenset({('learning_count', 1), ('skill', 'Terraform'), ('recognized', True), ('expert_count', 13), ('working_count', 17), ('gap', False)})",
+      "frozenset({('expert_count', 12), ('learning_count', 2), ('skill', 'Kubernetes'), ('working_count', 21), ('recognized', True), ('gap', False)})"
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-12",
@@ -1651,7 +1744,9 @@
     ],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-13",
@@ -1671,7 +1766,9 @@
     "topk_returned": [],
     "exec_error": null,
     "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "precision_at_k": 1.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-14",
@@ -1684,17 +1781,9 @@
     "arguments": {
       "filters": [
         {
-          "field": "id",
-          "op": "in",
-          "value": [
-            "32d135ff-cf5c-4d23-aace-2ea2072a5563",
-            "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
-            "451e879b-37f1-4f93-b96f-fa53a7993024",
-            "8473b1be-bc60-4bf2-830a-cc50f0bc46eb",
-            "9bf484b2-2117-4339-9935-b62990c5955a",
-            "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
-            "b888d3e2-6476-425e-a60b-8441a17e56db"
-          ]
+          "field": "org_unit",
+          "op": "eq",
+          "value": "Cloud Operations Team"
         },
         {
           "field": "skills",
@@ -1705,23 +1794,32 @@
           "field": "availability_status",
           "op": "eq",
           "value": "available"
+        },
+        {
+          "field": "full_name",
+          "op": "in",
+          "value": [
+            "Anthony Kim",
+            "Ishaan Krishnan",
+            "Santiago Harris",
+            "Fionn Anderson",
+            "Naomi Patel",
+            "Przemyslaw Sharma",
+            "Ngozi Hernandez"
+          ]
         }
       ]
     },
     "refusal_message": null,
     "steps": 2,
     "relevant_count": 5,
-    "returned_count": 5,
-    "topk_returned": [
-      "32d135ff-cf5c-4d23-aace-2ea2072a5563",
-      "3ca4636f-5b96-4d54-837a-f0dbbe1cb61d",
-      "8473b1be-bc60-4bf2-830a-cc50f0bc46eb",
-      "a1de3595-7619-4bbb-bf2e-dc3275d4c798",
-      "b888d3e2-6476-425e-a60b-8441a17e56db"
-    ],
-    "exec_error": null,
-    "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "returned_count": 0,
+    "topk_returned": [],
+    "exec_error": "operator 'in' not legal for field 'full_name' (allowed: ['contains', 'eq'])",
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "t3-15",
@@ -1730,20 +1828,18 @@
     "text": "who does the owner of the Billing API report to",
     "caller": "Eval HR",
     "caller_role": "hr",
-    "tool_call": "find_people",
-    "arguments": {
-      "name": "Diego Hernandez"
-    },
-    "refusal_message": null,
-    "steps": 2,
+    "tool_call": null,
+    "arguments": null,
+    "refusal_message": "Diego Hernandez\u2019s manager is Priya Sharma.",
+    "steps": 1,
     "relevant_count": 1,
-    "returned_count": 1,
-    "topk_returned": [
-      "ee9d26ce-63c6-4e4d-b2bb-d68e851a9fc9"
-    ],
+    "returned_count": 0,
+    "topk_returned": [],
     "exec_error": null,
-    "recall_at_k": 1.0,
-    "precision_at_k": 1.0
+    "recall_at_k": 0.0,
+    "precision_at_k": 0.0,
+    "unmeasurable": false,
+    "unmeasurable_reason": null
   },
   {
     "id": "oos-01",

@@ -353,6 +353,27 @@ button { font: inherit; }
   color: var(--green-800); background: var(--green-100); padding: 1px 7px; border-radius: 20px; margin-left: 6px;
 }
 
+/* Self-service skills/languages editing (ProfilePage's SkillsEditor).
+   Rendered only on your own profile — see isOwnProfile, which mirrors
+   app/main.py's _require_self. Shares .edit-input, .bio-actions and
+   .bio-error with the other inline edit forms rather than restating them. */
+.skill-edit { display: flex; flex-direction: column; gap: 10px; }
+.skill-edit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.skill-edit-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+/* Takes the slack so the level select and Remove stay right-aligned in a
+   column of rows whose names are all different lengths. */
+.skill-edit-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.skill-edit-level {
+  font: inherit; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--white); color: var(--ink); cursor: pointer;
+}
+.skill-edit-level:focus { outline: none; border-color: var(--purple); }
+.skill-edit-level:disabled { opacity: .55; cursor: default; }
+.skill-edit-add { display: flex; align-items: center; gap: 8px; }
+/* The name field grows; the level select and Add button keep their size. */
+.skill-edit-add .edit-input { flex: 1; min-width: 0; }
+.skill-edit-add .btn { flex-shrink: 0; }
+
 .skill-group + .skill-group { margin-top: 14px; }
 .skill-label { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .03em; }
 .pills { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -1059,4 +1080,75 @@ body.help-inspecting, body.help-inspecting * { cursor: help !important; }
   background: var(--red-100);
   color: var(--red);
   font-size: 13px;
+}
+
+/* IT's inline project-history editing (ProfilePage). Rendered only for
+   it/work on someone else's profile — see canEditProjectHistory, which
+   mirrors app/writes.py's real gate. */
+.project-history-actions { display: flex; gap: 12px; margin-top: 6px; }
+.link-btn-danger { color: var(--red); }
+.project-history-edit { margin-top: 10px; }
+.edit-check { display: flex; align-items: center; gap: 7px; font-size: 13px; margin: 8px 0; cursor: pointer; }
+.edit-check input { cursor: pointer; }
+
+/* --- Community graph: canonical roles ------------------------------------
+   The seven standard roles (app/community_roles.py) render as ordinary
+   contact cards on the ring, plus the key below the canvas. */
+
+.community-node-where {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+/* A place-based role answered from another office — worth distinguishing
+   from "this is simply where they sit". */
+.community-node-where.is-fallback { color: var(--amber); }
+
+.community-roles-key {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--white);
+  overflow: hidden;
+}
+
+.community-role-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.community-role-row:last-child { border-bottom: none; }
+.community-role-row.is-missing { opacity: 0.6; }
+
+.community-role-text { font-size: 14px; line-height: 1.35; }
+.community-role-text .sub { display: block; font-size: 12px; color: var(--muted); }
+
+.community-role-who {
+  font: inherit;
+  font-size: 13px;
+  text-align: right;
+  border: none;
+  background: none;
+  color: var(--purple);
+  cursor: pointer;
+  padding: 0;
+}
+.community-role-who:hover { text-decoration: underline; }
+.community-role-who .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--amber);
+  text-decoration: none;
+}
+.community-role-who.is-missing { color: var(--muted); cursor: default; }
+.community-role-who.is-missing:hover { text-decoration: none; }
+
+/* A resolved canonical role: neither the employee's own addition nor a row
+   HR typed in, so neither of the two existing source pills fits. */
+.community-source-role {
+  background: var(--purple-100);
+  color: var(--purple-800);
 }

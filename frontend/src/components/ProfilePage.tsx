@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  ApiError, getOrgChart, getPerson, requestDeactivation, requestRestriction, updateEmployee,
-  updateOwnBio, updateOwnNamePronunciation,
+  addOwnSkill, ApiError, getOrgChart, getPerson, removeOwnSkill, removeProjectHistory,
+  requestDeactivation, requestRestriction, updateEmployee, updateOwnBio,
+  updateOwnNamePronunciation, updateOwnSkill, upsertProjectHistory,
 } from "../api";
-import type { ActionRequestResult, ActiveDirectReport } from "../api";
 import type {
-  Identity, OrgChainNode, PersonDetail, SkillOut, UpdateEmployeeChanges, ViewMode,
+  ActionRequestResult, ActiveDirectReport, SkillCategoryName, SkillLevelName,
+} from "../api";
+import type {
+  Identity, OrgChainNode, PersonDetail, ProjectHistoryItem, SkillOut, UpdateEmployeeChanges,
+  ViewMode,
 } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
@@ -183,6 +187,273 @@ export function EditField({ label, badge, children }: { label: string; badge?: s
   );
 }
 
+// ---------------------------------------------------------------------------
+// One project-history row, editable in place by IT in work mode.
+//
+// Scoped to correcting an EXISTING membership (and removing one), which is
+// what "edit project history" means and what PUT/DELETE
+// /people/{id}/projects/{project_id} address. Creating a membership from
+// scratch is a supported backend call but has no control here: it needs a
+// project to point at, and there is no endpoint that lists projects to
+// pick from — a picker built on guessed ids would be worse than no picker.
+//
+// role and contribution are the editable fields. start is deliberately NOT
+// editable here: ProjectHistoryItem publishes month precision only ("never
+// exact dates", see app/schemas.py), so a month picked in this form would
+// silently rewrite the stored day to the 1st. That is acceptable for an
+// end date the reviewer is deliberately setting, and not acceptable for a
+// start date they only meant to leave alone.
+// ---------------------------------------------------------------------------
+
+function ProjectHistoryRowEditor({
+  item, personId, identity, viewMode, onDone,
+}: {
+  item: ProjectHistoryItem;
+  personId: string;
+  identity: Identity;
+  viewMode: ViewMode;
+  onDone: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [role, setRole] = useState(item.role);
+  const [contribution, setContribution] = useState(item.contribution ?? "");
+  const [current, setCurrent] = useState(item.current);
+  const [endMonth, setEndMonth] = useState(item.end_month ?? "");
+
+  function startEdit() {
+    setRole(item.role);
+    setContribution(item.contribution ?? "");
+    setCurrent(item.current);
+    setEndMonth(item.end_month ?? "");
+    setError(null);
+    setEditing(true);
+  }
+
+  async function save() {
+    // Only what actually changed goes on the wire — the backend writes
+    // exactly the keys it receives, so sending an unchanged field would
+    // be a silent no-op write rather than a no-op.
+    const changes: Parameters<typeof upsertProjectHistory>[3] = {};
+    if (role !== item.role) changes.role = role;
+    if (contribution !== (item.contribution ?? "")) changes.contribution = contribution || null;
+    if (current !== item.current || (!current && endMonth !== (item.end_month ?? ""))) {
+      // A month becomes the 1st of that month; "current" clears the date
+      // outright, which is what null means on this column.
+      changes.end_date = current ? null : (endMonth ? `${endMonth}-01` : null);
+    }
+    if (Object.keys(changes).length === 0) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await upsertProjectHistory(identity, personId, item.project_id, changes, viewMode);
+      setEditing(false);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(
+      `Remove ${item.project_name} from this person's project history? This can't be undone.`,
+    )) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await removeProjectHistory(identity, personId, item.project_id, viewMode);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't remove — try again.");
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <>
+        {error && <p className="bio-error">{error}</p>}
+        <div className="project-history-actions">
+          <button className="link-btn" disabled={busy} onClick={startEdit}>Edit</button>
+          <button className="link-btn link-btn-danger" disabled={busy} onClick={remove}>
+            {busy ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="bio-edit project-history-edit">
+      <label className="edit-field">
+        <span className="edit-label">Role</span>
+        <input className="edit-input" value={role} onChange={(e) => setRole(e.target.value)} />
+      </label>
+      <label className="edit-field">
+        <span className="edit-label">Contribution</span>
+        <textarea
+          className="edit-input" rows={3} value={contribution}
+          onChange={(e) => setContribution(e.target.value)}
+        />
+      </label>
+      <label className="edit-check">
+        <input type="checkbox" checked={current} onChange={(e) => setCurrent(e.target.checked)} />
+        <span>Still on this project</span>
+      </label>
+      {!current && (
+        <label className="edit-field">
+          <span className="edit-label">Ended</span>
+          <input
+            className="edit-input" type="month" value={endMonth}
+            onChange={(e) => setEndMonth(e.target.value)}
+          />
+        </label>
+      )}
+      {error && <p className="bio-error">{error}</p>}
+      <div className="bio-actions">
+        <button className="btn" disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+        <button className="btn btn-primary" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Self-service skills and languages, own profile only.
+//
+// One component serves both cards: a language is a skills row with
+// category="language" (app/own_skills.py), so the only difference between
+// the two instances is the `category` new entries are filed under and the
+// wording. `LEVELS` is the same three either way — a language proficiency
+// and a technical level are the same column.
+//
+// Writes go straight through on each control rather than being batched
+// behind a Save button: each row is an independent EmployeeSkill row on the
+// server (POST/PATCH/DELETE per entry, no bulk endpoint), so a Save would
+// only be pretending to be atomic while firing the same N calls. Each
+// response carries the caller's full PersonDetail, so both lists are
+// replaced from it — an add doesn't always land in the card that submitted
+// it, and the server's answer is the one that knows where it went.
+//
+// Presentation-only gate: rendered when isOwnProfile, which mirrors
+// app/main.py's _require_self. That check is the enforcement; this just
+// keeps a control that would 403 off other people's profiles.
+// ---------------------------------------------------------------------------
+
+const LEVELS: SkillLevelName[] = ["Learning", "Working", "Expert"];
+
+function SkillsEditor({
+  items, category, identity, onUpdated, onClose,
+}: {
+  items: SkillOut[];
+  category: SkillCategoryName;
+  identity: Identity;
+  onUpdated: (detail: PersonDetail) => void;
+  onClose: () => void;
+}) {
+  const noun = category === "language" ? "language" : "skill";
+  const [draft, setDraft] = useState("");
+  const [draftLevel, setDraftLevel] = useState<SkillLevelName>("Working");
+  // The entry a call is in flight for, so only that row disables — a slow
+  // add shouldn't freeze the level select three rows up. "" is the add row.
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(key: string, call: () => Promise<PersonDetail>) {
+    setBusy(key);
+    setError(null);
+    try {
+      onUpdated(await call());
+      return true;
+    } catch (e) {
+      // The server's own message, not a status line — "French is a language
+      // skill, not technical" and "You already have X on your profile" are
+      // the whole point of surfacing detail in api.ts's skillRequest.
+      setError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function add() {
+    const name = draft.trim();
+    if (!name) return;
+    if (await run("", () => addOwnSkill(identity, name, category, draftLevel))) {
+      setDraft("");
+      setDraftLevel("Working");
+    }
+  }
+
+  return (
+    <div className="skill-edit">
+      {items.length > 0 && (
+        <ul className="skill-edit-list">
+          {items.map((item) => (
+            <li className="skill-edit-row" key={item.name}>
+              <span className="skill-edit-name">{item.name}</span>
+              <select
+                className="skill-edit-level" value={item.level} disabled={busy === item.name}
+                aria-label={`Level for ${item.name}`}
+                onChange={(e) => {
+                  const level = e.target.value as SkillLevelName;
+                  void run(item.name, () => updateOwnSkill(identity, item.name, level));
+                }}
+              >
+                {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+              <button
+                className="link-btn link-btn-danger" disabled={busy === item.name}
+                onClick={() => void run(item.name, () => removeOwnSkill(identity, item.name))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="skill-edit-add">
+        <input
+          className="edit-input" value={draft} disabled={busy === ""}
+          placeholder={category === "language" ? "Add a language" : "Add a skill"}
+          aria-label={`Add a ${noun}`}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void add(); }}
+        />
+        <select
+          className="skill-edit-level" value={draftLevel} disabled={busy === ""}
+          aria-label={`Level for the new ${noun}`}
+          onChange={(e) => setDraftLevel(e.target.value as SkillLevelName)}
+        >
+          {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+        <button className="btn btn-primary" disabled={busy === "" || !draft.trim()} onClick={() => void add()}>
+          {busy === "" ? "Adding…" : "Add"}
+        </button>
+      </div>
+
+      {error && <p className="bio-error">{error}</p>}
+      <div className="bio-actions">
+        <button className="btn" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+
 export function ProfilePage({
   personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
 }: Props) {
@@ -198,6 +469,9 @@ export function ProfilePage({
   const [pronunciationDraft, setPronunciationDraft] = useState("");
   const [savingPronunciation, setSavingPronunciation] = useState(false);
   const [pronunciationError, setPronunciationError] = useState<string | null>(null);
+
+  const [editingSkills, setEditingSkills] = useState(false);
+  const [editingLanguages, setEditingLanguages] = useState(false);
 
   const [editingEmployee, setEditingEmployee] = useState(false);
   const [employeeForm, setEmployeeForm] = useState<EmployeeFormState | null>(null);
@@ -220,6 +494,12 @@ export function ProfilePage({
   // Same "staged, not applied" shape as restrictRequest above.
   const [deactivateRequest, setDeactivateRequest] = useState<ActionRequestResult | null>(null);
 
+  // Re-fetches the profile after a project-history write. A refetch rather
+  // than patching the row in place: the write returns exact dates while
+  // this page renders month strings and a derived `current` flag, so
+  // reconciling by hand would duplicate the backend's own derivation.
+  const [historyToken, setHistoryToken] = useState(0);
+
   const isOwnProfile = personId === identity.id;
   // Presentation only — mirrors app/writes.py's real gate (EDITABLE table +
   // the person_id == caller.id self-block), which is what actually decides
@@ -227,6 +507,12 @@ export function ProfilePage({
   // would produce a 403 on Save, not a security hole; the server is the
   // only enforcement that matters.
   const canEditEmployee = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
+  // Same presentation-only mirror, of app/writes.py's project-history gate:
+  // EDITABLE grants "project_entry"/"contribution" to it/work, and
+  // _refuse_own_record blocks the caller's own record. !isOwnProfile is the
+  // visible half of that second rule — an IT person looking at their own
+  // profile sees no edit controls at all, rather than buttons that 403.
+  const canEditProjectHistory = identity.role === "it" && viewMode === "work" && !isOwnProfile;
 
   useEffect(() => {
     let cancelled = false;
@@ -237,6 +523,8 @@ export function ProfilePage({
     setBioError(null);
     setEditingPronunciation(false);
     setPronunciationError(null);
+    setEditingSkills(false);
+    setEditingLanguages(false);
     // Closes any open edit form on a profile/identity/mode change, so a
     // draft never lingers pointed at the wrong person — same reasoning as
     // the bio-edit reset just above.
@@ -263,7 +551,7 @@ export function ProfilePage({
     return () => {
       cancelled = true;
     };
-  }, [personId, identity, viewMode]);
+  }, [personId, identity, viewMode, historyToken]);
 
   if (detail === undefined) {
     return (
@@ -325,6 +613,16 @@ export function ProfilePage({
     } finally {
       setSavingPronunciation(false);
     }
+  }
+
+  // Both lists come from the same response, not just the one the edited
+  // card renders: skills and languages are one table split by category, so
+  // a write aimed at either can in principle move an entry across the
+  // split. Replacing both keeps the two cards from disagreeing.
+  function applySkillUpdate(updated: PersonDetail) {
+    setDetail((prev) => (
+      prev ? { ...prev, skills: updated.skills, languages: updated.languages } : prev
+    ));
   }
 
   function startEditingEmployee() {
@@ -760,32 +1058,80 @@ export function ProfilePage({
             </section>
           )}
 
-          {detail.skills && detail.skills.length > 0 && (
+          {/* Rendered for an empty list too when it's your own profile —
+              otherwise there'd be nowhere to add your first one, same
+              reason the About card renders empty above. */}
+          {((detail.skills && detail.skills.length > 0) || isOwnProfile) && (
             <section className="card">
-              <h2>Skills</h2>
-              {groupByLevel(detail.skills).map(([level, items]) => (
-                <div className="skill-group" key={level}>
-                  <p className="skill-label">{level}</p>
-                  <div className="pills">
-                    {items.map((s) => (
-                      <span className={`pill ${LEVEL_CLASS[s.level] ?? ""}`} key={s.name}>
-                        {s.name} <span className="src">&middot; {s.source}</span>
-                      </span>
-                    ))}
+              <div className="card-head">
+                <h2>Skills</h2>
+                {isOwnProfile && !editingSkills && (
+                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingSkills(true)}>
+                    Edit
+                  </button>
+                )}
+              </div>
+              {editingSkills ? (
+                <SkillsEditor
+                  items={detail.skills ?? []} category="technical" identity={identity}
+                  onUpdated={applySkillUpdate} onClose={() => setEditingSkills(false)}
+                />
+              ) : detail.skills && detail.skills.length > 0 ? (
+                groupByLevel(detail.skills).map(([level, items]) => (
+                  <div className="skill-group" key={level}>
+                    <p className="skill-label">{level}</p>
+                    <div className="pills">
+                      {items.map((s) => (
+                        <span className={`pill ${LEVEL_CLASS[s.level] ?? ""}`} key={s.name}>
+                          {s.name} <span className="src">&middot; {s.source}</span>
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  You haven't added any skills yet.{" "}
+                  <button className="link-btn" onClick={() => setEditingSkills(true)}>Add some</button>
+                </p>
+              )}
             </section>
           )}
 
-          {detail.languages && detail.languages.length > 0 && (
+          {((detail.languages && detail.languages.length > 0) || isOwnProfile) && (
             <section className="card">
-              <h2>Languages</h2>
-              <div className="pills">
-                {detail.languages.map((l) => (
-                  <span className="pill" key={l.name}>{l.name}</span>
-                ))}
+              <div className="card-head">
+                <h2>Languages</h2>
+                {isOwnProfile && !editingLanguages && (
+                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingLanguages(true)}>
+                    Edit
+                  </button>
+                )}
               </div>
+              {editingLanguages ? (
+                <SkillsEditor
+                  items={detail.languages ?? []} category="language" identity={identity}
+                  onUpdated={applySkillUpdate} onClose={() => setEditingLanguages(false)}
+                />
+              ) : detail.languages && detail.languages.length > 0 ? (
+                <div className="pills">
+                  {/* Level shown here but not before this card became
+                      editable: a proficiency the owner picked from a
+                      three-option select is theirs to display, and a bare
+                      name next to a level selector that clearly exists
+                      would just look like the page had lost it. */}
+                  {detail.languages.map((l) => (
+                    <span className={`pill ${LEVEL_CLASS[l.level] ?? ""}`} key={l.name}>
+                      {l.name} <span className="src">&middot; {l.level}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                  You haven't added any languages yet.{" "}
+                  <button className="link-btn" onClick={() => setEditingLanguages(true)}>Add some</button>
+                </p>
+              )}
             </section>
           )}
 
@@ -878,6 +1224,12 @@ export function ProfilePage({
                         <p className="job-desc">
                           {p.project_desc || <span className="muted">No description on file</span>}
                         </p>
+                      )}
+                      {canEditProjectHistory && (
+                        <ProjectHistoryRowEditor
+                          item={p} personId={personId} identity={identity}
+                          viewMode={viewMode} onDone={() => setHistoryToken((t) => t + 1)}
+                        />
                       )}
                     </li>
                   ))}

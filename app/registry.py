@@ -110,7 +110,16 @@ REGISTRY: dict[str, FieldSpec] = {
     # Always present, both INTERNAL — no field skips is_visible(), not even
     # the identifier fields.
     "id": _f("id", "str", {"eq", "in"}, Sensitivity.INTERNAL),
-    "full_name": _f("full_name", "str", {"eq", "contains"}, Sensitivity.INTERNAL),
+    # `in` matches `id`'s ops above, and for the same reason: a chain's
+    # second step filters by the set its first step resolved, and the model
+    # picks whichever of the two identifiers that step's result made
+    # obvious. Golden eval t3-14 ("who on Sarah White's team knows
+    # Terraform") failed on exactly this -- the model listed the team's
+    # names where the registry only allowed ids, and the step was rejected.
+    # No new exposure: filtering a list of names reveals nothing that
+    # repeating `eq` would not, the sensitivity tier is unchanged, and
+    # enforce()'s row obligations apply whatever the operator.
+    "full_name": _f("full_name", "str", {"eq", "in", "contains"}, Sensitivity.INTERNAL),
 
     # app.permissions.BASE_FIELDS (19 fields), relabeled INTERNAL verbatim.
     # filterable=False on fields find_people has no filter parameter for
