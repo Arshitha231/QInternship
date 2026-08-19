@@ -783,3 +783,30 @@ export function autoAssignMentors(
   return request<CommunityLinkOut[]>(
     `/community_links/auto_assign_mentors?view_mode=${viewMode}`, identity, { method: "POST" });
 }
+// Add to api.ts
+import type { OrgChainNode } from "./types";
+
+export interface TeamProjectOut {
+  id: number;
+  name: string;
+  classification: string;
+}
+
+export interface TeammateOut {
+  project_id: number;
+  person: OrgChainNode;
+}
+
+export interface TeamGraphResponse {
+  projects: TeamProjectOut[];
+  teammates: TeammateOut[];
+}
+
+export async function getTeamGraph(identity: Identity, personId: string): Promise<TeamGraphResponse | null> {
+  try {
+    return await request<TeamGraphResponse>(`/people/${personId}/team-graph`, identity);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
