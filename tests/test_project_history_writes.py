@@ -1,13 +1,13 @@
-"""IT, work mode: editing anyone's project history EXCEPT their own.
+"""HR, work mode: editing anyone's project history EXCEPT their own.
 
 Two rules, tested independently because they fail independently:
 
-  1. IT can create, correct and remove any employee's EmployeeProject row
+  1. HR can create, correct and remove any employee's EmployeeProject row
      directly — without a document, which is the only route that existed
      before (app/proposals.py's accept/edit committing a proposed_change).
-  2. IT cannot do any of it to themselves, through either route. The direct
+  2. HR cannot do any of it to themselves, through either route. The direct
      endpoints refuse it, and so does the review pipeline — which had no
-     such check at all, so an IT reviewer could upload a document about
+     such check at all, so a reviewer could upload a document about
      themselves and accept it onto their own profile.
 
 Every denial below calls the endpoint directly with whatever role and id it
@@ -63,13 +63,13 @@ def _membership(db_session, employee_id, project_id) -> EmployeeProject | None:
 # The new capability: edit anyone's project history.
 # ---------------------------------------------------------------------------
 
-async def test_it_creates_a_project_membership(client, db_session, atlas_id):
+async def test_hr_creates_a_project_membership(client, db_session, atlas_id):
     _mkemp(db_session, "ph-create-1", "Pat Create")
     resp = await client.put(
         f"/people/ph-create-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Platform Lead", "start_date": "2025-02-01",
               "contribution": "Owned the cutover plan."},
-        headers=auth_headers("it", "it-writer-1"),
+        headers=auth_headers("hr", "hr-writer-1"),
     )
     assert resp.status_code == 200, resp.text
 
@@ -81,7 +81,7 @@ async def test_it_creates_a_project_membership(client, db_session, atlas_id):
     assert row.end_date is None
 
 
-async def test_it_patches_only_the_supplied_keys(client, db_session, atlas_id):
+async def test_hr_patches_only_the_supplied_keys(client, db_session, atlas_id):
     """PATCH semantics on an existing row, same contract as
     update_employee: an omitted key is untouched, not reset."""
     _mkemp(db_session, "ph-patch-1", "Pat Patch")
@@ -89,11 +89,11 @@ async def test_it_patches_only_the_supplied_keys(client, db_session, atlas_id):
         f"/people/ph-patch-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-01-01",
               "contribution": "Original prose."},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     resp = await client.put(
         f"/people/ph-patch-1/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"role": "Senior Engineer"}, headers=auth_headers("it"),
+        json={"role": "Senior Engineer"}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 200, resp.text
 
@@ -112,13 +112,13 @@ async def test_explicit_null_end_date_makes_a_project_current_again(
     await client.put(
         f"/people/ph-null-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-01-01", "end_date": "2024-09-01"},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     assert _membership(db_session, "ph-null-1", atlas_id).end_date == date(2024, 9, 1)
 
     resp = await client.put(
         f"/people/ph-null-1/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"end_date": None}, headers=auth_headers("it"),
+        json={"end_date": None}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 200, resp.text
     assert _membership(db_session, "ph-null-1", atlas_id).end_date is None
@@ -132,7 +132,7 @@ async def test_repeating_the_put_converges_on_one_row(client, db_session, atlas_
         await client.put(
             f"/people/ph-idem-1/projects/{atlas_id}", params={"view_mode": "work"},
             json={"role": "Engineer", "start_date": "2024-01-01"},
-            headers=auth_headers("it"),
+            headers=auth_headers("hr"),
         )
     db_session.expire_all()
     rows = (
@@ -143,17 +143,17 @@ async def test_repeating_the_put_converges_on_one_row(client, db_session, atlas_
     assert len(rows) == 1
 
 
-async def test_it_removes_a_project_membership(client, db_session, atlas_id):
+async def test_hr_removes_a_project_membership(client, db_session, atlas_id):
     _mkemp(db_session, "ph-del-1", "Pat Delete")
     await client.put(
         f"/people/ph-del-1/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("hr"),
     )
     assert _membership(db_session, "ph-del-1", atlas_id) is not None
 
     resp = await client.delete(
         f"/people/ph-del-1/projects/{atlas_id}", params={"view_mode": "work"},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     assert resp.status_code == 204, resp.text
     assert _membership(db_session, "ph-del-1", atlas_id) is None
@@ -169,7 +169,7 @@ async def test_creating_requires_role_and_start_date(client, db_session, atlas_i
     _mkemp(db_session, "ph-req-1", "Pat Required")
     resp = await client.put(
         f"/people/ph-req-1/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"contribution": "prose only"}, headers=auth_headers("it"),
+        json={"contribution": "prose only"}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 422, resp.text
     assert _membership(db_session, "ph-req-1", atlas_id) is None
@@ -180,7 +180,7 @@ async def test_end_date_before_start_date_is_refused(client, db_session, atlas_i
     resp = await client.put(
         f"/people/ph-order-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-06-01", "end_date": "2024-01-01"},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     assert resp.status_code == 422, resp.text
 
@@ -189,13 +189,13 @@ async def test_unknown_employee_or_project_is_404(client, db_session, atlas_id):
     _mkemp(db_session, "ph-404-1", "Pat Missing")
     missing_person = await client.put(
         f"/people/nobody-at-all/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("hr"),
     )
     assert missing_person.status_code == 404
 
     missing_project = await client.put(
         "/people/ph-404-1/projects/999999", params={"view_mode": "work"},
-        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("hr"),
     )
     assert missing_project.status_code == 404
 
@@ -205,11 +205,11 @@ async def test_write_is_audited(client, db_session, atlas_id):
     await client.put(
         f"/people/ph-audit-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-01-01"},
-        headers=auth_headers("it", "it-auditor-1"),
+        headers=auth_headers("hr", "hr-auditor-1"),
     )
     rows = (
         db_session.query(AuditLog)
-        .filter(AuditLog.actor_id == "it-auditor-1",
+        .filter(AuditLog.actor_id == "hr-auditor-1",
                 AuditLog.action == "create_project_history").all()
     )
     assert len(rows) == 1
@@ -220,36 +220,36 @@ async def test_write_is_audited(client, db_session, atlas_id):
 # The exclusion: except their own.
 # ---------------------------------------------------------------------------
 
-async def test_it_cannot_edit_their_own_project_history(client, db_session, atlas_id):
+async def test_hr_cannot_edit_their_own_project_history(client, db_session, atlas_id):
     """The rule the whole feature is scoped by. Same shape as
     update_employee's "an hr caller giving themselves a raise"."""
     _mkemp(db_session, "ph-self-1", "Pat Self")
     resp = await client.put(
         f"/people/ph-self-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Principal Engineer", "start_date": "2024-01-01"},
-        headers=auth_headers("it", "ph-self-1"),
+        headers=auth_headers("hr", "ph-self-1"),
     )
     assert resp.status_code == 403, resp.text
     assert _membership(db_session, "ph-self-1", atlas_id) is None
 
 
-async def test_it_cannot_remove_their_own_project_history(client, db_session, atlas_id):
+async def test_hr_cannot_remove_their_own_project_history(client, db_session, atlas_id):
     _mkemp(db_session, "ph-self-2", "Pat Self Two")
     await client.put(
         f"/people/ph-self-2/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-01-01"},
-        headers=auth_headers("it", "it-someone-else"),
+        headers=auth_headers("hr", "hr-someone-else"),
     )
     resp = await client.delete(
         f"/people/ph-self-2/projects/{atlas_id}", params={"view_mode": "work"},
-        headers=auth_headers("it", "ph-self-2"),
+        headers=auth_headers("hr", "ph-self-2"),
     )
     assert resp.status_code == 403, resp.text
     assert _membership(db_session, "ph-self-2", atlas_id) is not None
 
 
-@pytest.mark.parametrize("role", [r for r in ALL_ROLES if r != "it"])
-async def test_only_it_may_edit_project_history(client, db_session, atlas_id, role):
+@pytest.mark.parametrize("role", [r for r in ALL_ROLES if r != "hr"])
+async def test_only_hr_may_edit_project_history(client, db_session, atlas_id, role):
     _mkemp(db_session, f"ph-role-{role}", f"Pat {role}")
     resp = await client.put(
         f"/people/ph-role-{role}/projects/{atlas_id}", params={"view_mode": "work"},
@@ -258,15 +258,15 @@ async def test_only_it_may_edit_project_history(client, db_session, atlas_id, ro
     assert resp.status_code == 403, resp.text
 
 
-async def test_it_cannot_edit_project_history_in_employee_mode(
+async def test_hr_cannot_edit_project_history_in_employee_mode(
     client, db_session, atlas_id
 ):
-    """EDITABLE[("it", "employee")] is empty — the capability is work-mode
+    """EDITABLE[("hr", "employee")] is empty — the capability is work-mode
     only, and asking for employee mode must not be a way around that."""
     _mkemp(db_session, "ph-mode-1", "Pat Mode")
     resp = await client.put(
         f"/people/ph-mode-1/projects/{atlas_id}", params={"view_mode": "employee"},
-        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("hr"),
     )
     assert resp.status_code == 403, resp.text
 
@@ -279,7 +279,7 @@ async def test_identifying_columns_are_not_editable(client, db_session, atlas_id
         f"/people/ph-immutable-1/projects/{atlas_id}", params={"view_mode": "work"},
         json={"role": "Engineer", "start_date": "2024-01-01",
               "employee_id": "somebody-else"},
-        headers=auth_headers("it"),
+        headers=auth_headers("hr"),
     )
     assert resp.status_code == 422, resp.text
 
@@ -297,10 +297,10 @@ async def test_project_history_exposes_the_id_the_write_path_needs(
     _mkemp(db_session, "ph-readid-1", "Pat ReadId")
     await client.put(
         f"/people/ph-readid-1/projects/{atlas_id}", params={"view_mode": "work"},
-        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("it"),
+        json={"role": "Engineer", "start_date": "2024-01-01"}, headers=auth_headers("hr"),
     )
     resp = await client.get(
-        "/people/ph-readid-1", params={"view_mode": "work"}, headers=auth_headers("it"))
+        "/people/ph-readid-1", params={"view_mode": "work"}, headers=auth_headers("hr"))
     assert resp.status_code == 200, resp.text
 
     history = resp.json()["project_history"]
@@ -309,5 +309,5 @@ async def test_project_history_exposes_the_id_the_write_path_needs(
     # Round-trips: the id the read handed back addresses the same row.
     delete = await client.delete(
         f"/people/ph-readid-1/projects/{row['project_id']}", params={"view_mode": "work"},
-        headers=auth_headers("it"))
+        headers=auth_headers("hr"))
     assert delete.status_code == 204

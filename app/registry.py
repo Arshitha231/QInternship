@@ -197,16 +197,16 @@ IGNORED_COLUMNS: frozenset[str] = frozenset({
 
 # Keyed by (role, view_mode), matching app.permissions.ALLOWED exactly --
 # view modes didn't exist yet when this table was first built role-only, so
-# an hr/it caller browsing in "employee" preview mode used to still get the
+# an hr caller browsing in "employee" preview mode used to still get the
 # full role-based set here even though every other part of the response
-# correctly collapses to the employee view. Only `hr` actually differs
-# between its two *reachable* modes (WORK_MODE_ROLES = {"hr", "it"} means
-# employee/manager can never actually reach "work" regardless of what they
-# request -- resolve_view_mode() pins them to "employee" first). The four
-# rows below written out for both roles anyway, same as permissions.ALLOWED
-# does, so every (role, view_mode) pair resolves without a KeyError -- two of
-# them ("employee","work") / ("manager","work")) describe a state no real
-# caller ever reaches, kept only so the table is total, not derived.
+# correctly collapses to the employee view. `hr` is the only role with two
+# *reachable* modes (WORK_MODE_ROLES = {"hr"} means employee/manager/it can
+# never actually reach "work" regardless of what they request --
+# resolve_view_mode() pins them to "employee" first). The rows below are
+# written out for every role anyway, same as permissions.ALLOWED does, so
+# every (role, view_mode) pair resolves without a KeyError -- three of them
+# (("employee","work") / ("manager","work") / ("it","work")) describe a state
+# no real caller ever reaches, kept only so the table is total, not derived.
 ALLOWED_SENSITIVITY: dict[tuple[str, ViewMode], frozenset[Sensitivity]] = {
     ("employee", "employee"): frozenset({Sensitivity.INTERNAL}),
     ("employee", "work"): frozenset({Sensitivity.INTERNAL}),  # unreachable, kept for totality
@@ -221,13 +221,13 @@ ALLOWED_SENSITIVITY: dict[tuple[str, ViewMode], frozenset[Sensitivity]] = {
     ("hr", "work"): frozenset({Sensitivity.INTERNAL, Sensitivity.HR_ONLY, Sensitivity.DERIVED_HR}),
     # `it` (added alongside view modes in app/permissions.py, after this
     # registry was first built): same tier as employee/manager in both
-    # modes, per that module's own ALLOWED table -- ("it", "work") gets
-    # BASE_FIELDS plus project_desc, explicitly NOT INTERNAL_FIELDS ("it
-    # administers the directory, it does not read salaries"). project_desc
-    # itself has no REGISTRY entry (nested under project_history, not an
-    # employees-table column) -- same known-gap category as
-    # direct_reports/training_status, not something this tier needs to
-    # account for.
+    # modes, per that module's own ALLOWED table. It always was -- the extra
+    # privileges it used to hold were writes (project descriptions, the
+    # review queue), never a broader sensitivity tier, which is why moving
+    # them to `hr` changes nothing in this table. project_desc itself has no
+    # REGISTRY entry (nested under project_history, not an employees-table
+    # column) -- same known-gap category as direct_reports/training_status,
+    # not something this tier needs to account for.
     ("it", "employee"): frozenset({Sensitivity.INTERNAL}),
     ("it", "work"): frozenset({Sensitivity.INTERNAL}),
 }

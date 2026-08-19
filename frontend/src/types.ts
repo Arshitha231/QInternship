@@ -32,6 +32,11 @@ export interface PersonSummary {
   manager?: PersonRef;
   delegate?: PersonRef;
   direct_reports?: PersonRef[];
+  // Whether this person manages anyone. Absent (not false) in employee view
+  // mode, where the server withholds the downward chain -- see
+  // app/schemas.py's PersonSummary. TeamGraph uses it to decide which
+  // roster cards get an expand control.
+  has_reports?: boolean;
 }
 
 export interface SkillOut {
@@ -53,7 +58,7 @@ export interface ProjectHistoryItem {
   end_month: string | null;
   current: boolean;
   // Visible to every role/view_mode that can see project_history at all --
-  // EDITABLE gates who may WRITE this (it/work only), not who may read it.
+  // EDITABLE gates who may WRITE this (hr/work only), not who may read it.
   // Still optional/nullable rather than a plain string: the backend
   // serializes with exclude_unset, so `"project_desc" in item` stays the
   // honest test for "did the backend even attempt to set this", separate
@@ -62,7 +67,7 @@ export interface ProjectHistoryItem {
   // This person's own account of what they did -- EmployeeProject.
   // contribution, not the project's own shared description above. Same
   // visibility rule as project_desc: readable by anyone who can see
-  // project_history, writable only by it/work (see app/proposals.py's
+  // project_history, writable only by hr/work (see app/proposals.py's
   // accept()/edit(), the only two paths that ever set it).
   contribution?: string | null;
 }
@@ -204,7 +209,7 @@ export interface UnifiedSearchResponse {
 export type Role = "employee" | "manager" | "hr" | "it";
 
 // Which lens the directory is read through. The SERVER decides: anything
-// other than hr/it is answered in employee mode whatever this says (see
+// other than hr is answered in employee mode whatever this says (see
 // resolve_view_mode in app/permissions.py), so sending it is a request,
 // never a grant.
 export type ViewMode = "employee" | "work";
@@ -213,7 +218,7 @@ export type ViewMode = "employee" | "work";
 // app/permissions.py. Kept in sync by hand, but harmless if it drifts:
 // showing the toggle to a role the server pins just makes it a no-op,
 // never an escalation.
-export const WORK_MODE_ROLES: Role[] = ["hr", "it"];
+export const WORK_MODE_ROLES: Role[] = ["hr"];
 
 export interface Identity {
   role: Role;
@@ -309,8 +314,8 @@ export interface HrReviewQueueItem {
   highest_exposure: "none" | "low" | "medium" | "high";
 }
 
-// AI-assisted doc upload for IT (app/doc_extraction.py, app/proposals.py) —
-// IT-only, work mode only, same non-visibility guarantee App.tsx's tab
+// AI-assisted doc upload for HR (app/doc_extraction.py, app/proposals.py) —
+// HR-only, work mode only, same non-visibility guarantee App.tsx's tab
 // gating gives Continuity: for any other role/mode this page never renders
 // and its calls never fire (the backend 403s them regardless).
 

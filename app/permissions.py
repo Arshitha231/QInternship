@@ -18,10 +18,10 @@ Every role sees the directory through one of two lenses:
                 view modes existed, so "work" is the behaviour-preserving
                 mode and the default for internal callers.
     employee  — the ordinary-colleague view. Output is identical no matter
-                who is looking, so an hr or it caller can see exactly what
-                the directory looks like to the people in it.
+                who is looking, so an hr caller can see exactly what the
+                directory looks like to the people in it.
 
-Only hr and it may choose; resolve_view_mode() forces employee mode for
+Only hr may choose; resolve_view_mode() forces employee mode for
 everyone else regardless of what the client asked for. Employee mode is
 enforced in three places, not one — the field table below, the record-level
 check, and the department check — because each is a separate stage of the
@@ -38,10 +38,15 @@ from app.models import Employee, OrgUnit
 ViewMode = Literal["employee", "work"]
 VALID_VIEW_MODES: set[str] = {"employee", "work"}
 
-# Roles allowed to ask for work mode. Everyone else is pinned to employee
-# mode server-side — the client's request is an input to this decision, never
-# the decision itself.
-WORK_MODE_ROLES: set[str] = {"hr", "it"}
+# Roles allowed to ask for work mode. Everyone else — including it, which
+# used to sit here beside hr — is pinned to employee mode server-side; the
+# client's request is an input to this decision, never the decision itself.
+#
+# it holding a privileged lens was the whole reason this set had two members.
+# Administering the directory is not a reason to read more of it than the
+# people in it can, so it reads as an ordinary employee now and hr is the
+# only role with a reachable work mode.
+WORK_MODE_ROLES: set[str] = {"hr"}
 
 # Visible to every caller who can see the record at all (record-level checks
 # happen separately, in can_see_record()).
@@ -65,8 +70,8 @@ BASE_FIELDS: set[str] = {
 }
 
 # Internal HR information. Granted to exactly one (role, view_mode) pair —
-# ("hr", "work") — and to nobody else, including it in work mode: running the
-# directory's systems is not a reason to read what people are paid.
+# ("hr", "work") — and to nobody else. That pair is now the only reachable
+# work-mode row at all, so this is the same statement as "only hr".
 #
 # Still additionally granted to the person themselves by ABAC below, in
 # either mode. INTERNAL here means "no other ROLE gets these", not "only HR
@@ -76,13 +81,12 @@ INTERNAL_FIELDS: set[str] = {
     "hire_date", "cost_centre", "salary", "salary_currency", "date_of_birth",
 }
 
-# Project descriptions. Visible to hr and it in work mode; it is additionally
-# Visible to every caller, unconditionally — app/people.py's
-# _project_history includes project_desc on every item it builds, with no
-# per-caller check at all (see the note in BASE_FIELDS above for why this
-# isn't expressed as a fields-set membership test the way most fields are).
-# Still referenced here because EDITABLE needs to name exactly this one
-# field: visibility is universal now, editing stayed IT-only.
+# Project descriptions. Visible to every caller, unconditionally —
+# app/people.py's _project_history includes project_desc on every item it
+# builds, with no per-caller check at all (see the note in BASE_FIELDS above
+# for why this isn't expressed as a fields-set membership test the way most
+# fields are). Still referenced here because EDITABLE needs to name exactly
+# this one field: visibility is universal, editing is HR's.
 PROJECT_DESC_FIELDS: set[str] = {"project_desc"}
 
 # Own profile only. Deliberately narrower than personal_mobile's "own profile
@@ -118,22 +122,23 @@ ALLOWED: dict[tuple[str, str], set[str]] = {
     ("hr", "employee"): set(BASE_FIELDS),
     ("it", "employee"): set(BASE_FIELDS),
 
-    # employee/manager can never reach work mode — resolve_view_mode() pins
-    # them to employee mode. Their rows are present so the table answers the
-    # (field, role, view_mode) question for every triple rather than raising
-    # a KeyError on one that policy says is unreachable, and they are
+    # employee/manager/it can never reach work mode — resolve_view_mode()
+    # pins them to employee mode. Their rows are present so the table answers
+    # the (field, role, view_mode) question for every triple rather than
+    # raising a KeyError on one that policy says is unreachable, and they are
     # identical to their employee-mode rows so that if the pin were ever
     # loosened by accident, the failure mode is "no change", not "escalation".
+    #
+    # it joined those two when its extra privileges moved to hr. Its row was
+    # already BASE_FIELDS — the difference was never what it could read, it
+    # was project_desc editing and the review queue, both of which live in
+    # EDITABLE below.
     ("employee", "work"): set(BASE_FIELDS),
     ("manager", "work"): set(BASE_FIELDS),
-
-    ("hr", "work"): set(BASE_FIELDS) | set(INTERNAL_FIELDS) | set(TRAINING_FIELDS),
-    # No INTERNAL_FIELDS: it administers the directory, it does not read
-    # salaries. This is the asymmetry the whole (role, view_mode) re-key
-    # exists to express — before it, "hr-only" and "privileged" were the
-    # same thing. project_desc is no longer listed here specifically: it's
-    # in BASE_FIELDS now, so every row already carries it.
     ("it", "work"): set(BASE_FIELDS),
+
+    # The one reachable work-mode row.
+    ("hr", "work"): set(BASE_FIELDS) | set(INTERNAL_FIELDS) | set(TRAINING_FIELDS),
 }
 
 # Write permissions, same key shape as ALLOWED and for the same reason:
@@ -148,34 +153,38 @@ EDITABLE: dict[tuple[str, str], set[str]] = {
     ("employee", "work"): set(),
     ("manager", "work"): set(),
 
-    # HR edits internal information on any employee. availability_status is
-    # how a profile gets marked "restricted" (see is_record_visible below —
-    # that enforcement has always existed; this is what was missing to
-    # actually set it). manager_id and the two synthetic capability names
-    # ("deactivate_employee", "create_employee") aren't literal fields a
-    # generic PATCH touches directly the way the others are — same pattern
-    # ("it", "work")'s "skills"/"contribution"/"project_entry" already uses
-    # below, a capability this table gates without it being a raw column
-    # name on the model.
+    # HR edits internal information on any employee, and — as of the move
+    # off it — owns the directory-curation surface too: project descriptions
+    # (PUT/DELETE /projects/{id}/description) plus the three field kinds the
+    # doc-review pipeline can propose. "skills" gates writing an
+    # EmployeeSkill row, "contribution" gates EmployeeProject.contribution
+    # (the prose), "project_entry" gates the EmployeeProject membership
+    # itself (which project, what role, when). Three separate names rather
+    # than one umbrella "review_pipeline" field, so a future narrowing (e.g.
+    # HR loses skill-writing but keeps project descriptions) is a one-line
+    # change here instead of a new carve-out. app.proposals.accept()/
+    # bulk_accept() check this per change_type, the same can_edit() every
+    # other write path uses.
+    #
+    # availability_status is how a profile gets marked "restricted" (see
+    # is_record_visible below — that enforcement has always existed; this is
+    # what was missing to actually set it). manager_id, those three curation
+    # names, and the synthetic capability names ("deactivate_employee",
+    # "create_employee", "restrict_employee") aren't literal fields a generic
+    # PATCH touches directly the way the others are — a capability this table
+    # gates without it being a raw column name on the model.
     ("hr", "work"): {
         "full_name", "preferred_name", "job_title", "work_email", "work_phone",
         "salary", "salary_currency", "date_of_birth", "hire_date", "cost_centre",
         "employment_type", "linkedin_profile", "availability_status", "manager_id",
         "deactivate_employee", "create_employee", "restrict_employee",
+        *PROJECT_DESC_FIELDS, "skills", "contribution", "project_entry",
     },
-    # IT's write surface: project descriptions (PUT/DELETE
-    # /projects/{id}/description) plus, as of the doc-review pipeline, the
-    # three field kinds that pipeline can propose — "skills" gates writing
-    # an EmployeeSkill row, "contribution" gates EmployeeProject.contribution
-    # (the prose), "project_entry" gates the EmployeeProject membership
-    # itself (which project, what role, when). Three separate names, not one
-    # umbrella "review_pipeline" field, so a future narrowing (e.g. IT loses
-    # skill-writing but keeps project descriptions) is a one-line change here
-    # instead of a new carve-out. app.proposals.accept()/bulk_accept() check
-    # this per change_type, the same can_edit() every other write path uses
-    # — there is no separate, hardcoded "role == it" gate anywhere in the
-    # review pipeline; this table is the only place that decision is made.
-    ("it", "work"): set(PROJECT_DESC_FIELDS) | {"skills", "contribution", "project_entry"},
+    # it writes nothing. Its former surface — project descriptions and the
+    # three review-pipeline capabilities — is HR's above, and this row is
+    # unreachable regardless (WORK_MODE_ROLES pins it to employee mode); it
+    # stays only so the table remains total for every (role, view_mode).
+    ("it", "work"): set(),
 }
 
 # Department-sensitive fields ("Engineering does not see Finance-sensitive

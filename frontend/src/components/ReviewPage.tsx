@@ -10,8 +10,8 @@ import type {
   UploadDocResult, UploadedDocSummary, ViewMode,
 } from "../types";
 
-// AI-assisted doc upload, IT-only, work mode only — see App.tsx's tab
-// gating, the entire non-IT-invisibility guarantee on this side of the
+// AI-assisted doc upload, HR-only, work mode only — see App.tsx's tab
+// gating, the entire non-HR-invisibility guarantee on this side of the
 // wire: for any other role/mode this page never renders and its calls
 // never fire (the backend 403s them regardless, per app/proposals.py's
 // _authorize / _authorize_commit).
