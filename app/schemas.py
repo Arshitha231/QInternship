@@ -426,6 +426,29 @@ class UpdateOwnSkillRequest(BaseModel):
     level: SkillLevelName
 
 
+class AddProjectHistoryRequest(BaseModel):
+    """IT adding a person to a project, by NAME rather than id.
+
+    The name is what a person typing this knows; an unrecognised name
+    creates the project (app/writes.py's get_or_create_project), and a name
+    that matches an existing one case-insensitively joins that project
+    instead of forking a duplicate.
+
+    project_desc is the PROJECT's shared description, not this person's
+    contribution — supplying it edits what everyone on that project sees,
+    which is why it is optional and only written when actually sent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str = Field(max_length=200)
+    role: str = Field(max_length=150)
+    start_date: date
+    end_date: date | None = None
+    contribution: str | None = None
+    project_desc: str | None = None
+
+
 class UpsertProjectHistoryRequest(BaseModel):
     """IT's direct edit of one person's membership of one project.
 

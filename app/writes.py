@@ -43,7 +43,7 @@ from app.models import (
 )
 from app.models.enums import (
     AvailabilityStatus, CommunityLinkSource, EmployeeActionStatus, EmployeeActionType, EmploymentType,
-    NotificationKind,
+    NotificationKind, ProjectClassification, ProjectType,
 )
 from app.org_chart import manager_chain_ids
 from app.permissions import ViewMode, can_edit, editable_fields
@@ -82,6 +82,12 @@ class HasActiveDirectReports(Exception):
     def __init__(self, reports: list[dict]):
         self.reports = reports
         super().__init__(f"{len(reports)} active direct report(s) must be reassigned first")
+
+
+class ProjectMembershipExists(Exception):
+    """add_project_history: this person is already on this project. Refused
+    rather than treated as an edit — "add" that silently overwrites an
+    existing role and dates is how a correction becomes data loss."""
 
 
 class DuplicateEmail(Exception):
@@ -924,6 +930,36 @@ PROJECT_HISTORY_FIELD_CAPABILITY: dict[str, str] = {
 }
 
 
+def get_or_create_project(db: Session, employee_id: str, project_name: str) -> Project:
+    """Find a project by name (case-insensitive), or create it.
+
+    Lives here rather than in app/proposals.py, where it started, because
+    two independent write paths now need it: accepting a document's
+    project_entry proposal, and IT adding a project to someone's history by
+    hand. writes.py is already the module proposals.py can import from
+    without a cycle (the dependency has always run that direction), so this
+    is the shared home rather than a second copy.
+
+    New projects are never created `confidential` — a classification
+    decides who may see something, and inferring "this is secret" from a
+    caller who merely didn't say otherwise is the wrong direction to guess
+    in. Ownership defaults to the person the project is being recorded
+    against, which is the only party this call actually knows about.
+    """
+    project = db.query(Project).filter(Project.name.ilike(project_name)).first()
+    if project is not None:
+        return project
+    employee = db.get(Employee, employee_id)
+    project = Project(
+        name=project_name, type=ProjectType.project, description=None,
+        owning_unit_id=employee.org_unit_id, owner_id=employee_id,
+        classification=ProjectClassification.internal, is_client_engagement=False,
+    )
+    db.add(project)
+    db.flush()
+    return project
+
+
 def _refuse_own_record(caller: AuthenticatedUser, person_id: str, action: str) -> None:
     """Same rule as update_employee's, written the same way and for the
     same reason: this is the "edit anyone's record" path, so the one record
@@ -1007,6 +1043,97 @@ def upsert_project_history(
         db, caller, "create_project_history" if created else "update_project_history",
         f"person_id={person_id} project_id={project_id}", set(changes),
     )
+    return membership
+
+
+def add_project_history(
+    db: Session, caller: AuthenticatedUser, person_id: str, project_name: str,
+    role: str, start_date, view_mode: ViewMode,
+    end_date=None, contribution: str | None = None, project_desc: str | None = None,
+) -> EmployeeProject:
+    """Put a person on a project named by hand, creating the project if the
+    name is new.
+
+    Addressed by project NAME, not id, which is the whole point: this
+    exists for "add the Nightingale work to their history", typed by a
+    person who knows the project's name and has no reason to know its id.
+    An earlier version of this feature refused to offer it at all, on the
+    grounds that a create needs a project to point at and nothing lists
+    projects to pick from — which missed that the review pipeline has
+    always created projects by name on exactly this path (see
+    get_or_create_project, which accept() reaches through _commit_project_
+    entry). Requiring a picker was a self-imposed constraint, not a real
+    one.
+
+    Matching an existing name (case-insensitively) joins that project
+    rather than making a second one with the same name, so this cannot
+    quietly fork "Project Nightingale" into two.
+
+    Capabilities are checked per supplied field, same as everywhere else:
+    "project_entry" always (the membership, and creating the project is
+    part of recording one), "contribution" only if prose was supplied, and
+    "project_desc" only if a description was. IT holds all three today; the
+    split is what keeps a future narrowing a one-line change.
+    """
+    name = (project_name or "").strip()
+    if not name:
+        raise ValueError("project_name is required")
+    if not (role or "").strip():
+        raise ValueError("role is required")
+    if start_date is None:
+        raise ValueError("start_date is required")
+
+    needed = {"project_entry"}
+    if contribution is not None:
+        needed.add("contribution")
+    if project_desc is not None:
+        needed.add("project_desc")
+    _authorize(caller.role, view_mode, needed)
+    _refuse_own_record(caller, person_id, "edit")
+
+    target = db.get(Employee, person_id)
+    if target is None or not target.is_active:
+        raise WriteTargetMissing(person_id)
+
+    start = _coerce("start_date", start_date)
+    end = _coerce("end_date", end_date)
+    if end is not None and end < start:
+        raise ValueError("end_date cannot be before start_date")
+
+    project = get_or_create_project(db, person_id, name)
+
+    existing = (
+        db.query(EmployeeProject)
+        .filter(EmployeeProject.employee_id == person_id,
+                EmployeeProject.project_id == project.id)
+        .first()
+    )
+    if existing is not None:
+        # Already on it. Refusing beats silently turning "add" into an
+        # overwrite of a role/date the reviewer never looked at.
+        raise ProjectMembershipExists(f"{target.full_name} is already on {project.name}")
+
+    membership = EmployeeProject(
+        employee_id=person_id, project_id=project.id, role=role.strip(),
+        contribution=contribution or None, start_date=start, end_date=end,
+    )
+    db.add(membership)
+
+    # A description is a property of the PROJECT, shared by everyone on it
+    # — set only when one was actually supplied, so adding a person to an
+    # existing project never blanks the description it already had.
+    if project_desc is not None:
+        project.description = project_desc or None
+
+    db.commit()
+    db.refresh(membership)
+
+    reindex_employee_id(db, person_id)
+    if project_desc is not None:
+        _reindex_project_members(db, project.id)
+    _audit(db, caller, "add_project_history",
+           f"person_id={person_id} project={project.name!r} project_id={project.id}",
+           needed)
     return membership
 
 

@@ -53,6 +53,7 @@ from app.models.enums import (
 )
 from app.permissions import ViewMode, can_edit
 from app.search_reindex import reindex_employee_id
+from app.writes import get_or_create_project
 
 # Everything committed out of this module carries this provenance in the
 # audit trail, so "which of these edits came from a document?" is one query.
@@ -591,27 +592,6 @@ def undo(
     return proposal
 
 
-def _get_or_create_project(db: Session, employee_id: str, project_name: str) -> Project:
-    """Same lookup-or-create the first version of this module used: find by
-    name (case-insensitive), create as `internal` if none exists. New
-    projects are never created `confidential` — a classification decides
-    who may see something, and inferring "this is secret" from a document
-    that merely didn't say otherwise is exactly the wrong direction to
-    guess in.
-    """
-    project = db.query(Project).filter(Project.name.ilike(project_name)).first()
-    if project is None:
-        employee = db.get(Employee, employee_id)
-        project = Project(
-            name=project_name, type=ProjectType.project, description=None,
-            owning_unit_id=employee.org_unit_id, owner_id=employee_id,
-            classification=ProjectClassification.internal, is_client_engagement=False,
-        )
-        db.add(project)
-        db.flush()
-    return project
-
-
 def _get_or_create_membership(db: Session, employee_id: str, project: Project) -> EmployeeProject:
     """contribution and project_entry are independently acceptable — a
     reviewer might accept one before the other, in either order — so both
@@ -707,7 +687,7 @@ def _commit_contribution(db: Session, employee_id: str, value: dict) -> dict:
     contribution = (value.get("contribution") or "").strip()
     if not project_name or not contribution:
         raise ProposalNotActionable("proposed contribution is missing a project or text")
-    project = _get_or_create_project(db, employee_id, project_name)
+    project = get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
     previous = membership.contribution
     membership.contribution = contribution
@@ -723,7 +703,7 @@ def _commit_project_entry(db: Session, employee_id: str, value: dict) -> dict:
     project_name = (value.get("project") or "").strip()
     if not project_name:
         raise ProposalNotActionable("proposed project entry has no project name")
-    project = _get_or_create_project(db, employee_id, project_name)
+    project = get_or_create_project(db, employee_id, project_name)
     membership = _get_or_create_membership(db, employee_id, project)
     previous = {
         "role": membership.role,

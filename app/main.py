@@ -100,6 +100,7 @@ from app.schemas import (
     UpdateBioRequest,
     UpdateOwnSkillRequest,
     UpdateCommunityLinkRequest,
+    AddProjectHistoryRequest,
     UpdateEmployeeRequest,
     UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
@@ -110,11 +111,13 @@ from app.writes import (
     DuplicateEmail,
     EmployeeAlreadyInactive,
     HasActiveDirectReports,
+    ProjectMembershipExists,
     NoApproverAvailable,
     RequestNotPending,
     WriteDenied,
     WriteTargetMissing,
 )
+from app.writes import add_project_history as add_project_history_service
 from app.writes import approve_action_request as approve_action_request_service
 from app.writes import clear_project_description as clear_project_description_service
 from app.writes import list_deactivated_employees as list_deactivated_employees_service
@@ -768,6 +771,42 @@ def clear_project_description_route(
     except WriteTargetMissing as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     return {"project_id": project.id, "project_name": project.name, "project_desc": None}
+
+
+@app.post("/people/{person_id}/projects", status_code=201)
+def add_project_history_route(
+    person_id: str,
+    body: AddProjectHistoryRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """IT, work mode: add anyone (except themselves) to a project, naming
+    the project by hand. Creates the project if the name is new; joins the
+    existing one if it isn't."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        membership = add_project_history_service(
+            db, user, person_id, body.project_name, body.role, body.start_date, mode,
+            end_date=body.end_date, contribution=body.contribution,
+            project_desc=body.project_desc,
+        )
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Employee not found") from exc
+    except ProjectMembershipExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "employee_id": membership.employee_id,
+        "project_id": membership.project_id,
+        "role": membership.role,
+        "contribution": membership.contribution,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
 
 
 @app.put("/people/{person_id}/projects/{project_id}")

@@ -1118,3 +1118,5 @@ body.help-inspecting, body.help-inspecting * { cursor: help !important; }
   background: var(--purple-100);
   color: var(--purple-800);
 }
+.project-add-btn { margin-top: 14px; }
+.project-history-self-note { margin-top: 12px; font-size: 12.5px; }
