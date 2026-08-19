@@ -1077,22 +1077,20 @@ def set_required_skills_route(
         raise HTTPException(status_code=404, detail="Project not found")
     return result
 
-
+def _require_continuity_access(user: AuthenticatedUser, view_mode: str | None) -> str:
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    return mode
 @app.get("/continuity/exposure", response_model=ContinuityOverview)
 def continuity_exposure_route(
     window_days: int | None = Query(None, description="Lookahead window in days. Defaults to the configured value."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> ContinuityOverview:
-    """Organization-wide continuity summary. HR-only — see app/continuity.py's
-    module docstring for why this route-level check duplicates the one
-    app.continuity.get_org_exposure already does itself (same double-check
-    pattern as /notifications/date-milestones and /people/{id}/training/{code}
-    above)."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    _require_continuity_access(user, view_mode)
     return get_org_exposure_service(db, user, window_days=window_days)
-
 
 @app.get("/continuity/engagement-exposure", response_model=list[EngagementExposure])
 def continuity_engagement_exposure_route(
@@ -1103,18 +1101,15 @@ def continuity_engagement_exposure_route(
     org_unit: str | None = None,
     dependency_type: str | None = None,
     window_days: int | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[EngagementExposure]:
-    """Filterable list of client engagements with continuity exposure.
-    HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    _require_continuity_access(user, view_mode)
     return get_engagement_exposure_service(
         db, user, exposure=exposure, client=client, project=project,
         office=office, org_unit=org_unit, dependency_type=dependency_type, window_days=window_days,
     )
-
 
 @app.get("/continuity/review-queue", response_model=list[HrReviewQueueItem])
 def continuity_review_queue_route(
@@ -1125,35 +1120,25 @@ def continuity_review_queue_route(
     engagements_min: int | None = None,
     engagements_max: int | None = None,
     window_days: int | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[HrReviewQueueItem]:
-    """The proactive "who is nearing a review date" list — every employee
-    with a current, HR-verified record and a scheduled review, whether or
-    not it has any client-engagement consequence. Complements
-    /continuity/engagement-exposure, which only ever surfaces the subset
-    whose review does intersect something. HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    _require_continuity_access(user, view_mode)
     return get_hr_review_queue_service(
         db, user, window_days=window_days, authorization_type=authorization_type, exposure=exposure,
         next_review_from=next_review_from, next_review_to=next_review_to,
         engagements_min=engagements_min, engagements_max=engagements_max,
     )
 
-
 @app.get("/continuity/employees/{employee_id}", response_model=EmployeeContinuityDetail)
 def continuity_employee_route(
     employee_id: str,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> EmployeeContinuityDetail:
-    """HR drill-down: one employee's work-authorization history and their
-    client-engagement exposure entries, including engagements where the
-    review doesn't intersect (exposure="none") — unlike the org-wide list,
-    nothing here is filtered out. HR-only."""
-    if user.role != "hr":
-        raise HTTPException(status_code=403, detail="Continuity data is an HR-only view")
+    _require_continuity_access(user, view_mode)
     result = get_employee_continuity_service(db, user, employee_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
@@ -1675,11 +1660,13 @@ def delete_community_link_route(
 @app.get("/suggested_official_links", response_model=list[SuggestedOfficialLinkOut])
 def list_suggested_official_links_route(
     office_id: int | None = Query(None, description="Restrict to one office."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[SuggestedOfficialLinkOut]:
-    """HR review queue for office/role -> candidate mappings bootstrapped
-    from existing office/job-title data. HR-only."""
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="HR-only view")
     try:
         return list_suggested_official_links_service(db, user, office_id=office_id)
     except SuggestionDenied as exc:
@@ -1688,13 +1675,12 @@ def list_suggested_official_links_route(
 
 @app.post("/suggested_official_links/generate", status_code=201, response_model=list[SuggestedOfficialLinkOut])
 def generate_suggested_official_links_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[SuggestedOfficialLinkOut]:
-    """HR-triggered scan that stages new pending suggestions — never
-    creates a real community_links edge itself. HR-only, same gate as the
-    rest of the review queue."""
-    if user.role != "hr":
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
         raise HTTPException(status_code=403, detail="Generating official-link suggestions is an HR action")
     return generate_suggested_official_links_service(db)
 
@@ -1735,14 +1721,13 @@ def reject_suggested_official_link_route(
 
 @app.post("/community_links/auto_assign_mentors", status_code=201, response_model=list[CommunityLinkOut])
 def auto_assign_mentors_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[CommunityLinkOut]:
-    """Sweep for new hires without a mentor and pair each with an eligible
-    colleague, creating the official mentor link directly — see
-    app.community_links.auto_assign_mentors for why this one official-link
-    kind skips the suggest/confirm review queue the others go through.
-    HR-only, same gate as the rest of the review queue."""
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Auto-assigning mentors is an HR action")
     try:
         return auto_assign_mentors_service(db, user)
     except SuggestionDenied as exc:
