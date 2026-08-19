@@ -783,3 +783,54 @@ def test_the_real_refusal_still_passes_through_unchanged(monkeypatch):
     turn = tool_calling._real_resolve("what's the weather")
     assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
     assert turn.off_contract_text is None
+
+
+# ---------------------------------------------------------------------------
+# Compositional questions must reach the model. The extractors key on a
+# single keyword with a greedy name group, so on a two-step question they
+# capture most of the sentence -- and the leftover still fuzzy-matches to a
+# real person, so the existence check alone could not catch it.
+# ---------------------------------------------------------------------------
+
+def test_a_nested_relationship_question_defers_instead_of_guessing():
+    # Was: get_org_chain(person="who reports to Priya Nair", up, 1) -- a
+    # single hop in the wrong direction, for a question about someone else
+    # entirely.
+    assert tool_calling._deterministic_resolve("who reports to Priya Nair's manager") is None
+
+
+def test_a_team_plus_attribute_question_defers():
+    # Was: get_org_chain(person="which of Sean Wilson", up, 1).
+    assert tool_calling._deterministic_resolve(
+        "which of Sean Wilson's reports are experts in Kubernetes") is None
+
+
+def test_a_nested_project_owner_question_defers():
+    # Was: find_project_owner(name="who manages the person who owns the
+    # Billing API") -- the whole sentence as a project name.
+    assert tool_calling._deterministic_resolve(
+        "who manages the person who owns the Billing API") is None
+
+
+def test_relationship_words_that_are_real_surnames_still_route():
+    """The guard is interrogative/structural tokens only. "Report" is a
+    surname in this directory, so blocklisting relationship words would
+    break the ordinary single-hop case."""
+    turn = tool_calling._deterministic_resolve("who is Riley Report's manager?")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Riley Report", "direction": "up", "depth": 1})
+
+
+def test_ordinary_project_owner_questions_still_route():
+    turn = tool_calling._deterministic_resolve("who owns the Billing API")
+    assert turn.tool_call.name == "find_project_owner"
+    assert turn.tool_call.arguments == {"name": "Billing API"}
+
+
+def test_is_clean_subject_rejects_sentences_and_accepts_names():
+    assert tool_calling._is_clean_subject("Sean Wilson")
+    assert tool_calling._is_clean_subject("Riley Report")
+    assert not tool_calling._is_clean_subject("who reports to Priya Nair")
+    assert not tool_calling._is_clean_subject("which of Sean Wilson")
+    # A backstop for anything the token list doesn't name.
+    assert not tool_calling._is_clean_subject("one two three four five six")

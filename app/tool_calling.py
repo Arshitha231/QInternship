@@ -761,6 +761,38 @@ _REPORTS_TO_PATTERN = re.compile(
 # repeatedly, so an arbitrary number of hops peels back to the real name.
 _TRAILING_MANAGER_HOP = re.compile(r"\s*'?s\s+manager'?s?\s*$", re.IGNORECASE)
 
+# Tokens that never occur inside a person's or project's name, but do occur
+# in the leftovers when the extractor grabs more of a sentence than it
+# should. Deliberately interrogative/structural only -- NOT relationship
+# words like "report" or "manager", which are real surnames here ("Riley
+# Report" is a fixture precisely because of that).
+_NOT_IN_A_NAME = frozenset({
+    "who", "whom", "whose", "what", "which", "when", "where", "why", "how",
+    "does", "do", "did", "is", "are", "was", "were", "can", "could", "should",
+    "find", "list", "show", "tell", "give", "and", "or", "that", "than", "with",
+})
+_MAX_NAME_WORDS = 5
+
+
+def _is_clean_subject(name: str) -> bool:
+    """Whether an extracted subject actually looks like a name.
+
+    The extractors key on a single keyword with a greedy name group, so on a
+    COMPOSITIONAL question they capture most of the sentence: "who reports to
+    Priya Nair's manager" yields the subject "who reports to Priya Nair", and
+    "which of Sean Wilson's reports are experts in Kubernetes" yields "which
+    of Sean Wilson". Both then fuzzy-match to a real person -- the name is in
+    there -- so the existence check passes and the router answers a
+    single-hop question that was never asked, instead of deferring to the
+    model, which chains these correctly.
+
+    Failing this check means "defer", never "answer empty".
+    """
+    words = name.split()
+    if not words or len(words) > _MAX_NAME_WORDS:
+        return False
+    return not any(w.strip(",.'\"").lower() in _NOT_IN_A_NAME for w in words)
+
 
 def _extract_relationship_subject(message: str) -> str | None:
     m = _MANAGER_OF_PATTERN.search(message) or _REPORTS_TO_PATTERN.search(message)
@@ -775,7 +807,10 @@ def _extract_relationship_subject(message: str) -> str | None:
         if peeled == name:
             break
         name = peeled
-    return name or None
+    name = _clean_extracted_name(name)
+    if not name or not _is_clean_subject(name):
+        return None
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +951,11 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
         project = re.sub(
             r"^(whos?|who is|who's)\s+(owns?|responsible for|on)\s+(the\s+)?", "", message, flags=re.IGNORECASE
         ).strip(" ?.!")
+        # Same guard as the relationship branch: "who manages the person who
+        # owns the Billing API" leaves the whole sentence as the project
+        # name, which is a nested question the model chains correctly.
+        if not _is_clean_subject(project):
+            return None
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_project_owner", arguments={"name": project}))
     chain_query = _extract_chain_query(message)
     if chain_query:
