@@ -19,7 +19,9 @@ from datetime import date
 import pytest
 
 from app.models import AuditLog, Employee, EmployeeProject, Office, OrgUnit, Project
-from app.models.enums import AvailabilityStatus, EmploymentType
+from app.models.enums import (
+    AvailabilityStatus, EmploymentType, ProjectClassification, ProjectType,
+)
 from tests.conftest import auth_headers
 
 ALL_ROLES = ["employee", "manager", "hr", "it"]
@@ -27,7 +29,28 @@ ALL_ROLES = ["employee", "manager", "hr", "it"]
 
 @pytest.fixture
 def atlas_id(db_session):
-    return db_session.query(Project).filter(Project.name == "Project Atlas").one().id
+    """A project dedicated to THIS module, not conftest's shared "Project
+    Atlas". Every test here adds memberships, and the test database is
+    session-scoped — piling members onto a shared project leaks into
+    whatever runs next (it broke test_project_search's restricted-employee
+    hop, which counts who is on a project). Same reasoning _mkemp already
+    applies to people, applied to projects."""
+    existing = (
+        db_session.query(Project)
+        .filter(Project.name == "Project HistoryFixture").first()
+    )
+    if existing is not None:
+        return existing.id
+    owner = db_session.query(Employee).filter(Employee.is_active == True).first()  # noqa: E712
+    project = Project(
+        name="Project HistoryFixture", type=ProjectType.project,
+        description="Fixture project for project-history write tests.",
+        owning_unit_id=owner.org_unit_id, owner_id=owner.id,
+        classification=ProjectClassification.internal, is_client_engagement=False,
+    )
+    db_session.add(project)
+    db_session.commit()
+    return project.id
 
 
 def _mkemp(db_session, id_, full_name, **overrides) -> Employee:
@@ -305,9 +328,127 @@ async def test_project_history_exposes_the_id_the_write_path_needs(
 
     history = resp.json()["project_history"]
     row = next(p for p in history if p["project_id"] == atlas_id)
-    assert row["project_name"] == "Project Atlas"
+    assert row["project_name"] == "Project HistoryFixture"
     # Round-trips: the id the read handed back addresses the same row.
     delete = await client.delete(
         f"/people/ph-readid-1/projects/{row['project_id']}", params={"view_mode": "work"},
         headers=auth_headers("it"))
     assert delete.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# Adding a project by name.
+#
+# Named rather than picked from a list, because nothing lists projects and
+# the person typing knows the name, not the id. get_or_create_project is
+# the same path accepting a document's project_entry has always taken.
+# ---------------------------------------------------------------------------
+
+async def test_it_adds_a_person_to_a_brand_new_project(client, db_session):
+    _mkemp(db_session, "ph-add-1", "Pat Adder")
+    resp = await client.post(
+        "/people/ph-add-1/projects", params={"view_mode": "work"},
+        json={"project_name": "Project Kingfisher", "role": "Platform Lead",
+              "start_date": "2025-03-01", "contribution": "Owned the cutover.",
+              "project_desc": "Migration of the core platform."},
+        headers=auth_headers("it", "it-adder-1"),
+    )
+    assert resp.status_code == 201, resp.text
+
+    project = db_session.query(Project).filter(Project.name == "Project Kingfisher").one()
+    row = _membership(db_session, "ph-add-1", project.id)
+    assert row is not None
+    assert row.role == "Platform Lead"
+    assert row.contribution == "Owned the cutover."
+    assert row.start_date == date(2025, 3, 1)
+    assert row.end_date is None
+    assert project.description == "Migration of the core platform."
+
+
+async def test_matching_an_existing_name_joins_it_instead_of_forking(
+    client, db_session, atlas_id
+):
+    """Case-insensitive match — otherwise "project atlas" would quietly
+    become a second project with the same name."""
+    _mkemp(db_session, "ph-add-2", "Pat Joiner")
+    before = db_session.query(Project).count()
+    resp = await client.post(
+        "/people/ph-add-2/projects", params={"view_mode": "work"},
+        json={"project_name": "project historyfixture", "role": "Engineer",
+              "start_date": "2024-05-01"},
+        headers=auth_headers("it"),
+    )
+    assert resp.status_code == 201, resp.text
+    assert db_session.query(Project).count() == before  # nothing new created
+    assert _membership(db_session, "ph-add-2", atlas_id) is not None
+
+
+async def test_adding_someone_already_on_the_project_is_409(client, db_session, atlas_id):
+    """"Add" must not silently overwrite a role and dates nobody looked at."""
+    _mkemp(db_session, "ph-add-3", "Pat Dupe")
+    first = await client.post(
+        "/people/ph-add-3/projects", params={"view_mode": "work"},
+        json={"project_name": "Project HistoryFixture", "role": "Engineer",
+              "start_date": "2024-01-01"}, headers=auth_headers("it"))
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        "/people/ph-add-3/projects", params={"view_mode": "work"},
+        json={"project_name": "Project HistoryFixture", "role": "Rewritten",
+              "start_date": "2020-01-01"}, headers=auth_headers("it"))
+    assert second.status_code == 409, second.text
+
+    row = _membership(db_session, "ph-add-3", atlas_id)
+    assert row.role == "Engineer"            # untouched
+    assert row.start_date == date(2024, 1, 1)
+
+
+async def test_omitting_project_desc_leaves_an_existing_one_alone(
+    client, db_session, atlas_id
+):
+    """A description is shared by everyone on the project — adding one more
+    person must not blank it."""
+    before = db_session.get(Project, atlas_id).description
+    assert before  # fixture ships one
+    _mkemp(db_session, "ph-add-4", "Pat Preserver")
+    resp = await client.post(
+        "/people/ph-add-4/projects", params={"view_mode": "work"},
+        json={"project_name": "Project HistoryFixture", "role": "Engineer",
+              "start_date": "2024-01-01"}, headers=auth_headers("it"))
+    assert resp.status_code == 201, resp.text
+
+    db_session.expire_all()
+    assert db_session.get(Project, atlas_id).description == before
+
+
+async def test_add_requires_name_role_and_start(client, db_session):
+    _mkemp(db_session, "ph-add-5", "Pat Incomplete")
+    resp = await client.post(
+        "/people/ph-add-5/projects", params={"view_mode": "work"},
+        json={"project_name": "  ", "role": "Engineer", "start_date": "2024-01-01"},
+        headers=auth_headers("it"))
+    assert resp.status_code == 422, resp.text
+
+
+async def test_it_cannot_add_a_project_to_their_own_history(client, db_session):
+    """The same self-exclusion as edit and remove — otherwise "except their
+    own" would have a hole exactly where padding your own record is
+    easiest."""
+    _mkemp(db_session, "ph-add-self", "Pat SelfAdd")
+    resp = await client.post(
+        "/people/ph-add-self/projects", params={"view_mode": "work"},
+        json={"project_name": "Project Selfmade", "role": "Principal",
+              "start_date": "2024-01-01"},
+        headers=auth_headers("it", "ph-add-self"))
+    assert resp.status_code == 403, resp.text
+    assert db_session.query(Project).filter(Project.name == "Project Selfmade").first() is None
+
+
+@pytest.mark.parametrize("role", [r for r in ALL_ROLES if r != "it"])
+async def test_only_it_may_add_project_history(client, db_session, role):
+    _mkemp(db_session, f"ph-addrole-{role}", f"Pat {role}")
+    resp = await client.post(
+        f"/people/ph-addrole-{role}/projects", params={"view_mode": "work"},
+        json={"project_name": "Project X", "role": "Engineer",
+              "start_date": "2024-01-01"}, headers=auth_headers(role))
+    assert resp.status_code == 403, resp.text

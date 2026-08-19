@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  ApiError, getOrgChart, getPerson, removeProjectHistory, requestDeactivation, requestRestriction,
-  updateEmployee, updateOwnBio, updateOwnNamePronunciation, upsertProjectHistory,
+  addProjectHistory, ApiError, getOrgChart, getPerson, removeProjectHistory, requestDeactivation,
+  requestRestriction, updateEmployee, updateOwnBio, updateOwnNamePronunciation, upsertProjectHistory,
 } from "../api";
 import type { ActionRequestResult, ActiveDirectReport } from "../api";
 import type {
@@ -183,6 +183,137 @@ export function EditField({ label, badge, children }: { label: string; badge?: s
     </label>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Add someone to a project. Named by hand rather than picked from a list:
+// an unrecognised name creates the project, a matching one joins it (see
+// app/writes.py's get_or_create_project, the same path accepting a
+// document's project_entry has always taken).
+// ---------------------------------------------------------------------------
+
+function AddProjectForm({
+  personId, identity, viewMode, onDone,
+}: { personId: string; identity: Identity; viewMode: ViewMode; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [startMonth, setStartMonth] = useState("");
+  const [current, setCurrent] = useState(true);
+  const [endMonth, setEndMonth] = useState("");
+  const [contribution, setContribution] = useState("");
+  const [projectDesc, setProjectDesc] = useState("");
+
+  function reset() {
+    setName(""); setRole(""); setStartMonth(""); setCurrent(true);
+    setEndMonth(""); setContribution(""); setProjectDesc("");
+    setError(null);
+  }
+
+  async function submit() {
+    if (!name.trim() || !role.trim() || !startMonth) {
+      setError("Project name, role and start month are required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await addProjectHistory(identity, personId, {
+        project_name: name.trim(),
+        role: role.trim(),
+        // Month precision in, first-of-month out — the read side only ever
+        // publishes month/year, so there is no day here to preserve.
+        start_date: `${startMonth}-01`,
+        end_date: current ? null : (endMonth ? `${endMonth}-01` : null),
+        // Omitted rather than sent empty: the backend writes only the keys
+        // it receives, and an empty description would blank a real one on
+        // a project that already exists.
+        ...(contribution.trim() ? { contribution: contribution.trim() } : {}),
+        ...(projectDesc.trim() ? { project_desc: projectDesc.trim() } : {}),
+      }, viewMode);
+      reset();
+      setOpen(false);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Couldn't add — try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button className="btn btn-primary project-add-btn" onClick={() => { reset(); setOpen(true); }}>
+        Add project
+      </button>
+    );
+  }
+
+  return (
+    <div className="bio-edit project-history-edit">
+      <label className="edit-field">
+        <span className="edit-label">Project name</span>
+        <input
+          className="edit-input" value={name} placeholder="e.g. Project Nightingale"
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <label className="edit-field">
+        <span className="edit-label">Role</span>
+        <input
+          className="edit-input" value={role} placeholder="e.g. Platform Lead"
+          onChange={(e) => setRole(e.target.value)}
+        />
+      </label>
+      <label className="edit-field">
+        <span className="edit-label">Started</span>
+        <input
+          className="edit-input" type="month" value={startMonth}
+          onChange={(e) => setStartMonth(e.target.value)}
+        />
+      </label>
+      <label className="edit-check">
+        <input type="checkbox" checked={current} onChange={(e) => setCurrent(e.target.checked)} />
+        <span>Still on this project</span>
+      </label>
+      {!current && (
+        <label className="edit-field">
+          <span className="edit-label">Ended</span>
+          <input
+            className="edit-input" type="month" value={endMonth}
+            onChange={(e) => setEndMonth(e.target.value)}
+          />
+        </label>
+      )}
+      <label className="edit-field">
+        <span className="edit-label">Contribution</span>
+        <textarea
+          className="edit-input" rows={3} value={contribution}
+          placeholder="What this person did on the project"
+          onChange={(e) => setContribution(e.target.value)}
+        />
+      </label>
+      <label className="edit-field">
+        <span className="edit-label">Project description</span>
+        <textarea
+          className="edit-input" rows={2} value={projectDesc}
+          placeholder="Shared by everyone on this project — leave blank to keep what's there"
+          onChange={(e) => setProjectDesc(e.target.value)}
+        />
+      </label>
+      {error && <p className="bio-error">{error}</p>}
+      <div className="bio-actions">
+        <button className="btn" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+        <button className="btn btn-primary" disabled={busy} onClick={submit}>
+          {busy ? "Adding…" : "Add project"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 
 // ---------------------------------------------------------------------------
 // One project-history row, editable in place by IT in work mode.
@@ -1046,6 +1177,24 @@ export function ProfilePage({
                 </ul>
               ) : (
                 <p className="muted">No projects on file yet.</p>
+              )}
+              {canEditProjectHistory && (
+                <AddProjectForm
+                  personId={personId} identity={identity} viewMode={viewMode}
+                  onDone={() => setHistoryToken((t) => t + 1)}
+                />
+              )}
+              {/* Why the controls above are absent on your own profile.
+                  Without this the section looks identical to one where the
+                  feature failed to load — which is exactly how it read the
+                  first time someone signed in as IT and opened their own
+                  page. Says the rule rather than showing a disabled button,
+                  since the rule is not going to change by waiting. */}
+              {isOwnProfile && identity.role === "it" && viewMode === "work" && (
+                <p className="muted project-history-self-note">
+                  You can't edit your own project history — ask another IT
+                  colleague to make the change.
+                </p>
               )}
             </section>
           )}
