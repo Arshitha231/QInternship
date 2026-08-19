@@ -42,9 +42,29 @@ def test_confident_self_reference_still_matches():
 
 
 def test_confident_named_relationship_still_matches():
+    # Answers with the MANAGER as the headline record, not the person who
+    # was asked about. This used to route to find_people(name=...), which
+    # made Sean Wilson the result card for a question whose answer is his
+    # manager -- the same bug the self-referential branch already fixed for
+    # "who is MY manager?".
     turn = _deterministic_resolve("who does Sean Wilson report to?")
     assert turn is not None
-    assert turn.tool_call == ResolvedToolCall(name="find_people", arguments={"name": "Sean Wilson"})
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Sean Wilson", "direction": "up", "depth": 1})
+
+
+def test_named_third_party_manager_chain_counts_hops_without_eating_the_name():
+    # The name group is greedy, so "X's manager's manager" captured
+    # "X's manager" as the subject -- right hop count, wrong person.
+    turn = _deterministic_resolve("who is Sean Wilson's manager's manager?")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Sean Wilson", "direction": "up", "depth": 2})
+
+
+def test_plural_managers_is_a_people_search_not_a_relationship_question():
+    # "engineering managers in Bangalore" must not be read as a question
+    # about somebody called "engineering".
+    assert _deterministic_resolve("engineering managers in Bangalore") is None
 
 
 def test_gap_keyword_is_not_a_bare_substring_match():
@@ -721,3 +741,96 @@ def test_chain_feedback_never_leaks_a_field_the_caller_could_not_see(db_session)
         "a real, restricted phone number reached the text handed to the model -- "
         "the feedback mechanism must never carry more than the already-filtered response object"
     )
+
+
+# ---------------------------------------------------------------------------
+# Model prose is never an answer. The few-shot examples live in the same
+# conversation the model answers from, so their contents are reachable as if
+# they were retrieved facts.
+# ---------------------------------------------------------------------------
+
+def _fake_content_response(content: str):
+    message = SimpleNamespace(tool_calls=None, content=content)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _content_client(content: str):
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **_kwargs: _fake_content_response(content))))
+
+
+def test_model_prose_is_replaced_with_the_refusal_not_rendered(monkeypatch):
+    """Asking the exact text of a chain few-shot made the model replay that
+    example's conclusion as prose -- a specific, plausible, entirely
+    unsourced claim about two named colleagues, with no tool call, no card
+    and no citation behind it."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: _content_client("Diego Hernandez reports to Priya Sharma."))
+    turn = tool_calling._real_resolve("who does the owner of the Billing API report to")
+    assert turn.tool_call is None
+    assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
+    assert "Diego Hernandez" not in turn.message
+    # Kept for operators, deliberately not for callers.
+    assert turn.off_contract_text == "Diego Hernandez reports to Priya Sharma."
+
+
+def test_the_real_refusal_still_passes_through_unchanged(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client", lambda: _content_client(tool_calling.OUT_OF_SCOPE_MESSAGE))
+    turn = tool_calling._real_resolve("what's the weather")
+    assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
+    assert turn.off_contract_text is None
+
+
+# ---------------------------------------------------------------------------
+# Compositional questions must reach the model. The extractors key on a
+# single keyword with a greedy name group, so on a two-step question they
+# capture most of the sentence -- and the leftover still fuzzy-matches to a
+# real person, so the existence check alone could not catch it.
+# ---------------------------------------------------------------------------
+
+def test_a_nested_relationship_question_defers_instead_of_guessing():
+    # Was: get_org_chain(person="who reports to Priya Nair", up, 1) -- a
+    # single hop in the wrong direction, for a question about someone else
+    # entirely.
+    assert tool_calling._deterministic_resolve("who reports to Priya Nair's manager") is None
+
+
+def test_a_team_plus_attribute_question_defers():
+    # Was: get_org_chain(person="which of Sean Wilson", up, 1).
+    assert tool_calling._deterministic_resolve(
+        "which of Sean Wilson's reports are experts in Kubernetes") is None
+
+
+def test_a_nested_project_owner_question_defers():
+    # Was: find_project_owner(name="who manages the person who owns the
+    # Billing API") -- the whole sentence as a project name.
+    assert tool_calling._deterministic_resolve(
+        "who manages the person who owns the Billing API") is None
+
+
+def test_relationship_words_that_are_real_surnames_still_route():
+    """The guard is interrogative/structural tokens only. "Report" is a
+    surname in this directory, so blocklisting relationship words would
+    break the ordinary single-hop case."""
+    turn = tool_calling._deterministic_resolve("who is Riley Report's manager?")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Riley Report", "direction": "up", "depth": 1})
+
+
+def test_ordinary_project_owner_questions_still_route():
+    turn = tool_calling._deterministic_resolve("who owns the Billing API")
+    assert turn.tool_call.name == "find_project_owner"
+    assert turn.tool_call.arguments == {"name": "Billing API"}
+
+
+def test_is_clean_subject_rejects_sentences_and_accepts_names():
+    assert tool_calling._is_clean_subject("Sean Wilson")
+    assert tool_calling._is_clean_subject("Riley Report")
+    assert not tool_calling._is_clean_subject("who reports to Priya Nair")
+    assert not tool_calling._is_clean_subject("which of Sean Wilson")
+    # A backstop for anything the token list doesn't name.
+    assert not tool_calling._is_clean_subject("one two three four five six")

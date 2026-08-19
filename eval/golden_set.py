@@ -260,7 +260,16 @@ TIER2 = [
          text="who works with Terraform on the cloud operations team?",
          kind="ids", extractor="find_people",
          ground_truth=("independent", "filter_people", {"skill": "Terraform", "org_unit": "Cloud Operations Team"})),
-    dict(id="t2-07", tier=2, category="semantic_query", caller=HR,
+    # Recategorised from "semantic_query": this question does not test
+    # ranked retrieval at all. The model emits org_unit="Cloud
+    # Infrastructure" -- a plausible name for a department actually called
+    # "Infrastructure" -- and _org_unit_and_descendant_ids finds nothing, so
+    # it hard-empties before any retrieval strategy is even chosen. It fails
+    # identically with Search on and off. Labelling it semantic hid a real
+    # open bug (the vocabulary snapper is not applied to find_people's own
+    # arguments) inside a category that gets excused whenever the index is
+    # unavailable.
+    dict(id="t2-07", tier=2, category="vocabulary_snap", caller=HR,
          text="I need someone comfortable with Terraform who's part of the cloud infrastructure org",
          kind="ids", extractor="find_people",
          ground_truth=("independent", "filter_people", {"skill": "Terraform", "org_unit": "Cloud Operations Team"})),
@@ -478,3 +487,26 @@ OUT_OF_SCOPE = [
 ]
 
 ALL_QUESTIONS = TIER1 + TIER2 + TIER3 + OUT_OF_SCOPE
+
+
+# Categories whose questions cannot be answered without a live, matching
+# search index: fuzzy name matching ("Preeya Sharma" -> Priya Sharma) and
+# description-to-skill mapping ("reporting tools and dashboards" -> Power BI)
+# are exactly what the ranking arm exists to do, and the SQL fallback is
+# documented as a literal substring match, not a semantic one.
+#
+# run_golden_eval.py marks these UNMEASURABLE (not failed) when its preflight
+# has found the index and the evaluated database describing different
+# populations. Scoring them in that state measures the environment, not the
+# system -- which is precisely what made tier 2 look like an answer-quality
+# problem when four of its seven zeros were a corpus the index had never
+# heard of.
+#
+# Deliberately narrow. A question only belongs here if ranked retrieval is
+# the ONLY thing that could answer it -- not merely if it happens to be
+# failing right now.
+SEARCH_DEPENDENT_CATEGORIES = frozenset({
+    "fuzzy_name",
+    "semantic_query",
+    "semantic_query_broad",
+})

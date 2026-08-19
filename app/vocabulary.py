@@ -170,11 +170,28 @@ def _load_vocab(db: Session, field_name: str) -> list[str]:
     return []
 
 
+# A fuzzy snap must not only clear the threshold, it must be a CLEAR
+# winner. Same idea, and the same constant, as app.org_chart's ambiguity
+# margin for person names -- and needed here for the same structural
+# reason: this vocabulary has a common suffix. 60 of 75 org units end in
+# "Team", so WRatio's partial/token passes score every one of them alike
+# against any "<something> Team" input. Measured before this guard:
+# "Payments Team", "Search Team", "Growth Team" and "Security Team" all
+# snapped to "Machine Learning Team", and "Billing API Team" to "Product
+# Management Team A" -- silently answering a different question, which is
+# the one failure mode snapping must never introduce.
+#
+# A real near-miss still has a clear winner, because it shares the
+# DISTINCTIVE token rather than the common one: "Cloud Infrastructure" ->
+# "Infrastructure", "Complience Team" -> "Compliance Team".
+SNAP_MARGIN = 5
+
+
 def _snap_one(value: str, vocab: list[str]) -> str | None:
-    """Exact -> case-insensitive -> rapidfuzz above threshold -> None. Same
-    three-tier shape as app.org_chart.resolve_person_name, same threshold
-    constant -- not a second tolerance invented independently for a
-    different vocabulary."""
+    """Exact -> case-insensitive -> rapidfuzz above threshold AND clearly
+    ahead of the runner-up -> None. Same three-tier shape as
+    app.org_chart.resolve_person_name, same threshold constant -- not a
+    second tolerance invented independently for a different vocabulary."""
     if value in vocab:
         return value
     lowered = value.lower()
@@ -183,8 +200,27 @@ def _snap_one(value: str, vocab: list[str]) -> str | None:
             return candidate
     if not vocab:
         return None
-    match = process.extractOne(value, vocab, scorer=fuzz.WRatio, score_cutoff=FUZZY_MATCH_THRESHOLD)
-    return match[0] if match else None
+    # fuzz.ratio, NOT WRatio. WRatio runs a partial-ratio pass that scores a
+    # shared substring as though it were the whole string, which is right
+    # for a person name ("Anderson" really should match "Shaun Anderson",
+    # and app.org_chart keeps WRatio for exactly that) and wrong for a
+    # vocabulary whose entries share a structural suffix. Measured against
+    # this directory's 75 org units, WRatio gave EVERY invented "<x> Team"
+    # the same 86 -- "Search Team", "Payments Team", "Security Team",
+    # "Billing API Team" -- comfortably over the threshold, while fuzz.ratio
+    # scores them 34-50 and still scores every genuine near-miss 82-95.
+    matches = process.extract(
+        value, vocab, scorer=fuzz.ratio, score_cutoff=FUZZY_MATCH_THRESHOLD, limit=None)
+    if not matches:
+        return None
+    best_name, best_score, _ = matches[0]
+    # Distinct candidates only: a vocabulary can legitimately list the same
+    # string twice (office names and cities are loaded into one list), and
+    # a duplicate of the winner is not a rival.
+    rivals = [score for name, score, _ in matches if name != best_name]
+    if rivals and max(rivals) > best_score - SNAP_MARGIN:
+        return None
+    return best_name
 
 
 def _snap_filters(db: Session, filters: list[Filter]) -> tuple[list[Filter], list[SnapNote]]:
@@ -225,3 +261,61 @@ def snap(db: Session, plan: PeopleQuery) -> tuple[PeopleQuery, list[SnapNote]]:
         notes.extend(group_notes)
 
     return plan.model_copy(update={"filters": new_filters, "filter_groups": new_groups}), notes
+
+
+# ---------------------------------------------------------------------------
+# snap_tool_arguments() -- the same value correction, for find_people's
+# NAMED arguments rather than a PeopleQuery's filter list.
+# ---------------------------------------------------------------------------
+
+# find_people kwarg -> the registry field whose vocabulary governs it.
+#
+# `language` is deliberately absent. Its miss path is already handled, and
+# handled better: app.people.find_related_language_speakers offers speakers
+# of a linguistically related language and says explicitly that it is a
+# related suggestion, never a substitution. Snapping "Telugu" to whichever
+# seeded language scores highest would replace a careful, honest fallback
+# with a silent guess.
+#
+# `level` is absent for the reason SNAPPABLE_FIELDS gives: it is a fixed
+# enum, so a bad level is a rejection, not a fuzzy guess at which one was
+# meant.
+TOOL_ARGUMENT_VOCABULARIES: dict[str, str] = {
+    "org_unit": "org_unit",
+    "office": "office",
+    "skill": "skills",
+}
+
+
+def snap_tool_arguments(db: Session, arguments: dict) -> tuple[dict, list[SnapNote]]:
+    """Correct free-text values in a find_people-shaped kwargs dict against
+    the real database vocabulary.
+
+    The gap this closes: snap() only ever ran on a PeopleQuery, so
+    search_people got vocabulary correction and find_people -- the tool the
+    router reaches for overwhelmingly more often -- did not. A model asked
+    to guess exact strings from a 75-unit hierarchy it has never been shown
+    emits plausible near-misses: "Cloud Infrastructure" for a department
+    actually called "Infrastructure". find_people's org_unit resolution then
+    returns nothing and it hard-empties, so a question with 7 correct
+    answers returned 0 (golden eval t2-07).
+
+    A value that is already exact is returned unchanged -- _snap_one's first
+    tier is an exact match -- so this cannot alter a request that was
+    already right. A value that resolves to nothing stays as it was and the
+    caller still gets its honest empty result: "Quantum Computing" is not a
+    seeded skill and does not snap to a real one, which is exactly the
+    behaviour that keeps "do we have anyone who knows X" answerable with
+    "no".
+    """
+    snapped = dict(arguments)
+    notes: list[SnapNote] = []
+    for arg_name, field_name in TOOL_ARGUMENT_VOCABULARIES.items():
+        value = arguments.get(arg_name)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        resolved = _snap_one(value, _load_vocab(db, field_name))
+        if resolved is not None and resolved != value:
+            snapped[arg_name] = resolved
+        notes.append(SnapNote(field=arg_name, original=value, resolved=resolved))
+    return snapped, notes
