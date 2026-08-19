@@ -316,6 +316,62 @@ def _build_assisted(
     }
 
 
+_OP_PHRASES = {
+    "eq": "is", "ne": "is not", "in": "is one of", "contains": "includes",
+}
+
+
+def _humanize_args(tool_name: str, args: dict) -> dict:
+    """Turn a tool's raw arguments into something a person can read.
+
+    Only search_people needs it, and it needs it badly: its arguments are a
+    list of {field, op, value} objects, so the trace rendered
+
+        filters  [{"field":"office","op":"in","value":["Bangalore","Singapore"]},
+                  {"field":"skills","op":"contains","value":"Kubernetes"}]
+
+    which is a query dump in the one place meant to explain in plain
+    language. Fixing the `reason` line alone left this untouched.
+
+    Returns the same {label: value} shape the frontend already renders as
+    chips, so nothing changes on that side -- the labels just become field
+    names and the values become English.
+    """
+    if tool_name != "search_people":
+        return args
+
+    def phrase(f: dict) -> tuple[str, str]:
+        field = str(f.get("field", "?")).replace("_", " ")
+        op = _OP_PHRASES.get(f.get("op"), str(f.get("op")))
+        value = f.get("value")
+        if isinstance(value, list):
+            rendered = " or ".join(str(v) for v in value)
+        elif isinstance(value, bool):
+            rendered = "yes" if value else "no"
+        else:
+            rendered = str(value)
+        return field, f"{op} {rendered}"
+
+    out: dict[str, str] = {}
+    for f in args.get("filters") or []:
+        label, value = phrase(f)
+        # Two filters on the same field are ANDed; join rather than clobber.
+        out[label] = f"{out[label]} and {value}" if label in out else value
+
+    for i, group in enumerate(args.get("filter_groups") or [], 1):
+        parts = []
+        for f in group:
+            label, value = phrase(f)
+            parts.append(f"{label} {value}")
+        out[f"any of (group {i})"] = " and ".join(parts)
+
+    if args.get("order_by"):
+        out["sorted by"] = str(args["order_by"]).replace("_", " ")
+    if args.get("limit"):
+        out["at most"] = str(args["limit"])
+    return out or args
+
+
 def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
     """One entry per call actually made. A chained answer that showed only
     its final step read as though the question had been answered by a
@@ -330,7 +386,8 @@ def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
     steps = raw.get("steps")
     if not steps:
         return [{"tool": raw["tool_call"], "reason": reason,
-                 "args": raw["arguments"] or {}, "latency_ms": elapsed_ms}]
+                 "args": _humanize_args(raw["tool_call"], raw["arguments"] or {}),
+                 "latency_ms": elapsed_ms}]
     trace = []
     for i, step in enumerate(steps):
         last = i == len(steps) - 1
@@ -339,7 +396,7 @@ def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
             "reason": reason if last else (
                 f"{_TOOL_REASONS.get(step['tool'], 'Matched a directory function.')} "
                 f"Its result filled in the next step."),
-            "args": step["arguments"] or {},
+            "args": _humanize_args(step["tool"], step["arguments"] or {}),
             "latency_ms": elapsed_ms if last else 0,
         })
     return trace
@@ -638,6 +695,17 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
             hop = "their manager" if levels == 1 else f"{levels} levels up the reporting chain"
             return f"{top.full_name} ({top.job_title}), {hop}."
         n = len(nodes)
+        # A single-hop downward walk is a direct-reports question, and its
+        # answer is a count plus who they are -- "3 people below them in the
+        # reporting chain" reads like a graph statistic, not like an answer
+        # to "how many people report to X".
+        if args.get("depth") == 1:
+            subject = args.get("person")
+            who = subject if subject and subject != "self" else "They"
+            verb = "has" if who != "They" else "have"
+            names = ", ".join(node.full_name for node in nodes[:5])
+            more = f", and {n - 5} more" if n > 5 else ""
+            return f"{who} {verb} {n} direct report{'s' if n != 1 else ''}: {names}{more}."
         return f"{n} {'person' if n == 1 else 'people'} {label} in the reporting chain."
 
     if tool_name == "find_project_owner":

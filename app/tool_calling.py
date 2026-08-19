@@ -794,6 +794,47 @@ def _is_clean_subject(name: str) -> bool:
     return not any(w.strip(",.'\"").lower() in _NOT_IN_A_NAME for w in words)
 
 
+# Downward third-party questions, where the named person is the OBJECT of
+# "reports to" rather than its subject. The distinction is one auxiliary
+# verb: "who does X report to" asks about X's manager (upward, handled by
+# _REPORTS_TO_PATTERN above), while "who reports to X" and "how many people
+# report to X" ask about X's reports (downward). Both used to fall to the
+# model, which answered them with find_people(name=X) -- so "how many people
+# report to Michael Kim" replied "Michael Kim reports to Yusuf Wilson",
+# confidently answering the opposite question.
+#
+# The trailing `\s+\S` requirement is what keeps the upward phrasing out:
+# in "who does X report to?" nothing follows "to", so these cannot match it.
+_REPORTS_TO_NAME_PATTERN = re.compile(
+    r"^(?:how\s+many\s+(?:people\s+|employees\s+|folks\s+)?|who\s+|which\s+people\s+)?"
+    r"reports?\s+to\s+(?P<name>\S.*?)[\s?.!]*$",
+    re.IGNORECASE,
+)
+# "how many direct reports does X have" / "how many reports does X have"
+_REPORTS_COUNT_PATTERN = re.compile(
+    r"how\s+many\s+(?:direct\s+)?reports?\s+does\s+(?P<name>.+?)\s+have[\s?.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _extract_downward_subject(message: str) -> str | None:
+    """The named person in a question about who reports TO them."""
+    m = _REPORTS_COUNT_PATTERN.search(message) or _REPORTS_TO_NAME_PATTERN.search(message)
+    if not m:
+        return None
+    name = _clean_extracted_name(m.group("name"))
+    if not name or not _is_clean_subject(name):
+        return None
+    # "who reports to X's manager" is two steps: resolve X's manager, then
+    # walk THAT person's reports. Deliberately not peeled the way the upward
+    # branch peels it -- there, "X's manager's manager" is the same walk one
+    # hop further, so peeling preserves the question. Here it would silently
+    # answer about X instead of about X's manager.
+    if _TRAILING_MANAGER_HOP.search(name):
+        return None
+    return name
+
+
 def _extract_relationship_subject(message: str) -> str | None:
     m = _MANAGER_OF_PATTERN.search(message) or _REPORTS_TO_PATTERN.search(message)
     if not m:
@@ -962,6 +1003,10 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
         subject, direction = chain_query
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="get_org_chain", arguments={"person": subject, "direction": direction, "depth": 10}))
+    downward = _extract_downward_subject(message)
+    if downward:
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="get_org_chain", arguments={"person": downward, "direction": "down", "depth": 1}))
     if "report" in text or _THIRD_PARTY_MANAGER.search(text):
         # A named third-party relationship question ("who does X report
         # to?", "X's manager", "manager of X") names exactly one person —
