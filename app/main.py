@@ -118,7 +118,7 @@ from app.writes import (
 )
 from app.writes import approve_action_request as approve_action_request_service
 from app.writes import clear_project_description as clear_project_description_service
-from app.writes import request_creation as request_creation_service
+from app.writes import request_creation as request_creation_service, NoApproverAvailable
 from app.writes import list_deactivated_employees as list_deactivated_employees_service
 from app.writes import list_my_pending_approvals as list_pending_approvals_service
 from app.writes import reactivate_employee as reactivate_employee_service
@@ -402,26 +402,35 @@ def list_offices_route(
     return db.query(Office).order_by(Office.name).all()
 
 
-@app.post("/employees", status_code=201)
+@app.post("/employees", status_code=202)
 def create_employee_route(
     body: CreateEmployeeRequest,
     view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
-    """HR, work mode: create a new employee record. See
-    app.writes.create_employee for the required/optional field split."""
+    """HR, work mode: stage a new employee record creation."""
     mode = resolve_view_mode(user.role, view_mode)
     fields = body.model_dump(exclude_unset=True)
     try:
-        employee = request_creation_service(db, user, fields, mode)
+        action_request = request_creation_service(db, user, fields, mode)
     except WriteDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except DuplicateEmail as exc:
         raise HTTPException(status_code=409, detail=f"work_email {exc} is already in use") from exc
+    except NoApproverAvailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _employee_action_result(employee)
+        
+    return {
+        "request_id": action_request.id,
+        "status": action_request.status.value,
+        "action_type": action_request.action_type.value,
+        "approver_id": action_request.approver_id,
+        "target_id": action_request.target_employee_id,
+        "target_name": body.full_name
+    }
 
 
 def _action_request_result(db: Session, request) -> dict:
