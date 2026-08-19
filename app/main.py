@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -95,6 +95,7 @@ from app.schemas import (
     UpdateBioRequest,
     UpdateCommunityLinkRequest,
     UpdateEmployeeRequest,
+    UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
 )
 from app.tool_calling import answer as answer_service
@@ -119,7 +120,9 @@ from app.writes import request_deactivation as request_deactivation_service
 from app.writes import request_restriction as request_restriction_service
 from app.writes import request_subject_name
 from app.writes import set_project_description as set_project_description_service
+from app.writes import remove_project_history as remove_project_history_service
 from app.writes import update_employee as update_employee_service
+from app.writes import upsert_project_history as upsert_project_history_service
 
 
 @asynccontextmanager
@@ -654,6 +657,70 @@ def clear_project_description_route(
     except WriteTargetMissing as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     return {"project_id": project.id, "project_name": project.name, "project_desc": None}
+
+
+@app.put("/people/{person_id}/projects/{project_id}")
+def upsert_project_history_route(
+    person_id: str,
+    project_id: int,
+    body: UpsertProjectHistoryRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """IT, work mode: add or correct anyone's project history — except
+    their own (see app/writes.py's _refuse_own_record).
+
+    PUT rather than POST/PATCH because (person_id, project_id) fully
+    identifies the membership: the same call creates it or edits it, and
+    repeating it converges on the same row rather than stacking duplicates.
+    Only the keys actually supplied are written, so this is not a
+    replace-the-whole-row PUT — `{"end_date": null}` clears the end date,
+    omitting it leaves it alone.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    changes = body.model_dump(exclude_unset=True)
+    try:
+        membership = upsert_project_history_service(
+            db, user, person_id, project_id, changes, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Employee or project not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "employee_id": membership.employee_id,
+        "project_id": membership.project_id,
+        "role": membership.role,
+        "contribution": membership.contribution,
+        "start_date": membership.start_date.isoformat() if membership.start_date else None,
+        "end_date": membership.end_date.isoformat() if membership.end_date else None,
+    }
+
+
+@app.delete("/people/{person_id}/projects/{project_id}", status_code=204)
+def remove_project_history_route(
+    person_id: str,
+    project_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    """IT, work mode: remove anyone's project membership — except their own.
+
+    Removes the membership, not the project: the Project row and everyone
+    else staffed on it are untouched, same scoping reasoning as
+    DELETE /projects/{id}/description above.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        remove_project_history_service(db, user, person_id, project_id, mode)
+    except WriteDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WriteTargetMissing as exc:
+        raise HTTPException(status_code=404, detail="Project membership not found") from exc
+    return Response(status_code=204)
 
 
 @app.get("/people/{person_id}/org-chart", response_model=list[OrgChainNode])

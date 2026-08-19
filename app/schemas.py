@@ -389,6 +389,33 @@ class UpdateNamePronunciationRequest(BaseModel):
     name_pronunciation: str = Field(max_length=200)
 
 
+class UpsertProjectHistoryRequest(BaseModel):
+    """IT's direct edit of one person's membership of one project.
+
+    Same wire contract as UpdateEmployeeRequest: every field optional, the
+    route sends only the keys actually supplied, and an explicit null
+    clears. `{"end_date": null}` is how a project becomes current again,
+    which must stay distinguishable from omitting end_date entirely.
+
+    Creating a membership through this same model needs role and
+    start_date, since both are NOT NULL on EmployeeProject -- that is
+    enforced in app/writes.py rather than here, because whether this call
+    creates or patches depends on whether the row already exists, which the
+    wire shape cannot know.
+
+    employee_id and project_id are deliberately absent: they identify the
+    row (they are in the path), and moving a membership between people or
+    projects is a delete plus a create, not a field edit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str | None = Field(default=None, max_length=150)
+    contribution: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+
 class UpdateEmployeeRequest(BaseModel):
     """HR's internal-field edit. Every field optional, and the route sends
     only the keys actually supplied (model_dump(exclude_unset=True)) — so

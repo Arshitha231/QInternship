@@ -100,7 +100,11 @@ class RequestNotPending(Exception):
 
 
 # Fields whose values need coercion out of JSON into the column's type.
-_DATE_FIELDS = {"date_of_birth", "hire_date"}
+# start_date/end_date join these for upsert_project_history; _coerce is
+# keyed on the field NAME, and neither is reachable through
+# update_employee (EDITABLE never grants them there), so widening the
+# set here changes nothing for the HR path.
+_DATE_FIELDS = {"date_of_birth", "hire_date", "start_date", "end_date"}
 _DECIMAL_FIELDS = {"salary"}
 
 
@@ -881,6 +885,162 @@ def clear_project_description(
     _reindex_project_members(db, project_id)
     _audit(db, caller, "clear_project_description", f"project_id={project_id}", {"project_desc"})
     return project
+
+
+# ---------------------------------------------------------------------------
+# IT, work mode: edit anyone's project history EXCEPT their own.
+#
+# Until now IT could only reach EmployeeProject through the doc-review
+# pipeline (app/proposals.py's accept/edit committing a proposed_change).
+# That works when a document proposed the change; it is no help at all for
+# "this person's role on Nightingale is wrong, fix it", which is an
+# ordinary correction with no document behind it. These two functions are
+# that direct path.
+#
+# The capability split is the one EDITABLE already draws, not a new one:
+# "project_entry" gates the membership itself (which project, what role,
+# when) and "contribution" gates the prose. A caller editing both needs
+# both, which _authorize already expresses by taking a set.
+#
+# The self-exclusion is the whole reason this is a separate section rather
+# than another field on update_employee. Same rule, same wording, and the
+# same hole it closes as the HR path above (writes.py's update_employee:
+# "an hr caller giving themselves a raise") -- an IT caller writing
+# themselves onto a project they never staffed, or promoting their own
+# role on one they did.
+# ---------------------------------------------------------------------------
+
+# Which EDITABLE capability each editable membership key belongs to. A key
+# absent from here is not editable through this path at all -- notably
+# employee_id and project_id, which identify the row rather than describe
+# it; moving a membership to a different person is a delete plus a create,
+# not a field edit, and silently supporting it here would let one call
+# rewrite who did what on a project with no audit trail of the move.
+PROJECT_HISTORY_FIELD_CAPABILITY: dict[str, str] = {
+    "role": "project_entry",
+    "start_date": "project_entry",
+    "end_date": "project_entry",
+    "contribution": "contribution",
+}
+
+
+def _refuse_own_record(caller: AuthenticatedUser, person_id: str, action: str) -> None:
+    """Same rule as update_employee's, written the same way and for the
+    same reason: this is the "edit anyone's record" path, so the one record
+    it must not reach is the caller's own."""
+    if person_id == caller.id:
+        raise WriteDenied(
+            f"role '{caller.role}' may {action} any employee's project history except "
+            f"their own (person_id == caller.id)"
+        )
+
+
+def upsert_project_history(
+    db: Session, caller: AuthenticatedUser, person_id: str, project_id: int,
+    changes: dict, view_mode: ViewMode,
+) -> EmployeeProject:
+    """Create or PATCH one person's membership of one project.
+
+    PATCH semantics on an existing row, exactly like update_employee: only
+    the supplied keys are touched, and an explicit null clears (end_date
+    null means "still on it", which must stay distinguishable from omitting
+    end_date and leaving whatever was there).
+
+    Creating is the same call rather than a separate one because the
+    membership row is identified by (employee_id, project_id), not by a
+    surrogate the caller could know in advance -- the same reasoning
+    app/proposals.py's _get_or_create_membership already applies when two
+    independently-accepted proposals converge on one row. A create needs
+    role and start_date, since both are NOT NULL on the model and there is
+    no document here to default them from.
+    """
+    if not changes:
+        raise ValueError("no fields supplied")
+
+    unknown = sorted(set(changes) - set(PROJECT_HISTORY_FIELD_CAPABILITY))
+    if unknown:
+        raise ValueError(f"not editable on a project membership: {', '.join(unknown)}")
+
+    _authorize(
+        caller.role, view_mode,
+        {PROJECT_HISTORY_FIELD_CAPABILITY[key] for key in changes},
+    )
+    _refuse_own_record(caller, person_id, "edit")
+
+    target = db.get(Employee, person_id)
+    if target is None or not target.is_active:
+        raise WriteTargetMissing(person_id)
+    project = db.get(Project, project_id)
+    if project is None:
+        raise WriteTargetMissing(str(project_id))
+
+    membership = (
+        db.query(EmployeeProject)
+        .filter(EmployeeProject.employee_id == person_id,
+                EmployeeProject.project_id == project_id)
+        .first()
+    )
+    created = membership is None
+    if created:
+        missing = sorted({"role", "start_date"} - set(changes))
+        if missing:
+            raise ValueError(
+                f"creating a project membership requires: {', '.join(missing)}"
+            )
+        membership = EmployeeProject(employee_id=person_id, project_id=project_id,
+                                     role="", start_date=date.today())
+        db.add(membership)
+
+    for key, value in changes.items():
+        setattr(membership, key, _coerce(key, value))
+
+    if not (membership.role or "").strip():
+        raise ValueError("role cannot be empty")
+    if membership.end_date is not None and membership.end_date < membership.start_date:
+        raise ValueError("end_date cannot be before start_date")
+
+    db.commit()
+    db.refresh(membership)
+
+    reindex_employee_id(db, person_id)
+    _audit(
+        db, caller, "create_project_history" if created else "update_project_history",
+        f"person_id={person_id} project_id={project_id}", set(changes),
+    )
+    return membership
+
+
+def remove_project_history(
+    db: Session, caller: AuthenticatedUser, person_id: str, project_id: int,
+    view_mode: ViewMode,
+) -> None:
+    """Delete one membership outright.
+
+    Gated on "project_entry" alone: removing the row removes its
+    contribution prose with it, but the thing being decided is whether this
+    person was on this project at all, which is squarely what
+    "project_entry" names. Requiring "contribution" as well would mean a
+    future IT that kept membership rights but lost prose rights could no
+    longer delete a row it is still allowed to create.
+    """
+    _authorize(caller.role, view_mode, {"project_entry"})
+    _refuse_own_record(caller, person_id, "edit")
+
+    membership = (
+        db.query(EmployeeProject)
+        .filter(EmployeeProject.employee_id == person_id,
+                EmployeeProject.project_id == project_id)
+        .first()
+    )
+    if membership is None:
+        raise WriteTargetMissing(f"{person_id}/{project_id}")
+
+    db.delete(membership)
+    db.commit()
+
+    reindex_employee_id(db, person_id)
+    _audit(db, caller, "remove_project_history",
+           f"person_id={person_id} project_id={project_id}", {"project_entry"})
 
 
 def _reindex_project_members(db: Session, project_id: int) -> None:
