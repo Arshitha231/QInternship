@@ -246,18 +246,18 @@ def unified_search(
     # finding (see execute_with_fallback), never a second, separate
     # AI system.
     if not results and clean_filters.get("skill"):
-        # "direct", not "deterministic" -- this bypasses resolve_intent()'s
-        # router entirely (it's GET /search's own filter-miss escalation,
-        # never touches the model), so it shouldn't read as the same thing
-        # app.tool_calling._deterministic_resolve() means by that label.
+        # mode stays "direct" here, not "assisted" -- this bypasses
+        # resolve_intent()'s router entirely (it's GET /search's own
+        # filter-miss escalation, never touches the model) and must not
+        # render as an AI Overview: no model call happened, so there's no
+        # AI reasoning to show a trace of. raw["message"] (built by
+        # _finish_with_broadening) becomes a plain `note` instead of an
+        # `overview.answer`, which is the one field the frontend is allowed
+        # to show without the Sparkles/"AI Overview" framing.
         tool_call = ResolvedToolCall(name="find_people", arguments=clean_filters, routed_via="direct")
-        started = time.monotonic()
         raw = execute_with_fallback(db, caller, tool_call, f"(direct query, skill miss) {clean_filters['skill']}",
                                     view_mode)
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        return _build_assisted(db, caller, raw, elapsed_ms,
-                               "No exact skill match — broadened to a semantic search across employee profiles.",
-                               view_mode)
+        return {"mode": "direct", "results": raw["result"] or [], "note": raw["message"]}
 
     # The direct path found nothing and there was free text to interpret.
     # Before reporting "no such people", try reading that text as the
@@ -328,6 +328,11 @@ def _assisted(
     # trigger as app.tool_calling.answer(): only when the model itself
     # asked for a follow-up in its first response, so single-call requests
     # keep costing exactly one call.
+    #
+    # Either way the result is reshaped by the same _build_assisted: a
+    # chain reports every step it ran, and _trace turns that into the
+    # overview's existing trace list, which until now only ever held one
+    # entry because this path never chained.
     if turn.tool_call.needs_followup:
         raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
     else:
@@ -418,10 +423,10 @@ def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
     filter nobody asked for -- the step that resolved "Priya's team" into
     an actual team is most of the explanation.
 
-    latency_ms is the whole turn's, attributed to the last step rather than
-    split across them: the steps are sequential and only the total was
-    measured, and inventing a per-step split would be presenting a guess as
-    a measurement.
+    latency_ms is per step and really measured -- execute_chain times each
+    one -- so the trace never presents a guess as a measurement. The
+    single-call case has no steps list and uses the whole turn's elapsed
+    time, which for one call is the same thing.
     """
     steps = raw.get("steps")
     if not steps:
@@ -437,7 +442,7 @@ def _trace(raw: dict, reason: str, elapsed_ms: int) -> list[dict]:
                 f"{_TOOL_REASONS.get(step['tool'], 'Matched a directory function.')} "
                 f"Its result filled in the next step."),
             "args": _humanize_args(step["tool"], step["arguments"] or {}),
-            "latency_ms": elapsed_ms if last else 0,
+            "latency_ms": step.get("latency_ms", 0),
         })
     return trace
 

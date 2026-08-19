@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Filters } from "./components/Filters";
 import { UnifiedResults } from "./components/UnifiedResults";
+import { AskChat } from "./components/AskChat";
 import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
 import { ContinuityPage } from "./components/ContinuityPage";
@@ -339,6 +340,19 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
             />
+            {/* Follow-up chat only where there's an assistant turn to follow
+                up on -- a direct/structured search has no conversational
+                answer for "which of those..." to attach to. Remounts
+                (key=debouncedQuery) on a brand new question, so an old
+                conversation never appears to answer a different one. */}
+            {!loading && !error && response?.mode === "assisted" && (
+              <AskChat key={debouncedQuery} identity={identity} viewMode={viewMode} onSelect={(id, name) => {
+                setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
+                resetProfile(id, name);
+                setMode("profile");
+                setQuery("");
+              }} />
+            )}
             </div>
           </>
         ) : mode === "profile" ? (

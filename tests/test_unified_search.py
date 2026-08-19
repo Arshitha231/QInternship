@@ -55,6 +55,48 @@ async def test_question_shaped_query_is_classified_assisted(client):
     assert resp.json()["mode"] == "assisted"
 
 
+async def test_needs_followup_query_produces_a_multi_step_trace(client, monkeypatch):
+    """A question the model's own first call flags needs_followup on (e.g.
+    "who on Priya's team knows Terraform and is free next month?" -- no
+    single tool call expresses that) must route through execute_chain, not
+    execute_with_retry -- and the overview's trace, which until now only
+    ever held one entry, must show every step the chain actually ran, not
+    just the final one."""
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="get_org_chain", arguments={"person": "Priya"}, needs_followup=True)),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_with_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("a chained call must not fall through to the single-call path")),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": "2 people match.", "tool_call": "find_people", "arguments": {"name": "Y"}, "result": [],
+            "steps": [
+                {"tool": "get_org_chain", "arguments": {"person": "Priya"}, "latency_ms": 5},
+                {"tool": "find_people", "arguments": {"name": "Y"}, "latency_ms": 8},
+            ],
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who on Priya's team knows Terraform and is free next month?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert [s["tool"] for s in trace] == ["get_org_chain", "find_people"]
+    assert all("reason" in s and isinstance(s["latency_ms"], int) for s in trace)
+
+
 # ---------------------------------------------------------------------------
 # Assisted mode: citations are a reshaping of an already permission-filtered
 # tool result, never an independent lookup — this asserts that invariant
@@ -238,11 +280,13 @@ async def test_named_third_party_possessive_manager_query_returns_the_manager(cl
 # ---------------------------------------------------------------------------
 # Skill-miss escalation: a filter-style skill query that misses exactly
 # still stays honest and zero-chat-model-cost — it broadens via
-# find_people's own semantic search, not a second AI system, and is
-# labeled assisted so the UI shows it was broadened.
+# find_people's own semantic search, not a second AI system. mode stays
+# "direct" (no overview/trace) because no model call happened; the
+# broadening explanation surfaces as a plain `note` instead, so the
+# frontend never shows AI framing for something the AI had no part in.
 # ---------------------------------------------------------------------------
 
-async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkeypatch):
+async def test_skill_miss_broadens_without_the_model_or_ai_framing(client, monkeypatch):
     monkeypatch.setattr(
         "app.tool_calling._get_openai_client",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("chat model must not be called for a skill miss")),
@@ -252,8 +296,9 @@ async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkey
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mode"] == "assisted"
-    assert body["overview"]["trace"][0]["tool"] == "find_people"
+    assert body["mode"] == "direct"
+    assert body.get("overview") is None
+    assert body["note"]
 
 
 async def test_unique_field_miss_stays_direct_with_no_escalation(client):
@@ -557,7 +602,7 @@ async def test_a_chained_answer_shows_every_step_it_took(client, monkeypatch):
             needs_followup=True,
         ))
 
-    def _fake_next(message, extra_messages=None):
+    def _fake_next(message, extra_messages=None, history_messages=None):
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 
@@ -584,7 +629,7 @@ async def test_a_single_call_request_still_takes_exactly_one_call(client, monkey
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 
-    def _must_not_run(message, extra_messages=None):
+    def _must_not_run(message, extra_messages=None, history_messages=None):
         calls.append(message)
         raise AssertionError("a single-call request must not re-prompt the model")
 

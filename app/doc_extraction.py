@@ -581,6 +581,18 @@ _MOCK_PHONE = re.compile(r"(?:\+?\d[\d\-\s()]{7,}\d)")
 _MOCK_SKILLS_SECTION = re.compile(
     r"skills?\s*:?\s*\n?(?P<body>(?:[^\n]+\n?){1,6})", re.IGNORECASE
 )
+# Docx parsing drops blank paragraphs entirely (see _parse_docx), so a blank
+# line can't be relied on to mark the end of the skills section — the body
+# capture above runs straight into whatever section follows. This is the
+# boundary used instead: a body line naming the *next* section stops
+# collection there rather than folding "Education"/"BS Computer Science"/the
+# candidate's own email into the skills list.
+_RESUME_SECTION_HEADERS = re.compile(
+    r"^(education|experience|work experience|employment history|projects?|"
+    r"certifications?|references?|objective|summary|professional summary|"
+    r"awards?|publications?|languages?|interests?|contact)\s*:?$",
+    re.IGNORECASE,
+)
 
 
 def _mock_extract_resume(text: str) -> list[ResumeExtractionCall]:
@@ -599,10 +611,17 @@ def _mock_extract_resume(text: str) -> list[ResumeExtractionCall]:
     skills: list[str] = []
     section = _MOCK_SKILLS_SECTION.search(text)
     if section:
-        body = section.group("body")
-        for token in re.split(r"[,\n•·-]", body):
-            token = token.strip()
-            if token and len(token) < 40:
+        for line in section.group("body").splitlines():
+            if _RESUME_SECTION_HEADERS.match(line.strip()):
+                break
+            for token in re.split(r"[,•·-]", line):
+                token = token.strip()
+                if not token or len(token) >= 40:
+                    continue
+                if email_match and token == email_match.group(0):
+                    continue
+                if phone_match and token == phone_match.group(0):
+                    continue
                 skills.append(token)
 
     return [ResumeExtractionCall(
