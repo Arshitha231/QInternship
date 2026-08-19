@@ -851,6 +851,7 @@ def _project_history(
         if proj.classification.value == "confidential" and not can_see_confidential_project(db, caller, proj.id):
             continue
         item_kwargs: dict = dict(
+            project_id=proj.id,
             project_name=proj.name, project_type=proj.type.value, role=ep.role,
             start_month=_month(ep.start_date), end_month=_month(ep.end_date),
             current=ep.end_date is None,

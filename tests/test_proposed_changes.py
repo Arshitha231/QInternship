@@ -1387,3 +1387,76 @@ async def test_candidate_details_stay_within_the_always_visible_field_set(client
     for subject in subjects:
         for candidate in subject["candidates"]:
             assert set(candidate) <= allowed, f"leaked {set(candidate) - allowed}"
+
+
+# ---------------------------------------------------------------------------
+# Separation of duties: a reviewer may not commit onto their own record.
+#
+# The pipeline writes to EmployeeSkill and EmployeeProject, so without this
+# an IT reviewer could upload a document about themselves and accept it
+# onto their own profile — the same hole app/writes.py already closes on
+# every "edit anyone's record" path ("an hr caller giving themselves a
+# raise"). Enforced at COMMIT time, because reassign() can point any row at
+# any employee including the caller, so a check at resolve time would be
+# one /reassign away from being bypassed.
+# ---------------------------------------------------------------------------
+
+async def _self_targeted_change(client, project_doc, reviewer_id):
+    """Resolve Alex Kim's subject onto the reviewer themselves, and hand
+    back one of the now-committable change ids."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    alex = next(s for s in subjects if s["extracted_name"] == "Alex Kim")
+    resp = await client.post(
+        f"/doc_subject_matches/{alex['id']}/resolve", params={"view_mode": "work"},
+        json={"employee_id": reviewer_id}, headers=auth_headers("it", "it-reviewer-1"))
+    assert resp.status_code == 200, resp.text
+    return await _resolved_change_ids(client, project_doc["doc_id"], reviewer_id)
+
+
+async def test_reviewer_cannot_accept_a_change_onto_themselves(client, project_doc):
+    ids = await _self_targeted_change(client, project_doc, "extract-alex")
+    resp = await client.post(
+        f"/proposed_changes/{ids[0]}/accept", params={"view_mode": "work"},
+        headers=auth_headers("it", "extract-alex"))
+    assert resp.status_code == 403, resp.text
+
+
+async def test_reviewer_cannot_edit_a_change_onto_themselves(client, project_doc):
+    """edit() commits too — refusing accept() alone would leave the same
+    write reachable by supplying a value."""
+    ids = await _self_targeted_change(client, project_doc, "extract-alex")
+    resp = await client.post(
+        f"/proposed_changes/{ids[0]}/edit", params={"view_mode": "work"},
+        json={"edited_value": {"skill": "Terraform"}},
+        headers=auth_headers("it", "extract-alex"))
+    assert resp.status_code == 403, resp.text
+
+
+async def test_reassigning_a_row_to_yourself_does_not_unlock_it(client, project_doc):
+    """The bypass the commit-time placement exists to close: /reassign can
+    point any row at any employee, so a resolve-time check would not hold."""
+    subjects = await _subjects(client, project_doc["doc_id"])
+    robin = next(s for s in subjects if s["extracted_name"] == "Robin Nobody")
+    resolved = await _resolve(client, robin["id"], employee_id="extract-alex")
+    assert resolved.status_code == 200, resolved.text
+    ids = await _resolved_change_ids(client, project_doc["doc_id"], "extract-alex")
+
+    reassigned = await client.post(
+        f"/proposed_changes/{ids[0]}/reassign", params={"view_mode": "work"},
+        json={"employee_id": "extract-dup-1"}, headers=auth_headers("it", "extract-dup-1"))
+    assert reassigned.status_code == 200, reassigned.text
+
+    resp = await client.post(
+        f"/proposed_changes/{ids[0]}/accept", params={"view_mode": "work"},
+        headers=auth_headers("it", "extract-dup-1"))
+    assert resp.status_code == 403, resp.text
+
+
+async def test_another_reviewer_can_still_accept_the_same_row(client, project_doc):
+    """The rule is about WHOSE record it is, not about the row — a
+    colleague reviewing it is exactly the intended path."""
+    ids = await _self_targeted_change(client, project_doc, "extract-alex")
+    resp = await client.post(
+        f"/proposed_changes/{ids[0]}/accept", params={"view_mode": "work"},
+        headers=auth_headers("it", "some-other-it-person"))
+    assert resp.status_code == 200, resp.text

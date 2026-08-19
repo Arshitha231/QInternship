@@ -411,6 +411,34 @@ def list_proposals(
 # POST /proposed_changes/{id}/accept — commit the AI's value as-is.
 # ---------------------------------------------------------------------------
 
+def _refuse_self_commit(caller: AuthenticatedUser, employee_id: str) -> None:
+    """A reviewer may not commit a change onto their own record.
+
+    Same separation-of-duties rule app/writes.py enforces on every "edit
+    anyone's record" path (update_employee, request_restriction,
+    request_deactivation), and it belongs here for the same reason: this
+    pipeline writes to EmployeeSkill and EmployeeProject, so without it an
+    IT reviewer can upload a document about themselves and accept it onto
+    their own profile.
+
+    Checked at COMMIT time rather than at resolve/reassign time on purpose.
+    reassign() can point any row at any employee, including the caller, so
+    a check that only ran when a subject resolved would be one /reassign
+    away from being bypassed; accept() and edit() are the only two
+    functions in this module that write to a real table, which makes them
+    the only place the rule cannot be routed around.
+
+    undo() is deliberately NOT gated: it removes a previously-committed
+    write, and a row accepted onto the caller's own record before this rule
+    existed should stay reversible by the person looking at it.
+    """
+    if employee_id == caller.id:
+        raise ReviewDenied(
+            f"role '{caller.role}' may review changes for any employee except themselves "
+            f"(proposed change targets employee_id == caller.id)"
+        )
+
+
 def accept(
     db: Session, caller: AuthenticatedUser, proposal_id: int, view_mode: ViewMode
 ) -> ProposedChange:
@@ -426,6 +454,7 @@ def accept(
             f"(or reassign this change) before accepting"
         )
     _authorize_commit(caller, view_mode, proposal.change_type)
+    _refuse_self_commit(caller, proposal.employee_id)
 
     employee = db.get(Employee, proposal.employee_id)
     if employee is None or not employee.is_active:
@@ -467,6 +496,7 @@ def edit(
             f"(or reassign this change) before editing"
         )
     _authorize_commit(caller, view_mode, proposal.change_type)
+    _refuse_self_commit(caller, proposal.employee_id)
 
     employee = db.get(Employee, proposal.employee_id)
     if employee is None or not employee.is_active:

@@ -42,6 +42,10 @@ export interface SkillOut {
 }
 
 export interface ProjectHistoryItem {
+  // Addresses the EmployeeProject row for PUT/DELETE
+  // /people/{id}/projects/{project_id}. Always present -- it's ungated on
+  // the backend, same as project_name.
+  project_id: number;
   project_name: string;
   project_type: string;
   role: string;

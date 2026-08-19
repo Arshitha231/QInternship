@@ -1026,3 +1026,12 @@ body.help-inspecting, body.help-inspecting * { cursor: help !important; }
   color: var(--red);
   font-size: 13px;
 }
+
+/* IT's inline project-history editing (ProfilePage). Rendered only for
+   it/work on someone else's profile — see canEditProjectHistory, which
+   mirrors app/writes.py's real gate. */
+.project-history-actions { display: flex; gap: 12px; margin-top: 6px; }
+.link-btn-danger { color: var(--red); }
+.project-history-edit { margin-top: 10px; }
+.edit-check { display: flex; align-items: center; gap: 7px; font-size: 13px; margin: 8px 0; cursor: pointer; }
+.edit-check input { cursor: pointer; }
