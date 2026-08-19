@@ -878,10 +878,12 @@ def get_org_chart_route(
     person_id: str,
     direction: Literal["up", "down"] = "up",
     depth: int = 10,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[OrgChainNode]:
-    result = get_org_chain_service(db, user, person_id, direction, depth)
+    mode = resolve_view_mode(user.role, view_mode)
+    result = get_org_chain_service(db, user, person_id, direction, depth, view_mode=mode)
     if result is None:
         # Same identical-shape rule as get_person: root not visible or not
         # found look the same. Direction access (downward, wrong role) is a
