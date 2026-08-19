@@ -1,7 +1,7 @@
 import type {
-  AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview, DocSubjectMatchOut,
-  EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OfficeOut,
-  OrgChainNode, OrgUnitOut, PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut,
+  AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview,
+  DocSubjectMatchOut, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut,
+  OfficeOut, OrgChainNode, OrgUnitOut, PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut,
   UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
 } from "./types";
 
@@ -367,6 +367,23 @@ export function unifiedSearch(
   params.set("view_mode", viewMode);
   const qs = params.toString();
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
+}
+
+// --- Follow-up chat (POST /ask). `history` is this browser session's prior
+// turns, held in memory only (see AskHistoryTurn) — nothing here persists a
+// conversation server-side. Every call, first turn or fifth, goes through
+// the same seven-function tool-calling layer /search's "ask a question"
+// examples already point at; this just keeps the conversation going instead
+// of discarding it once a response comes back.
+export function askAssistant(
+  identity: Identity, message: string, viewMode: ViewMode, history: AskHistoryTurn[], signal?: AbortSignal,
+): Promise<AskResponse> {
+  return request<AskResponse>("/ask", identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, view_mode: viewMode, history }),
+    signal,
+  });
 }
 
 // --- Staffing Continuity Intelligence — HR in WORK mode only. Every call

@@ -52,6 +52,48 @@ async def test_question_shaped_query_is_classified_assisted(client):
     assert resp.json()["mode"] == "assisted"
 
 
+async def test_needs_followup_query_produces_a_multi_step_trace(client, monkeypatch):
+    """A question the model's own first call flags needs_followup on (e.g.
+    "who on Priya's team knows Terraform and is free next month?" -- no
+    single tool call expresses that) must route through execute_chain, not
+    execute_with_retry -- and the overview's trace, which until now only
+    ever held one entry, must show every step the chain actually ran, not
+    just the final one."""
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="get_org_chain", arguments={"person": "Priya"}, needs_followup=True)),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_with_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("a chained call must not fall through to the single-call path")),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": "2 people match.", "tool_call": "find_people", "arguments": {"name": "Y"}, "result": [],
+            "steps": [
+                {"tool": "get_org_chain", "arguments": {"person": "Priya"}, "latency_ms": 5},
+                {"tool": "find_people", "arguments": {"name": "Y"}, "latency_ms": 8},
+            ],
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who on Priya's team knows Terraform and is free next month?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert [s["tool"] for s in trace] == ["get_org_chain", "find_people"]
+    assert all("reason" in s and isinstance(s["latency_ms"], int) for s in trace)
+
+
 # ---------------------------------------------------------------------------
 # Assisted mode: citations are a reshaping of an already permission-filtered
 # tool result, never an independent lookup — this asserts that invariant

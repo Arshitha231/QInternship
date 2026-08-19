@@ -423,3 +423,35 @@ export interface SuggestedOfficialLinkOut {
   reviewed_by: string | null;
   reviewed_at: string | null;
 }
+
+// Follow-up chat (POST /ask — app.schemas.HistoryTurn/AskRequest). A turn
+// held client-side for the length of this browser session, never persisted
+// server-side. tool_call/arguments are a PLAN, not a result — the server
+// re-executes them fresh, through the ordinary enforce()-gated dispatcher,
+// on every new turn (see app/tool_calling.py's _history_messages). Only
+// assistant_text is ever carried as-given, and only for a turn that had no
+// tool call (a clarifying question, an out-of-scope reply) — connective
+// language with no factual claim about a person.
+export interface AskHistoryTurn {
+  message: string;
+  tool_call?: string | null;
+  arguments?: Record<string, unknown> | null;
+  assistant_text?: string | null;
+}
+
+// One step of a multi-step chain, PLAN + real measured timing (tool,
+// arguments, latency_ms) — never a step's result. See app/tool_calling.py
+// execute_chain's `steps` key.
+export interface AskStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  latency_ms: number;
+}
+
+export interface AskResponse {
+  message: string | null;
+  tool_call: string | null;
+  arguments: Record<string, unknown> | null;
+  result: unknown;
+  steps?: AskStep[];
+}

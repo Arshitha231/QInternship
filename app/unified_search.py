@@ -42,6 +42,7 @@ from app.tool_calling import (
     TOOLS,
     describes_a_problem,
     ResolvedToolCall,
+    execute_chain,
     execute_with_fallback,
     execute_with_retry,
     resolve_intent,
@@ -131,7 +132,6 @@ def _assisted(
     db: Session, caller: AuthenticatedUser, text: str,
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
 ) -> dict:
-    started = time.monotonic()
     turn = resolve_intent(text)
     if turn.tool_call is None:
         return {
@@ -147,10 +147,50 @@ def _assisted(
     # chip shouldn't silently override what the user just typed.
     if clean_filters and turn.tool_call.name == "find_people":
         turn.tool_call.arguments = {**clean_filters, **turn.tool_call.arguments}
+
+    if turn.tool_call.needs_followup:
+        # The model's own first call already asked for more -- "who on
+        # Priya's team knows Terraform and is free next month?" has no
+        # single find_people/search_people call that expresses it.
+        # execute_chain runs the exact same bounded, enforce()-gated loop
+        # /ask itself uses; the only thing this branch adds is reshaping
+        # its step-by-step `steps` trace into the overview's existing
+        # trace list, which until now only ever held one entry because
+        # this path never chained.
+        raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
+        return _build_assisted_chain(db, caller, raw, view_mode)
+
+    started = time.monotonic()
     raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
     return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
+
+
+def _build_assisted_chain(db: Session, caller: AuthenticatedUser, raw: dict, view_mode: ViewMode = "work") -> dict:
+    """_build_assisted's reshaping, for a chain's final step -- plus a
+    trace entry PER STEP instead of one, built from execute_chain's own
+    `steps` (plan + real measured latency only, never a step's result --
+    see tool_calling.execute_chain), reusing the same _TOOL_REASONS
+    lookup a single-call trace entry already uses."""
+    tool_name = raw["tool_call"]
+    result = raw["result"]
+    results, citations = _people_and_citations(db, caller, tool_name, result, view_mode)
+    answer_text = raw["message"] or _phrase(tool_name, raw["arguments"] or {}, result)
+    trace = [
+        {
+            "tool": step["tool"],
+            "reason": _TOOL_REASONS.get(step["tool"], "Matched a directory function."),
+            "args": step["arguments"],
+            "latency_ms": step["latency_ms"],
+        }
+        for step in raw.get("steps", [])
+    ]
+    return {
+        "mode": "assisted",
+        "results": results,
+        "overview": {"answer": answer_text, "citations": citations, "trace": trace},
+    }
 
 
 def _build_assisted(

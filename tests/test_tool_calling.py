@@ -9,9 +9,11 @@ from types import SimpleNamespace
 import app.tool_calling as tool_calling
 from app.auth import AuthenticatedUser
 from app.models import AuditLog
+from app.schemas import HistoryTurn
 from app.tool_calling import (
     MAX_CHAIN_STEPS,
     MAX_ROUTING_RETRIES,
+    OUT_OF_SCOPE_MESSAGE,
     AssistantTurn,
     ResolvedToolCall,
     _chain_step_messages,
@@ -115,7 +117,7 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     calls = []
 
-    def fake_real_resolve(message):
+    def fake_real_resolve(message, history_messages=None):
         calls.append(message)
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"query": message}))
 
@@ -132,7 +134,9 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
 
 def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(monkeypatch):
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
-    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message: None)  # simulates OpenAIError degrade
+    monkeypatch.setattr(
+        tool_calling, "_real_resolve",
+        lambda message, history_messages=None: None)  # simulates OpenAIError degrade
 
     turn = resolve_intent("Taylor Cloud")
     assert turn.tool_call == ResolvedToolCall(
@@ -164,7 +168,8 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
 
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message: (_ for _ in ()).throw(AssertionError("must not be called")))
+                        lambda message, history_messages=None: (_ for _ in ()).throw(
+                            AssertionError("must not be called")))
     real_mode_turn = resolve_intent("who is my manager?")
 
     assert mock_mode_turn.tool_call == real_mode_turn.tool_call == ResolvedToolCall(
@@ -246,7 +251,7 @@ def test_execute_with_retry_succeeds_after_one_correction(db_session, monkeypatc
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", flaky_execute)
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         assert extra_messages is not None  # this IS the retry call, not the initial resolve
         assert "Wrong Name" in extra_messages[0]["content"]  # the failure is actually described
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"}))
@@ -272,7 +277,7 @@ def test_execute_with_retry_gives_up_after_max_retries(db_session, monkeypatch):
 
     retry_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         retry_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"Attempt {retry_count['n']}"}))
@@ -404,7 +409,7 @@ def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session,
     # call, no special-casing needed in execute_tool_call itself.
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         assert extra_messages is not None  # this IS the retry call
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="search_people",
@@ -439,7 +444,7 @@ def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_ses
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     prompts_seen = []
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         if extra_messages:
             prompts_seen.append(extra_messages[0]["content"])
         return None  # give up after the first retry prompt -- we only need to inspect it
@@ -542,7 +547,7 @@ def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_s
         execute_count["n"] += 1
         return []
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         resolve_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"step {resolve_count['n']}"}, needs_followup=True))
@@ -564,7 +569,7 @@ def test_execute_chain_stops_when_the_model_says_it_is_done(db_session, monkeypa
     def fake_execute(db, caller, tool_call, view_mode="work"):
         return ["team resolved"] if tool_call.name == "get_org_chain" else ["filtered result"]
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         # The model has what it needs after step 1 -- answers in plain
         # text, no further function call.
         return AssistantTurn(message="Nobody on that team matches.")
@@ -590,7 +595,7 @@ def test_chain_failure_returns_the_generic_message_not_an_earlier_steps_result(d
             raise ValueError("bad filter, always fails")
         return ["step one result"]
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         if not extra_messages:
             return None
         first = extra_messages[0]
@@ -622,7 +627,7 @@ def test_chain_writes_one_audit_row_per_step_sharing_one_chain_id(db_session, mo
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Asked after step 1 -- offer a genuine second step.
@@ -721,3 +726,175 @@ def test_chain_feedback_never_leaks_a_field_the_caller_could_not_see(db_session)
         "a real, restricted phone number reached the text handed to the model -- "
         "the feedback mechanism must never carry more than the already-filtered response object"
     )
+
+
+# ---------------------------------------------------------------------------
+# Follow-up chat (Conversational Assistant plan, phase 1): a stored turn is
+# a PLAN (tool + arguments), never a result -- _history_messages() re-runs
+# each one fresh through execute_tool_call() on every new turn, so a prior
+# turn's context in the model's prompt is exactly as authorized as a brand
+# new request would be, never a frozen or client-supplied value.
+# ---------------------------------------------------------------------------
+
+def test_history_turn_schema_has_no_result_field():
+    # Structural guard, not just behavioral: even a future edit that starts
+    # populating HistoryTurn.result somewhere can't smuggle a client-
+    # supplied value into a turn's replay unless it first adds the field
+    # back here, which is the point where a reviewer should stop it.
+    assert "result" not in HistoryTurn.model_fields
+
+
+def test_history_messages_reflects_current_state_not_a_frozen_value(db_session, monkeypatch):
+    from app.tool_calling import _history_messages
+
+    current = {"value": ["stale answer from turn one"]}
+    monkeypatch.setattr(
+        tool_calling, "execute_tool_call",
+        lambda db, caller, tool_call, view_mode="work": current["value"])
+
+    history = [HistoryTurn(message="who knows Terraform?", tool_call="find_people", arguments={"skill": "Terraform"})]
+    first_replay = _history_messages(db_session, CALLER, history, "work")
+    assert "stale answer from turn one" in first_replay[-1]["content"]
+
+    # The underlying data changed between turn one and this new turn (a
+    # record un-restricted, someone hired, whatever) -- replay must reflect
+    # THAT, never what turn one originally saw, because nothing about turn
+    # one's actual result was ever stored anywhere to begin with.
+    current["value"] = ["current answer, same question"]
+    second_replay = _history_messages(db_session, CALLER, history, "work")
+    assert "current answer, same question" in second_replay[-1]["content"]
+    assert "stale answer from turn one" not in second_replay[-1]["content"]
+
+
+def test_history_messages_reauthorizes_a_restricted_field_on_replay(db_session):
+    from app.tool_calling import _history_messages
+
+    # Same real ABAC fixture as test_chain_feedback_never_leaks_a_field_the_caller_could_not_see:
+    # Riley Report's personal_mobile (+1-555-0001) is invisible to an
+    # unrelated caller. A history turn asking about Riley is replayed
+    # through the exact same enforce()-gated path -- the restricted number
+    # must not appear just because this is "conversation context" rather
+    # than a fresh call.
+    unrelated_employee = AuthenticatedUser(id="stranger-1", role="employee")
+    history = [HistoryTurn(message="who is Riley Report?", tool_call="get_person", arguments={"person_id": "report-1"})]
+
+    messages = _history_messages(db_session, unrelated_employee, history, "work")
+    serialized = json.dumps(messages)
+    assert "+1-555-0001" not in serialized
+
+
+def test_history_messages_drops_a_turn_whose_call_no_longer_executes(db_session, monkeypatch):
+    from app.tool_calling import _history_messages
+
+    def flaky(db, caller, tool_call, view_mode="work"):
+        raise ValueError("argument shape no longer valid against the current registry")
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", flaky)
+
+    history = [HistoryTurn(message="an old, now-stale question", tool_call="find_people", arguments={"name": "X"})]
+    messages = _history_messages(db_session, CALLER, history, "work")
+    # Dropped whole -- no dangling one-sided "user" turn with nothing to
+    # pair it with, same degrade-don't-error direction the rest of this
+    # module already takes on a failed call.
+    assert messages == []
+
+
+def test_history_messages_carries_assistant_text_only_for_a_turn_with_no_tool_call(db_session):
+    from app.tool_calling import _history_messages
+
+    history = [HistoryTurn(message="what's the weather?", tool_call=None, assistant_text=OUT_OF_SCOPE_MESSAGE)]
+    messages = _history_messages(db_session, CALLER, history, "work")
+    assert messages == [
+        {"role": "user", "content": "what's the weather?"},
+        {"role": "assistant", "content": OUT_OF_SCOPE_MESSAGE},
+    ]
+
+
+def test_history_messages_bounded_to_the_last_few_turns(db_session, monkeypatch):
+    from app.tool_calling import MAX_HISTORY_TURNS, _history_messages
+
+    call_count = {"n": 0}
+
+    def counting(db, caller, tool_call, view_mode="work"):
+        call_count["n"] += 1
+        return []
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", counting)
+
+    history = [
+        HistoryTurn(message=f"question {i}", tool_call="find_people", arguments={"name": f"person-{i}"})
+        for i in range(MAX_HISTORY_TURNS + 5)
+    ]
+    messages = _history_messages(db_session, CALLER, history, "work")
+    assert call_count["n"] == MAX_HISTORY_TURNS  # never replays more than the bound, however long history is
+    # And it's the MOST RECENT turns that survive, not the oldest.
+    assert messages[0]["content"] == f"question {5}"
+
+
+def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": ["ok"])
+
+    captured = {}
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        captured["history_messages"] = history_messages
+        return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    history = [HistoryTurn(message="who knows Terraform?", tool_call="find_people", arguments={"skill": "Terraform"})]
+    answer(db_session, CALLER, "which of those are in Bangalore?", "work", history)
+
+    # resolve_intent's deterministic router won't confidently match a bare
+    # follow-up like this, so it reaches _real_resolve -- proving the
+    # replayed turn actually got there, not just that _history_messages()
+    # can build it in isolation.
+    assert captured["history_messages"] is not None
+    assert captured["history_messages"][0] == {"role": "user", "content": "who knows Terraform?"}
+
+
+def test_execute_chain_threads_history_into_its_own_followup_resolution(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": ["ok"])
+
+    captured = {}
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        captured["history_messages"] = history_messages
+        return AssistantTurn(message="done")
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    sentinel_history_messages = [{"role": "user", "content": "earlier turn"}]
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "X"}, needs_followup=True)
+    execute_chain(db_session, CALLER, first_call, "who on X's team knows Y", "work", sentinel_history_messages)
+
+    assert captured["history_messages"] == sentinel_history_messages
+
+
+def test_execute_chain_step_trace_carries_plan_only_never_a_result(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "execute_tool_call",
+        lambda db, caller, tool_call, view_mode="work": ["a restricted-looking result value"])
+
+    call_count = {"n": 0}
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
+        return AssistantTurn(message="done")
+
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "X"}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    assert [{"tool": s["tool"], "arguments": s["arguments"]} for s in result["steps"]] == [
+        {"tool": "find_people", "arguments": {"name": "X"}},
+        {"tool": "find_people", "arguments": {"name": "Y"}},
+    ]
+    assert all(isinstance(s["latency_ms"], int) and s["latency_ms"] >= 0 for s in result["steps"])
+    assert "a restricted-looking result value" not in json.dumps(result["steps"])

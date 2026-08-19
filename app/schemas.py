@@ -302,11 +302,35 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
+class HistoryTurn(BaseModel):
+    """One prior turn of a follow-up conversation, as returned by a
+    previous /ask call -- a PLAN, never a result, matching the same rule
+    saved sessions use (Conversational Assistant plan §2, "store the
+    questions, not the answers"). `tool_call`/`arguments` are replayed
+    through the ordinary enforce()-gated dispatcher fresh on every new
+    turn (see tool_calling._history_messages) rather than trusted as
+    given, so a value the client could tamper with never reaches the
+    model's context unverified. `assistant_text` is carried as-is only
+    for a turn that had no tool call (a clarifying question, an
+    out-of-scope reply) -- connective language with no factual claim
+    about a person, so nothing there needs re-checking."""
+
+    message: str
+    tool_call: str | None = None
+    arguments: dict | None = None
+    assistant_text: str | None = None
+
+
 class AskRequest(BaseModel):
     message: str
     # "work" | "employee". Resolved server-side by resolve_view_mode, so an
     # employee-role caller sending "work" is still answered in employee mode.
     view_mode: str | None = None
+    # Held client-side for the length of the browser session, not
+    # persisted server-side -- follow-up chat (phase 1), not saved
+    # sessions (phase 2). Bounded to the last few turns by
+    # tool_calling.MAX_HISTORY_TURNS regardless of how long the list is.
+    history: list[HistoryTurn] = Field(default_factory=list)
 
 
 class RecordCourseStatusRequest(BaseModel):

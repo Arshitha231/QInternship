@@ -1613,8 +1613,13 @@ def ask(
     """Natural-language entry point to the seven-function tool-calling
     layer. The model only ever emits a function name + arguments; every
     result here comes from the same permission-filtered service functions
-    the structured endpoints above use — nothing bypasses the pipeline."""
-    return answer_service(db, user, body.message, resolve_view_mode(user.role, body.view_mode))
+    the structured endpoints above use — nothing bypasses the pipeline.
+
+    body.history carries this browser session's prior turns as plans
+    (tool + arguments), never results -- see schemas.HistoryTurn. Held by
+    the client for follow-up chat; nothing here persists it server-side."""
+    return answer_service(
+        db, user, body.message, resolve_view_mode(user.role, body.view_mode), body.history)
 
 
 # Built frontend (frontend/dist, produced by the CI/CD deploy job's frontend
