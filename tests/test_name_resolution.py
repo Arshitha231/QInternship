@@ -11,7 +11,9 @@ Casey Top, tests/conftest.py) and dup-name-1/2 (two "Dana Ambiguous"s).
 from app.auth import AuthenticatedUser
 from app.org_chart import resolve_person, resolve_person_name
 from app.schemas import AmbiguousPersonMatch, UnknownPerson
-from app.tool_calling import ResolvedToolCall, _extract_chain_query, execute_tool_call
+from app.tool_calling import (
+    ResolvedToolCall, _deterministic_resolve, _extract_chain_query, execute_tool_call,
+)
 
 CALLER = AuthenticatedUser(id="caller-x", role="hr")
 
@@ -232,3 +234,38 @@ def test_possessive_reporting_chain_phrasing():
 def test_management_chain_for_name_phrasing():
     assert _extract_chain_query("reporting chain for Sean Wilson") == ("Sean Wilson", "up")
     assert _extract_chain_query("show me the management line for Sean Wilson") == ("Sean Wilson", "up")
+
+
+# ---------------------------------------------------------------------------
+# Downward third-party questions. "who does X report to" and "who reports to
+# X" differ by one auxiliary verb and mean opposite things; only the first
+# was routed, so "how many people report to Michael Kim" answered "Michael
+# Kim reports to Yusuf Wilson" -- the opposite question, confidently.
+# ---------------------------------------------------------------------------
+
+def test_how_many_report_to_x_walks_downward():
+    turn = _deterministic_resolve("how many people report to Chris Bottom")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "down", "depth": 1})
+
+
+def test_who_reports_to_x_walks_downward():
+    turn = _deterministic_resolve("who reports to Chris Bottom")
+    assert turn.tool_call.arguments["direction"] == "down"
+
+
+def test_how_many_direct_reports_does_x_have():
+    turn = _deterministic_resolve("how many direct reports does Chris Bottom have")
+    assert turn.tool_call.arguments == {"person": "Chris Bottom", "direction": "down", "depth": 1}
+
+
+def test_the_upward_phrasing_is_still_upward():
+    """One auxiliary verb apart, and they mean opposite things."""
+    turn = _deterministic_resolve("who does Chris Bottom report to?")
+    assert turn.tool_call.arguments["direction"] == "up"
+
+
+def test_reports_to_a_derived_person_still_defers():
+    """"X's manager" is a second lookup, not a name -- and unlike the upward
+    branch it cannot be peeled, because peeling would answer about X."""
+    assert _deterministic_resolve("who reports to Chris Bottom's manager") is None
