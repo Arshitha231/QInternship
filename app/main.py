@@ -566,6 +566,8 @@ def create_employee_route(
     }
 
 
+from app.writes import request_subject_name
+
 def _action_request_result(db: Session, request) -> dict:
     approver = db.get(Employee, request.approver_id) if request.approver_id else None
     requester = db.get(Employee, request.requested_by) if request.requested_by else None
