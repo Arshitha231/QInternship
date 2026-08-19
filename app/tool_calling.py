@@ -67,7 +67,18 @@ CHAT_ENDPOINT = os.environ.get("CHAT_ENDPOINT", "")
 CHAT_KEY = os.environ.get("CHAT_KEY", "")
 OPENAI_CHAT_DEPLOYMENT = os.environ.get("OPENAI_CHAT_DEPLOYMENT", "")
 
-OUT_OF_SCOPE_MESSAGE = "I can help with people, teams, skills and projects. For that one, try the HR portal."
+# Said whenever nothing can be answered: an off-topic question, an
+# injection attempt, a content-filter block, or model prose with no tool
+# call behind it. It therefore must not promise a specific redirect --
+# "try the HR portal" pointed at something this app does not own and
+# cannot link to, which reads as a brush-off when the honest content is
+# "I could not answer that, here is what I can answer."
+#
+# Kept to two short sentences deliberately: SYSTEM_PROMPT instructs the
+# model to reply with this text EXACTLY, and the golden eval checks that
+# it did. The longer and more ornate this gets, the less reliably a model
+# reproduces it verbatim.
+OUT_OF_SCOPE_MESSAGE = "I can't answer that one. I can help with people, teams, skills and projects."
 
 # search_people's `filters[].field` enum -- deliberately narrower than
 # REGISTRY.keys() (every field, including the ~16 that can never legally
