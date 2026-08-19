@@ -178,22 +178,29 @@ REGISTRY: dict[str, FieldSpec] = {
 
 # Real `employees` table columns with no registry entry, on purpose — FK
 # columns that surface under a derived name instead, and internal columns
-# never API-facing at all. Every entry needs a one-line reason; growing
-# this set means touching test_registry.py's exact-contents test on
-# purpose, not a silent side effect of adding a column.
-IGNORED_COLUMNS: frozenset[str] = frozenset({
-    "directory_object_id",  # Entra/SCIM external id — internal plumbing, never queried or displayed
-    "is_active",             # soft-delete flag — already filtered at retrieval, never caller-facing
-    "deactivated_at",         # internal bookkeeping for app.writes.deactivate_employee, not caller-facing
-    "created_at",             # internal audit metadata, not API-facing
-    "updated_at",             # internal audit metadata, not API-facing
-    "timezone",               # superseded by the computed "effective_timezone" registry entry
-    "away_until",             # superseded by the computed "away_until_month" registry entry
-    "org_unit_id",            # FK; surfaces under the derived registry name "org_unit"
-    "office_id",              # FK; surfaces under "office"
-    "manager_id",             # FK; surfaces under "manager"
-    "delegate_id",            # FK; surfaces under "delegate"
-})
+# never API-facing at all. Every entry needs a one-line reason, carried as
+# the dict value itself rather than a comment — but this is the ENGINEER-
+# facing wording; app/registry_view.py's HR screen shows
+# app.registry_view.IGNORED_COLUMN_DISPLAY instead, a second dict keyed
+# identically to this one. Add/remove a column here and the matching entry
+# there needs the same treatment — a coverage test catches a key going
+# missing, but a *reason* changing on one side and not the other is only
+# ever caught by a human touching both. Growing this set at all means
+# touching test_registry.py's exact-contents test on purpose, not a silent
+# side effect of adding a column.
+IGNORED_COLUMNS: dict[str, str] = {
+    "directory_object_id": "Entra/SCIM external id — internal plumbing, never queried or displayed",
+    "is_active": "soft-delete flag — already filtered at retrieval, never caller-facing",
+    "deactivated_at": "internal bookkeeping for app.writes.deactivate_employee, not caller-facing",
+    "created_at": "internal audit metadata, not API-facing",
+    "updated_at": "internal audit metadata, not API-facing",
+    "timezone": 'superseded by the computed "effective_timezone" registry entry',
+    "away_until": 'superseded by the computed "away_until_month" registry entry',
+    "org_unit_id": 'FK; surfaces under the derived registry name "org_unit"',
+    "office_id": 'FK; surfaces under "office"',
+    "manager_id": 'FK; surfaces under "manager"',
+    "delegate_id": 'FK; surfaces under "delegate"',
+}
 
 # Keyed by (role, view_mode), matching app.permissions.ALLOWED exactly --
 # view modes didn't exist yet when this table was first built role-only, so
@@ -249,7 +256,7 @@ def assert_registry_covers_schema(engine: Engine, table_name: str = "employees")
     afternoon, one mechanism instead of one ad-hoc check per call site."""
     inspector = sa_inspect(engine)
     actual_columns = {col["name"] for col in inspector.get_columns(table_name)}
-    covered = set(REGISTRY) | IGNORED_COLUMNS
+    covered = set(REGISTRY) | set(IGNORED_COLUMNS)
     missing = actual_columns - covered
     if missing:
         raise RuntimeError(

@@ -67,6 +67,7 @@ from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
+from app.registry_view import get_registry_view as get_registry_view_service
 from app.schemas import (
     AskRequest,
     BulkProposalRequest,
@@ -93,6 +94,7 @@ from app.schemas import (
     ProjectSkillRequirementOut,
     ReassignProposalRequest,
     RecordCourseStatusRequest,
+    RegistryView,
     RejectActionRequestBody,
     ResolveSubjectRequest,
     SuggestedOfficialLinkOut,
@@ -1123,6 +1125,22 @@ def continuity_employee_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
+
+
+@app.get("/registry-view", response_model=RegistryView)
+def registry_view_route(
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> RegistryView:
+    """Read-only rendering of app/registry.py's access-control model — every
+    field, its sensitivity tier, and whether each role/mode can see it,
+    computed by calling app.registry.is_visible() directly so this can't
+    disagree with what actually enforces access. HR-only — see
+    app/registry_view.py's module docstring for the double-check pattern
+    (same as every other HR-only route above)."""
+    if user.role != "hr":
+        raise HTTPException(status_code=403, detail="The registry view is an HR-only screen")
+    return get_registry_view_service(db, user)
 
 
 # ---------------------------------------------------------------------------

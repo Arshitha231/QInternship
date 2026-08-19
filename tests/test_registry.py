@@ -64,10 +64,15 @@ def test_covers_schema_against_the_conftest_seeded_schema(db_session):
 # ---------------------------------------------------------------------------
 
 def test_ignored_columns_exact_contents():
-    assert IGNORED_COLUMNS == frozenset({
+    assert set(IGNORED_COLUMNS) == {
         "directory_object_id", "is_active", "deactivated_at", "created_at", "updated_at",
         "timezone", "away_until", "org_unit_id", "office_id", "manager_id", "delegate_id",
-    })
+    }
+
+
+def test_ignored_columns_every_entry_has_a_reason():
+    for name, reason in IGNORED_COLUMNS.items():
+        assert isinstance(reason, str) and reason.strip(), f"{name} has no reason"
 
 
 # ---------------------------------------------------------------------------
