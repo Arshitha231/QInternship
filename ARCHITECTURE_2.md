@@ -234,7 +234,17 @@ thing in the codebase, and it should eventually collapse into one.
   type, or a registered-but-unlabelled field. Structural problems are never guessed at.
 - **`snap()` corrects on VALUES** — a legal field whose value doesn't match the database.
   `"Cloud Infrastructure"` → `"Infrastructure"` (RC4). Exact → case-insensitive → fuzzy
-  above 80. Unresolvable values are reported, never silently dropped.
+  above 80 **and clearly ahead of the runner-up**. Unresolvable values are reported,
+  never silently dropped.
+
+  The scorer is `fuzz.ratio`, **not** `WRatio`. WRatio's partial-ratio pass scores a
+  shared substring as though it were the whole string — right for a person name
+  ("Anderson" should match "Shaun Anderson", and §13 keeps WRatio for that) and wrong
+  for a vocabulary whose entries share a structural suffix. 60 of this directory's 75
+  org units end in "Team", and WRatio scored every invented `"<x> Team"` at exactly 86:
+  "Search Team", "Payments Team" and "Security Team" all snapped to "Machine Learning
+  Team", and "Billing API Team" to "Product Management Team A". `fuzz.ratio` scores those
+  34–50 while still scoring every genuine near-miss 82–95.
 
 `snap_tool_arguments()` applies the same correction to `find_people`'s **named
 arguments**, which for a long time only `search_people` got — even though the router

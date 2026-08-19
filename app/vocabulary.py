@@ -170,11 +170,28 @@ def _load_vocab(db: Session, field_name: str) -> list[str]:
     return []
 
 
+# A fuzzy snap must not only clear the threshold, it must be a CLEAR
+# winner. Same idea, and the same constant, as app.org_chart's ambiguity
+# margin for person names -- and needed here for the same structural
+# reason: this vocabulary has a common suffix. 60 of 75 org units end in
+# "Team", so WRatio's partial/token passes score every one of them alike
+# against any "<something> Team" input. Measured before this guard:
+# "Payments Team", "Search Team", "Growth Team" and "Security Team" all
+# snapped to "Machine Learning Team", and "Billing API Team" to "Product
+# Management Team A" -- silently answering a different question, which is
+# the one failure mode snapping must never introduce.
+#
+# A real near-miss still has a clear winner, because it shares the
+# DISTINCTIVE token rather than the common one: "Cloud Infrastructure" ->
+# "Infrastructure", "Complience Team" -> "Compliance Team".
+SNAP_MARGIN = 5
+
+
 def _snap_one(value: str, vocab: list[str]) -> str | None:
-    """Exact -> case-insensitive -> rapidfuzz above threshold -> None. Same
-    three-tier shape as app.org_chart.resolve_person_name, same threshold
-    constant -- not a second tolerance invented independently for a
-    different vocabulary."""
+    """Exact -> case-insensitive -> rapidfuzz above threshold AND clearly
+    ahead of the runner-up -> None. Same three-tier shape as
+    app.org_chart.resolve_person_name, same threshold constant -- not a
+    second tolerance invented independently for a different vocabulary."""
     if value in vocab:
         return value
     lowered = value.lower()
@@ -183,8 +200,27 @@ def _snap_one(value: str, vocab: list[str]) -> str | None:
             return candidate
     if not vocab:
         return None
-    match = process.extractOne(value, vocab, scorer=fuzz.WRatio, score_cutoff=FUZZY_MATCH_THRESHOLD)
-    return match[0] if match else None
+    # fuzz.ratio, NOT WRatio. WRatio runs a partial-ratio pass that scores a
+    # shared substring as though it were the whole string, which is right
+    # for a person name ("Anderson" really should match "Shaun Anderson",
+    # and app.org_chart keeps WRatio for exactly that) and wrong for a
+    # vocabulary whose entries share a structural suffix. Measured against
+    # this directory's 75 org units, WRatio gave EVERY invented "<x> Team"
+    # the same 86 -- "Search Team", "Payments Team", "Security Team",
+    # "Billing API Team" -- comfortably over the threshold, while fuzz.ratio
+    # scores them 34-50 and still scores every genuine near-miss 82-95.
+    matches = process.extract(
+        value, vocab, scorer=fuzz.ratio, score_cutoff=FUZZY_MATCH_THRESHOLD, limit=None)
+    if not matches:
+        return None
+    best_name, best_score, _ = matches[0]
+    # Distinct candidates only: a vocabulary can legitimately list the same
+    # string twice (office names and cities are loaded into one list), and
+    # a duplicate of the winner is not a rival.
+    rivals = [score for name, score, _ in matches if name != best_name]
+    if rivals and max(rivals) > best_score - SNAP_MARGIN:
+        return None
+    return best_name
 
 
 def _snap_filters(db: Session, filters: list[Filter]) -> tuple[list[Filter], list[SnapNote]]:

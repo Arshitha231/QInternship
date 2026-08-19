@@ -10,7 +10,9 @@ org units "Platform Engineering" / "Finance Operations", offices "Test HQ"
 import pytest
 
 from app.query_plan import Filter, PeopleQuery
-from app.vocabulary import SNAPPABLE_FIELDS, snap, snap_tool_arguments, validate
+from app.vocabulary import (
+    SNAPPABLE_FIELDS, _load_vocab, _snap_one, snap, snap_tool_arguments, validate,
+)
 
 # ---------------------------------------------------------------------------
 # validate() -- structural rejection only
@@ -331,3 +333,35 @@ def test_non_string_and_absent_values_are_untouched(db_session):
     snapped, notes = snap_tool_arguments(db_session, args)
     assert snapped == args
     assert notes == []
+
+
+# ---------------------------------------------------------------------------
+# A snap must be a CLEAR winner, not merely above the threshold. This
+# vocabulary has a common suffix -- 60 of 75 org units end in "Team" -- so
+# WRatio's partial/token passes score all of them alike against any
+# "<something> Team" input.
+# ---------------------------------------------------------------------------
+
+def test_a_plausible_team_name_that_does_not_exist_does_not_snap(db_session):
+    """Measured before the margin: "Payments Team", "Search Team", "Growth
+    Team" and "Security Team" all snapped to "Machine Learning Team", and
+    "Billing API Team" to "Product Management Team A" -- silently answering
+    a different question, which is the one thing snapping must never do."""
+    vocab = _load_vocab(db_session, "org_unit")
+    for invented in ("Payments Team", "Search Team", "Growth Team", "Security Team"):
+        assert _snap_one(invented, vocab) is None, invented
+
+
+def test_a_real_near_miss_still_snaps(db_session):
+    """A genuine near-miss shares the DISTINCTIVE token rather than the
+    common one, so it still has a clear winner."""
+    vocab = _load_vocab(db_session, "org_unit")
+    assert _snap_one("Engineerin", vocab) == "Engineering"
+
+
+def test_skill_typos_are_unaffected_by_the_margin(db_session):
+    """Skill names share no common suffix, so the margin never bites here --
+    pinned so a future tightening of it cannot silently break typo
+    correction."""
+    vocab = _load_vocab(db_session, "skills")
+    assert _snap_one("Terrafrom", vocab) == "Terraform"
