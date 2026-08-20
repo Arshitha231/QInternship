@@ -666,11 +666,54 @@ button { font: inherit; }
 
 /* Single toolbar row: who / which view / profile link. Wraps to stacked
    rows only when there genuinely isn't width for one line. */
+/* Row 1: who is centred, and the way out to their profile. A statement
+   about the data. */
 .graph-toolbar {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap;
   background: var(--white); border: 1px solid var(--border);
   border-radius: var(--radius-card); padding: 10px 14px;
 }
+
+/* Row 2: the controls. Retrace on the left, the four views next to it, in
+   one horizontal strip -- both answer "take me somewhere else", so they
+   belong to each other rather than to the person above. Left-aligned as one
+   group: centring the tabs would leave the retrace buttons stranded. */
+.graph-viewbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 6px 10px;
+}
+/* .graph-tabs carries `margin: auto` from the old single-row layout, where
+   it needed to centre itself between the person and the View-profile
+   button. In this row that pushes the tabs to the middle and strands the
+   retrace group at the far left, which is the opposite of grouping them. */
+.graph-viewbar .graph-tabs { border: 0; padding: 0; margin-left: 0; margin-right: 0; }
+/* Retrace controls: back / forward through the people you have centred on,
+   and home back to yourself. Segmented into one unit so they read as one
+   control rather than three loose buttons, and deliberately NOT styled like
+   the canvas's zoom cluster -- these move between people, those move around
+   one drawing, and conflating them is how you get someone pressing Home
+   expecting the view to reset. */
+.graph-history {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--white); overflow: hidden;
+}
+.graph-history-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 28px; padding: 0;
+  background: none; border: 0; color: var(--muted); cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.graph-history-btn + .graph-history-btn { border-left: 1px solid var(--border); }
+.graph-history-btn:hover:not(:disabled) { background: var(--purple-100); color: var(--purple-800); }
+/* Disabled, not hidden: a control that vanishes when it has nothing to do
+   makes the row jump and leaves you unsure it was ever there. */
+.graph-history-btn:disabled { opacity: .35; cursor: default; }
+.graph-history-home { color: var(--purple); }
+@media (prefers-reduced-motion: reduce) { .graph-history-btn { transition: none; } }
+
 .graph-focus-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .graph-focus-who .avatar { width: 34px; height: 34px; font-size: var(--fs-sm); flex-shrink: 0; }
 .graph-focus-text { min-width: 0; }
@@ -780,6 +823,16 @@ button { font: inherit; }
    states the relationship the geometry was only implying. */
 .tree-tier {
   display: flex; justify-content: center; position: relative;
+  /* Stretch every tier to the width of the widest one, rather than letting
+     each shrink-wrap its own cards. Two things were wrong without this, both
+     visible the moment a tree had rows of different sizes: the tint bands
+     were three different widths and so read as three boxes rather than as
+     horizontal bands, and the labels -- positioned against each tier's own
+     right edge -- landed at three different x positions, making a ragged
+     left margin out of what is supposed to be a legend column. The cards
+     inside stay centred (justify-content above), so only the band and the
+     label anchor move. */
+  align-self: stretch;
   padding: 12px 18px; border-radius: var(--radius-card);
 }
 .tree-tier::before {
@@ -811,6 +864,27 @@ button { font: inherit; }
 
 .tree-branch { display: flex; flex-direction: column; align-items: center; }
 .tree-children-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 26px 18px; margin-top: 32px; }
+
+/* A revealed subtree fades and rises into place instead of appearing
+   mid-layout with everything around it already moved. This is the ONE
+   animation in the tree that carries information: it says "this is the part
+   that just appeared", which is exactly what the reader needs to find after
+   a row of cards has reflowed around it.
+
+   Short (.22s) and on the container, not per card: a staggered per-card
+   entrance looks impressive and delays the moment the subtree is actually
+   readable, which is the opposite of what someone who just clicked "Show
+   team" wants.
+
+   The connector lines are deliberately NOT animated. They are measured from
+   the final layout, so animating them would mean drawing lines to positions
+   the cards have not reached yet -- lines pointing at nothing, which is the
+   exact appearance of the bug this pass fixed. */
+.tree-children-row { animation: tree-reveal .22s ease-out both; }
+@keyframes tree-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
 
 .tree-node {
   display: flex; flex-direction: column; align-items: center; text-align: center;
@@ -1198,10 +1272,21 @@ button { font: inherit; }
 .community-canvas-ring { position: relative; }
 .community-canvas-edges { position: absolute; top: 0; left: 0; pointer-events: none; }
 
+/* These nodes are POSITIONED by their transform, and they also carry
+   .tree-node for the card styling -- which brings .tree-node:hover's
+   `transform: translateY(-1px)` with it. That rule is more specific, so on
+   hover it REPLACED the centring translate instead of adding to it: the card
+   jumped half its own width and height away from the pointer, lost the
+   hover, snapped back, and re-entered -- an oscillation that reads as the
+   card shaking violently.
+   Every transform on this element therefore has to restate the centring
+   translate. The lift is kept, composed rather than clobbering. */
 .community-canvas-node {
   position: absolute; transform: translate(-50%, -50%); width: 154px; cursor: pointer;
 }
 .community-canvas-node.skel { transform: translate(-50%, -50%); cursor: default; }
+.community-canvas-node.tree-node:hover { transform: translate(-50%, -50%) translateY(-2px); }
+.community-canvas-node.tree-node:focus-visible { transform: translate(-50%, -50%); }
 .community-node-what {
   font-size: var(--fs-xs); color: var(--purple-800); margin: 6px 0 0; font-style: italic;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
@@ -2183,4 +2268,125 @@ button.chart-legend-btn:hover { background: var(--surface-sunk); }
    should not have to hover to find out which they got. */
 .insight-summary-source {
   margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: 1.45;
+}
+
+/* ---------- graphs: reduced motion ----------
+   The viewport transition and the reveal are both movement in service of
+   comprehension, not decoration -- but a reader who has asked the OS for
+   less motion has asked for less motion. Everything still works: the scale
+   and the reveal both land in their final state immediately. */
+@media (prefers-reduced-motion: reduce) {
+  .zoom-pan-viewport { transition: none; }
+  .tree-children-row { animation: none; }
+  .tree-node { transition: none; }
+  .tree-node:hover { transform: none; }
+  .tree-edge { transition: none; }
+  /* Not `transform: none` for these: the transform is what POSITIONS them,
+     so dropping it would stack every node in the top-left corner. Drop only
+     the lift. */
+  .community-canvas-node.tree-node,
+  .community-canvas-node.tree-node:hover { transform: translate(-50%, -50%); }
+}
+
+/* ===========================================================================
+   Skill bridges — components/graphs/SkillsGraph.tsx
+
+   A path, not a canvas. The old force-directed version needed zoom/pan
+   because it drew a hairball; a chain of four cards needs neither, so this
+   is ordinary flow layout that reflows on a narrow screen instead of a
+   viewport the reader has to navigate.
+   =========================================================================== */
+
+.skill-routes { display: flex; flex-direction: column; gap: 16px; }
+
+.skill-routes-search {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 10px 14px;
+  color: var(--muted);
+}
+.skill-routes-search:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--accent-ring); }
+.skill-routes-search input {
+  flex: 1; border: 0; background: none; font: inherit; font-size: var(--fs-md);
+  color: var(--ink); outline: none; min-width: 0;
+}
+.skill-routes-search input::-webkit-search-cancel-button { filter: grayscale(1) opacity(.5); }
+
+.skill-routes-empty {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 18px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.skill-routes-lead { margin: 0; font-size: var(--fs-md); color: var(--ink); max-width: 70ch; }
+.skill-routes-empty .skill-label { margin: 0; }
+
+.suggest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.suggest-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 12px; cursor: pointer; text-align: left; font: inherit; color: inherit;
+  transition: border-color .12s ease, background .12s ease;
+}
+.suggest-chip:hover { border-color: var(--purple); background: var(--purple-100); }
+.suggest-chip-name { font-weight: 600; font-size: var(--fs-body); }
+/* Every suggestion carries its own reason -- "learn this" with nothing
+   attached is horoscope advice. */
+.suggest-chip-why { font-size: var(--fs-xs); color: var(--muted); }
+
+.skill-routes-result {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 18px 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.skill-routes-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.skill-routes-title { margin: 0 0 2px; font-size: var(--fs-lg); font-weight: 650; }
+
+.route-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.route-chain {
+  border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--page); padding: 12px;
+}
+/* Wraps rather than scrolls. Horizontal scrolling looked right in principle
+   -- the order of the cards IS the information -- and was wrong in practice:
+   a three-hop route overflowed its box and the card scrolled out of sight
+   was the TARGET, the one person the whole chain exists to reach. Wrapping
+   keeps the sequence readable in ordinary reading order and never hides the
+   end of it. */
+.route-chain-scroll {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 4px;
+}
+.route-step { display: inline-flex; align-items: center; gap: 4px; }
+
+.route-pip {
+  display: inline-flex; align-items: center; gap: 8px; flex: none;
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 7px 11px 7px 8px; font: inherit; color: inherit; text-align: left;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+button.route-pip { cursor: pointer; }
+button.route-pip:hover { border-color: var(--purple); box-shadow: var(--shadow-sm); }
+.route-pip .avatar { width: 28px; height: 28px; font-size: var(--fs-xs); flex: none; }
+.route-pip-text { display: flex; flex-direction: column; min-width: 0; }
+.route-pip-name { font-size: var(--fs-body); font-weight: 550; white-space: nowrap; }
+.route-pip-role { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+.route-pip-you { background: var(--purple-100); border-color: transparent; }
+.route-pip-target { border-color: var(--purple); }
+
+/* The connector label. This is the feature: it says why the step exists and
+   doubles as the opening line of the message you are about to send, which
+   is why it is rendered inline rather than hidden behind a hover. */
+.route-via {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  color: var(--muted); font-size: var(--fs-xs); padding: 0 2px;
+}
+.route-via-text { white-space: nowrap; }
+.route-via strong { color: var(--ink); font-weight: 600; }
+
+.route-chain-foot {
+  margin: 9px 0 0; display: flex; align-items: center; gap: 9px;
+  font-size: var(--fs-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .suggest-chip, .route-pip { transition: none; }
 }

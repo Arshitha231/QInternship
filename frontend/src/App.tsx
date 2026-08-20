@@ -14,7 +14,7 @@ import { HelpMenu } from "./components/HelpMenu";
 import { LoginPage } from "./components/LoginPage";
 import { HelpOverlay } from "./components/HelpOverlay";
 import type { HelpState } from "./components/HelpOverlay";
-import { useDebouncedValue } from "./hooks";
+import { useDebouncedValue, useFocusHistory } from "./hooks";
 import { ApiError, UNAUTHORIZED_EVENT, unifiedSearch, type SearchFilters } from "./api";
 import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
@@ -99,7 +99,10 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
     return urlId ? [{ id: urlId, name: "" }] : [{ id: identity.id, name: identity.name }];
   });
   const profileId = profileStack[profileStack.length - 1].id;
-  const [graphFocusId, setGraphFocusId] = useState<string>(identity.id);
+  // The graph's focus person, with a back/forward trail behind it. Home is
+  // the signed-in identity: "recentre on me" is the one destination that is
+  // always meaningful, whoever you have wandered off to.
+  const graphFocus = useFocusHistory(identity.id);
   // Whether to OFFER the Dashboard tab. HR gets it in work mode, the same
   // gate Continuity/Review/Admin carry; a manager gets it in either mode,
   // because their dashboard is their own reporting line and that is not a
@@ -411,8 +414,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           <GraphPage
             identity={identity}
             viewMode={viewMode}
-            focusId={graphFocusId}
-            onFocusChange={setGraphFocusId}
+            focus={graphFocus}
             onOpenProfile={(id, name) => {
               resetProfile(id, name);
               setMode("profile");
@@ -429,7 +431,10 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
                 setMode("profile");
               }}
               onOpenGraph={(employeeId) => {
-                setGraphFocusId(employeeId);
+                // Recorded as a navigation, not a reset: arriving in the
+                // graph from a dashboard drill-down should still be
+                // reversible with Back.
+                graphFocus.go(employeeId);
                 setMode("graphs");
               }}
             />

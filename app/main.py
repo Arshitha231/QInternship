@@ -89,6 +89,9 @@ from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
+from app.skill_routes import RouteDenied
+from app.skill_routes import find_routes as find_skill_routes_service
+from app.skill_routes import suggest_skills as suggest_skills_service
 from app.schemas import (
     AskRequest,
     DashboardOverview,
@@ -108,7 +111,9 @@ from app.schemas import (
     ReminderResult,
     SendRemindersRequest,
     SkillDetail,
+    SkillRouteResult,
     SkillSupplyDemand,
+    SuggestedSkill,
     TrainingAnalytics,
     TrainingRoster,
     WorkforceInsight,
@@ -1295,6 +1300,58 @@ def acknowledge_hr_review_route(
         raise HTTPException(status_code=404, detail="Authorization record not found") from exc
     except AuthorizationRecordNotActionable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Skill bridges — the shortest introduction chain to a skill you lack.
+#
+# Answers a PATH question ("how do I reach someone who knows X"), which is
+# the one thing about skills here that a filter genuinely cannot do. Built
+# only from BASE_FIELDS, so a route discloses nothing the caller could not
+# look up one profile at a time — see app/skill_routes.py for why the
+# reporting line is deliberately not traversed.
+# ---------------------------------------------------------------------------
+
+@app.get("/people/{person_id}/skill-routes", response_model=SkillRouteResult)
+def skill_routes_route(
+    person_id: str,
+    skill: str = Query(..., description="Skill name. Synonyms resolve to the canonical skill."),
+    max_hops: int = Query(3, ge=1, le=4),
+    limit: int = Query(3, ge=1, le=10),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SkillRouteResult:
+    """Shortest chains from this person to somebody capable in `skill`.
+
+    Yours to ask about yourself; HR in work mode may ask on anyone's behalf.
+    An unresolvable skill name comes back with `skill: null` rather than an
+    empty route list, which would read as "nobody has it"."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        return find_skill_routes_service(
+            db, user, person_id, skill, mode, max_hops=max_hops, limit=limit,
+        )
+    except RouteDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/people/{person_id}/skill-suggestions", response_model=list[SuggestedSkill])
+def skill_suggestions_route(
+    person_id: str,
+    limit: int = Query(6, ge=1, le=20),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[SuggestedSkill]:
+    """Skills worth asking about — drawn from what this person's own current
+    projects require and from what the directory is thin on, each with the
+    reason it was suggested."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        return suggest_skills_service(db, user, person_id, mode, limit=limit)
+    except RouteDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

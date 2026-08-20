@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { getPerson } from "../api";
+import type { FocusHistory } from "../hooks";
 import type { Identity, PersonDetail, ViewMode } from "../types";
 import { DepartmentGraph } from "./graphs/DepartmentGraph";
 import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
 import { CommunityPage } from "./CommunityPage";
+import { ChevronLeft, ChevronRight, Home } from "../icons";
 import { avatarStyle } from "../avatarHue";
 
 type GraphKind = "department" | "team" | "skills" | "community";
@@ -24,7 +26,7 @@ const KIND_LABEL: Record<GraphKind, string> = {
 const KIND_CAPTION: Record<GraphKind, string> = {
   department: "Who reports to whom — one level up, one level down. Open any manager to go deeper.",
   team: "Everyone sharing this person's org unit.",
-  skills: "Skills this person has, and the colleagues who share them.",
+  skills: "The shortest way to reach someone who has a skill you don't — through people you already share work with. Always computed from you.",
   community: "Who to contact for what. Private to you.",
 };
 
@@ -35,16 +37,19 @@ function initials(name: string): string {
 export function GraphPage({
   identity,
   viewMode,
-  focusId,
-  onFocusChange,
+  focus,
   onOpenProfile,
 }: {
   identity: Identity;
   viewMode: ViewMode;
-  focusId: string;
-  onFocusChange: (id: string) => void;
+  // The focus person AND the trail behind them -- one object rather than a
+  // value plus a setter, because every graph below re-centres by calling
+  // through it and the history has to see those navigations to be a history.
+  focus: FocusHistory;
   onOpenProfile: (id: string, name: string) => void;
 }) {
+  const { focusId } = focus;
+  const onFocusChange = focus.go;
   const [kind, setKind] = useState<GraphKind>("department");
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
@@ -52,11 +57,17 @@ export function GraphPage({
     let cancelled = false;
     setFocusPerson(undefined);
     getPerson(identity, focusId, viewMode).then((p) => {
-      if (!cancelled) setFocusPerson(p);
+      if (cancelled) return;
+      setFocusPerson(p);
+      // The trail records ids; names only exist after this fetch. Handing
+      // it back is what lets Back say "Back to Priya Sharma" rather than
+      // just "Back".
+      if (p) focus.rememberName(p.id, p.full_name);
     });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity, viewMode, focusId]);
 
   const name = focusPerson?.full_name ?? "…";
@@ -64,11 +75,18 @@ export function GraphPage({
 
   return (
     <div className="graph-page">
-      {/* One toolbar, not three stacked rows. Who is centred, which view,
-          and the legend used to occupy three full-width bands above the
-          canvas, which pushed the graph itself under the fold on a laptop
-          -- the graph is the point of this page, so the chrome around it
-          is now a single line. */}
+      {/* Two rows, not one. WHO is centred is a statement about the data;
+          WHERE you are and WHICH view are controls. Cramming all of it onto
+          one line put the retrace buttons, the person, the four view tabs
+          and a button in a single strip where nothing had a neighbour it
+          belonged to. Splitting them costs one row of height and makes both
+          halves scannable.
+
+          The retrace controls belong on the control row with the view tabs,
+          not up beside the person: both answer "take me somewhere else",
+          and they are still deliberately apart from the canvas's own
+          +/-/fit cluster, which moves you around ONE drawing rather than
+          between people. */}
       <div className="graph-toolbar">
         <div className="graph-focus-who">
           <span className="avatar" style={avatarStyle(name)} aria-hidden="true">{focusPerson ? initials(name) : ""}</span>
@@ -76,6 +94,40 @@ export function GraphPage({
             <p className="graph-focus-name">{name}</p>
             {role && <p className="graph-focus-role">{role}</p>}
           </div>
+        </div>
+
+        <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
+      </div>
+
+      <div className="graph-viewbar">
+        <div className="graph-history" role="group" aria-label="Graph navigation">
+          <button
+            className="graph-history-btn"
+            onClick={focus.back}
+            disabled={!focus.canGoBack}
+            title={focus.backLabel ? `Back to ${focus.backLabel}` : "Back"}
+            aria-label={focus.backLabel ? `Back to ${focus.backLabel}` : "Back"}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            className="graph-history-btn"
+            onClick={focus.forward}
+            disabled={!focus.canGoForward}
+            title={focus.forwardLabel ? `Forward to ${focus.forwardLabel}` : "Forward"}
+            aria-label={focus.forwardLabel ? `Forward to ${focus.forwardLabel}` : "Forward"}
+          >
+            <ChevronRight size={16} />
+          </button>
+          <button
+            className="graph-history-btn graph-history-home"
+            onClick={focus.home}
+            disabled={focus.atHome}
+            title={focus.atHome ? "Already centred on you" : "Recentre on me"}
+            aria-label={focus.atHome ? "Already centred on you" : "Recentre on me"}
+          >
+            <Home size={15} />
+          </button>
         </div>
 
         <div className="tabs graph-tabs" role="tablist" aria-label="Graph view">
@@ -95,8 +147,6 @@ export function GraphPage({
             </button>
           ))}
         </div>
-
-        <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
       </div>
 
       <div className="graph-caption-row">
@@ -111,6 +161,12 @@ export function GraphPage({
           <p className="graph-legend">
             <span>Always your own graph, whoever is selected above.</span>
           </p>
+        ) : kind === "skills" ? (
+          // A path view, not a node/edge canvas: no colours to key, and the
+          // pan/zoom hint would be describing controls this tab has not got.
+          <p className="graph-legend">
+            <span className="graph-legend-hint">Click anyone on a route to open their profile</span>
+          </p>
         ) : (
           <p className="graph-legend">
             <span><i className="dot dot-focus" />Selected</span>
@@ -118,10 +174,6 @@ export function GraphPage({
             {kind === "team" && <>
               <span><i className="dot dot-person" />Teammate</span>
               <span><i className="dot dot-hub" />Team</span>
-            </>}
-            {kind === "skills" && <>
-              <span><i className="dot dot-person" />Person</span>
-              <span><i className="dot dot-skill" />Skill</span>
             </>}
             <span className="graph-legend-hint">Click a person to re-centre · drag to pan · pinch to zoom</span>
           </p>
@@ -144,7 +196,11 @@ export function GraphPage({
           onOpenProfile={onOpenProfile}
         />
       ) : (
-        <SkillsGraph identity={identity} viewMode={viewMode} focusId={focusId} focusName={name} focusRole={role} onNavigate={onFocusChange} />
+        <SkillsGraph
+          identity={identity}
+          viewMode={viewMode}
+          onNavigate={(id, personName) => onOpenProfile(id, personName)}
+        />
       )}
     </div>
   );

@@ -3,7 +3,8 @@ import type {
   ContinuityOverview, DashboardOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
   EngagementExposure, HrReviewQueueItem, Identity, InsightReport, NotificationOut, OfficeOut, OrgChainNode,
   OrgUnitOption, OrgUnitOut, PersonDetail, PersonSummary, ProjectCoverage, ProposedChangeGroup,
-  ReminderResult, SkillDetail, SkillSupplyDemand, SuggestedOfficialLinkOut, TrainingAnalytics,
+  ReminderResult, SkillDetail, SkillRouteResult, SkillSupplyDemand, SuggestedOfficialLinkOut,
+  SuggestedSkill, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
   UploadedDocSummary, ViewMode,
 } from "./types";
@@ -955,4 +956,24 @@ export function getWorkforceInsights(
   identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams, signal?: AbortSignal,
 ): Promise<InsightReport> {
   return request<InsightReport>(`/analytics/insights?${scopeQuery(viewMode, scope)}`, identity, { signal });
+}
+
+
+// --- Skill bridges (app/skill_routes.py) ----------------------------------
+//
+// "How do I reach someone who knows X" -- a path question, which is the one
+// thing about skills here a filter genuinely cannot answer.
+
+export function getSkillRoutes(
+  identity: Identity, personId: string, skill: string, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<SkillRouteResult> {
+  const qs = new URLSearchParams({ skill, view_mode: viewMode });
+  return request<SkillRouteResult>(`/people/${personId}/skill-routes?${qs}`, identity, { signal });
+}
+
+export function getSkillSuggestions(
+  identity: Identity, personId: string, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<SuggestedSkill[]> {
+  return request<SuggestedSkill[]>(
+    `/people/${personId}/skill-suggestions?view_mode=${viewMode}`, identity, { signal });
 }
