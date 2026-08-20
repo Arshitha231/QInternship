@@ -2,53 +2,13 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { initTracing } from './otel'
 
-// --- 1. Import OpenTelemetry modules ---
-import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
-import { getWebAutoInstrumentations } from '@opentelemetry/auto-instrumentations-web';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { ZoneContextManager } from '@opentelemetry/context-zone';
+// Configured entirely by build-time environment (see otel.ts, including why
+// the credential it uses is not — and cannot be — a secret in a browser).
+// No-ops when unset, which is the normal state locally and in CI.
+initTracing()
 
-
-// --- 2. Initialize the Web Exporter ---
-const exporter = new OTLPTraceExporter({
-  // Use the endpoint Grafana gave you, and append /v1/traces
-  url: 'https://otlp-gateway-prod-us-west-0.grafana.net/otlp/v1/traces',
-  headers: {
-    // Replace %20 with a space, and do not include the "Authorization=" prefix
-    Authorization: 'Basic MTc5NTg4NzpnbGNfZXlKdklqb2lNVGc0TVRnME1TSXNJbTRpT2lKeGRXRmtjbUZ1ZEMxdmRHVnNMWFJ2YTJWdUlpd2lheUk2SW1vek9VdFpValphWXpaaE0ydDFSalZFTnpaSFJqUXpSU0lzSW0waU9uc2ljaUk2SW5CeWIyUXRkWE10ZDJWemRDMHdJbjE5',
-  },
-});
-
-// Span processors are passed to the constructor, not added afterwards.
-// WebTracerProvider.addSpanProcessor() was removed in the v2 SDK (this
-// project is on @opentelemetry/sdk-trace-web ^2.10.0), and calling it broke
-// `tsc -b` and so the deploy job -- which is the only place the frontend is
-// type-checked before shipping.
-const provider = new WebTracerProvider({
-  spanProcessors: [new BatchSpanProcessor(exporter)],
-});
-provider.register({
-  contextManager: new ZoneContextManager()
-});
-
-// --- 3. Register Auto-Instrumentations ---
-// This automatically captures document load times, button clicks, and API fetch latencies
-registerInstrumentations({
-  instrumentations: [
-    getWebAutoInstrumentations({
-      '@opentelemetry/instrumentation-document-load': {},
-      '@opentelemetry/instrumentation-user-interaction': {},
-      '@opentelemetry/instrumentation-fetch': {
-        clearTimingResources: true,
-      },
-    }),
-  ],
-});
-
-// --- 4. Existing React Render ---
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
