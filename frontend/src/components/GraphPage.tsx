@@ -75,17 +75,31 @@ export function GraphPage({
 
   return (
     <div className="graph-page">
-      {/* One toolbar, not three stacked rows. Who is centred, which view,
-          and the legend used to occupy three full-width bands above the
-          canvas, which pushed the graph itself under the fold on a laptop
-          -- the graph is the point of this page, so the chrome around it
-          is now a single line. */}
+      {/* Two rows, not one. WHO is centred is a statement about the data;
+          WHERE you are and WHICH view are controls. Cramming all of it onto
+          one line put the retrace buttons, the person, the four view tabs
+          and a button in a single strip where nothing had a neighbour it
+          belonged to. Splitting them costs one row of height and makes both
+          halves scannable.
+
+          The retrace controls belong on the control row with the view tabs,
+          not up beside the person: both answer "take me somewhere else",
+          and they are still deliberately apart from the canvas's own
+          +/-/fit cluster, which moves you around ONE drawing rather than
+          between people. */}
       <div className="graph-toolbar">
-        {/* Retrace controls sit with the focus person, not with the zoom
-            controls on the canvas: these move you between PEOPLE, and the
-            +/-/fit cluster moves you around one drawing. Two different
-            kinds of "where am I", kept visually apart so neither is
-            mistaken for the other. */}
+        <div className="graph-focus-who">
+          <span className="avatar" style={avatarStyle(name)} aria-hidden="true">{focusPerson ? initials(name) : ""}</span>
+          <div className="graph-focus-text">
+            <p className="graph-focus-name">{name}</p>
+            {role && <p className="graph-focus-role">{role}</p>}
+          </div>
+        </div>
+
+        <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
+      </div>
+
+      <div className="graph-viewbar">
         <div className="graph-history" role="group" aria-label="Graph navigation">
           <button
             className="graph-history-btn"
@@ -116,14 +130,6 @@ export function GraphPage({
           </button>
         </div>
 
-        <div className="graph-focus-who">
-          <span className="avatar" style={avatarStyle(name)} aria-hidden="true">{focusPerson ? initials(name) : ""}</span>
-          <div className="graph-focus-text">
-            <p className="graph-focus-name">{name}</p>
-            {role && <p className="graph-focus-role">{role}</p>}
-          </div>
-        </div>
-
         <div className="tabs graph-tabs" role="tablist" aria-label="Graph view">
           {(["department", "team", "skills", "community"] as GraphKind[]).map((k) => (
             <button
@@ -141,8 +147,6 @@ export function GraphPage({
             </button>
           ))}
         </div>
-
-        <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
       </div>
 
       <div className="graph-caption-row">
