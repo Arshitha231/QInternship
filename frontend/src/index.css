@@ -1272,10 +1272,21 @@ button { font: inherit; }
 .community-canvas-ring { position: relative; }
 .community-canvas-edges { position: absolute; top: 0; left: 0; pointer-events: none; }
 
+/* These nodes are POSITIONED by their transform, and they also carry
+   .tree-node for the card styling -- which brings .tree-node:hover's
+   `transform: translateY(-1px)` with it. That rule is more specific, so on
+   hover it REPLACED the centring translate instead of adding to it: the card
+   jumped half its own width and height away from the pointer, lost the
+   hover, snapped back, and re-entered -- an oscillation that reads as the
+   card shaking violently.
+   Every transform on this element therefore has to restate the centring
+   translate. The lift is kept, composed rather than clobbering. */
 .community-canvas-node {
   position: absolute; transform: translate(-50%, -50%); width: 154px; cursor: pointer;
 }
 .community-canvas-node.skel { transform: translate(-50%, -50%); cursor: default; }
+.community-canvas-node.tree-node:hover { transform: translate(-50%, -50%) translateY(-2px); }
+.community-canvas-node.tree-node:focus-visible { transform: translate(-50%, -50%); }
 .community-node-what {
   font-size: var(--fs-xs); color: var(--purple-800); margin: 6px 0 0; font-style: italic;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
@@ -2270,6 +2281,11 @@ button.chart-legend-btn:hover { background: var(--surface-sunk); }
   .tree-node { transition: none; }
   .tree-node:hover { transform: none; }
   .tree-edge { transition: none; }
+  /* Not `transform: none` for these: the transform is what POSITIONS them,
+     so dropping it would stack every node in the top-left corner. Drop only
+     the lift. */
+  .community-canvas-node.tree-node,
+  .community-canvas-node.tree-node:hover { transform: translate(-50%, -50%); }
 }
 
 /* ===========================================================================
