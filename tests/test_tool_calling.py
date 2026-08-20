@@ -1183,6 +1183,24 @@ def test_phrase_answer_treats_blank_model_output_the_same_as_no_model(monkeypatc
     assert text is None
 
 
+def test_phrasing_prompt_asks_for_up_to_5_named_with_a_reason_each():
+    # The prompt's actual instructions, not the model's output (which this
+    # suite can't observe live) -- what the model is TOLD to do is the
+    # contract this function holds to. "up to 5" matches
+    # unified_search._TOP_MATCHES_SHOWN, the deterministic fallback's own
+    # count, so a request doesn't visibly change shape depending on which
+    # of the two wrote the sentence.
+    prompt = tool_calling._PHRASING_SYSTEM_PROMPT
+    assert "up to 5" in prompt
+    assert "relevant" in prompt
+    # Must not claim a ranking the data doesn't support -- equally-matching
+    # filter results are not "the best," they just all satisfy the filter.
+    assert "best" in prompt and "unless the data itself ranks them" in prompt
+    # Flowing prose, not a list -- .ai-overview-answer renders one <p>, and
+    # a bulleted/numbered response would collapse to an unreadable run-on.
+    assert "no bullets" in prompt.lower() or "no numbered list" in prompt.lower()
+
+
 # ---------------------------------------------------------------------------
 # Compositional questions must reach the model. The extractors key on a
 # single keyword with a greedy name group, so on a two-step question they

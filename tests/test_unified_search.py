@@ -621,6 +621,12 @@ def test_trace_reasons_are_written_for_people_not_lifted_from_tool_schemas():
 # of text with nothing to distinguish one match from another, and a citation
 # list underneath repeating the same names again. This names a handful with
 # real context instead, and defers the rest to the card grid or a follow-up.
+#
+# This is the FALLBACK for when phrase_answer() (app.tool_calling) has no
+# real model to ask or its call fails -- mock mode, and any real-mode
+# degradation, both still need an answer. It shows the same count (5)
+# phrase_answer's own system prompt asks the model for, so a request
+# doesn't visibly change shape depending on which of the two wrote it.
 # ---------------------------------------------------------------------------
 
 def _person(name, *, job_title="Engineer", city="Seattle", availability="available"):
@@ -634,9 +640,9 @@ def _person(name, *, job_title="Engineer", city="Seattle", availability="availab
 def test_shows_only_the_top_few_not_every_match():
     people = [_person(f"Person {i}") for i in range(12)]
     answer = _phrase_people_matches(people)
-    assert answer.count("Person") == 3  # 3 named, not all 12
+    assert answer.count("Person") == 5  # 5 named, not all 12 -- same count phrase_answer's prompt asks for
     assert "12 people match" in answer
-    assert "9 more match too" in answer
+    assert "7 more match too" in answer
 
 
 def test_no_remainder_note_when_everyone_is_already_shown():

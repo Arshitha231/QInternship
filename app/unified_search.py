@@ -669,7 +669,11 @@ def _phrase_experts(experts: list[ProblemExpert]) -> str:
 
 
 
-_TOP_MATCHES_SHOWN = 3
+# Same count phrase_answer's system prompt asks the real model for ("name
+# up to 5 of them") -- this is its fallback (mock mode, or a failed model
+# call), and the two should show the same amount of the result regardless
+# of which one actually wrote the sentence.
+_TOP_MATCHES_SHOWN = 5
 
 
 def _phrase_people_matches(people: list[PersonSummary]) -> str:
@@ -681,12 +685,11 @@ def _phrase_people_matches(people: list[PersonSummary]) -> str:
 
     Names a handful with enough real, already-returned context (role,
     office, availability) to judge fit at a glance, instead of a bare
-    comma-separated name dump -- the old version listed up to 5 names with
-    nothing to distinguish them, which is exactly the wall of text a
-    person then has to read every one of to get anything out of. The rest
-    aren't lost: every match, shown or not, is still a full card in the
-    results grid below this sentence, and a follow-up question narrows
-    the list without retyping the original one.
+    name -- a plain comma-separated list of 5 names is still a wall of
+    text with nothing to tell one match from another. The rest aren't
+    lost: every match, shown or not, is still a full card in the results
+    grid below this sentence, and a follow-up question narrows the list
+    without retyping the original one.
     """
     shown = people[:_TOP_MATCHES_SHOWN]
     bits = []
