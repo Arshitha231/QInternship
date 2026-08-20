@@ -926,9 +926,13 @@ def record_training_status_route(
     person_id: str,
     course_code: str,
     body: RecordCourseStatusRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Recording course status is an HR action in work mode")
     """Record a course status change and fire both notification triggers.
 
     Stands in for the training system telling us something happened, which
@@ -976,9 +980,13 @@ def record_training_status_route(
 @app.post("/notifications/date-milestones", status_code=201)
 def run_date_milestones_route(
     on: date | None = Query(None, description="Date to sweep, YYYY-MM-DD. Defaults to today."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Running the date sweep is an HR action in work mode")
     """Sweep for birthdays and milestone service anniversaries, notifying HR.
 
     A sweep rather than an event: nothing changes in the database on
@@ -1016,9 +1024,13 @@ def run_date_milestones_route(
 @app.post("/notifications/hr-review-reminders", status_code=201)
 def run_hr_review_reminders_route(
     on: date | None = Query(None, description="Date to sweep, YYYY-MM-DD. Defaults to today."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Running the HR-review sweep is an HR action in work mode")
     """Sweep for work-authorization reviews due soon, notifying HR.
 
     Same shape as POST /notifications/date-milestones — a sweep, not an
@@ -1596,14 +1608,17 @@ def _review_action(fn, db, user, proposal_id: int, mode: str, **kwargs) -> dict:
 
 @app.get("/community_links", response_model=list[CommunityLinkOut])
 def list_community_links_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[CommunityLinkOut]:
+    mode = resolve_view_mode(user.role, view_mode)
+    return list_community_links_service(db, user, view_mode=mode)
     """The caller's own community graph only — official + personal, merged,
     with mentor-link expiration applied. No person_id parameter, on
     purpose, same reason /me/notifications has none: there is no route
     shape here that could read someone else's graph, for any role."""
-    return list_community_links_service(db, user)
+    
 
 
 @app.post("/community_links", status_code=201, response_model=CommunityLinkOut)
