@@ -350,86 +350,190 @@ jobs:
         with:
           creds: '{"clientId":"${{ secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ARM_TENANT_ID }}"}'
 
-      # Idempotent -- safe to set on every deploy. SCM_DO_BUILD_DURING_DEPLOYMENT
-      # is what makes the zipdeploy step below actually build instead of
-      # just copying files. DATABASE_URL points at the real Azure SQL
-      # database (tempest-database1) -- mirrors terraform/main.tf's
-      # app_settings exactly, so a `terraform apply` and this step never
-      # fight over what DATABASE_URL should be. Server/database name are
-      # not secrets (see terraform/main.tf's own comment on this), only
-      # the admin password is -- DB_PASSWORD is the same secret Terraform
-      # uses via TF_VAR_db_pwd.
+      # Reconciles configuration by COMPARING FIRST and only writing when
+      # something actually differs. This is the fix for the deploy stalls,
+      # and the reason is Azure's own words -- a deployment killed here
+      # reported:
       #
-      # Retried, for the same reason the Deploy step below is: these are
-      # plain ARM calls and ARM has transient failures. Observed live --
-      # `(BadGatewayConnection) The network connectivity issue encountered
-      # for 'Microsoft.Web'` on the runtime-stack step, which killed the run
-      # before Deploy was even attempted. The retry loop existed one step too
-      # late to help: a blip on either of these two config calls wastes the
-      # whole job, including a terraform apply that already ran.
+      #   "Deployment has been stopped due to SCM container restart. The
+      #    restart can happen due to a management operation on site. Do not
+      #    perform a management operation and a deployment operation in
+      #    quick succession."
       #
-      # Idempotent, so retrying is free -- both calls set an absolute desired
-      # state rather than mutating a previous one.
-      - name: Ensure required app settings
+      # `az webapp config appsettings set` and `az webapp config set` are a
+      # management operation, and they RESTART THE SCM CONTAINER on every
+      # call -- including a call that sets values byte-identical to what is
+      # already there, which is what every deploy that doesn't rotate a
+      # secret does. The deploy step then landed inside that restart window
+      # and got killed server-side; the retry fired a second OneDeploy on
+      # top of the first, and two Oryx builds fought over one B1 core.
+      # Observed live: two concurrent "Running oryx build..." operations
+      # 65s apart from a single push.
+      #
+      # Earlier attempts at this tried to DETECT the collision afterwards
+      # by polling `az webapp log deployment list`. That does not work --
+      # Kudu does not mark a restart-killed deployment promptly: one sat
+      # complete=false for 21 MINUTES before flipping to "stopped due to
+      # SCM container restart". Anything keyed off that field waits on
+      # ghosts. Comparing desired vs. current state is decided entirely in
+      # this step, from data we fetch and own, and needs Kudu to report
+      # nothing.
+      #
+      # Consequence worth stating plainly: on a normal deploy this step now
+      # writes NOTHING and restarts NOTHING, so there is no window for the
+      # deploy below to land in. The container recycle it used to cause on
+      # every single push is gone.
+      #
+      # DATABASE_URL mirrors terraform/main.tf's app_settings exactly, so a
+      # `terraform apply` and this step never fight over its value.
+      # Server/database name are not secrets (see terraform/main.tf's own
+      # comment); only the admin password is -- DB_PASSWORD is the same
+      # secret Terraform uses via TF_VAR_db_pwd.
+      #
+      # Desired state is built with jq into a JSON file rather than the
+      # backslash-continued `--settings A=1 B=2 ...` list this used to be.
+      # That list form is how ALLOW_DEV_AUTH went missing for months: one
+      # absent line continuation and the setting silently parsed as a
+      # discarded shell assignment, exit 0, no error. A JSON array cannot
+      # fail that way.
+      - name: Reconcile app configuration (writes only on real drift)
         run: |
-          for attempt in 1 2 3; do
-            echo "App settings attempt $attempt/3..."
-            if az webapp config appsettings set \
-              --name ${{ env.WEBAPP_NAME }} \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --settings \
-                SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-                DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1" \
-                CHAT_ENDPOINT="${{ secrets.GROUP3_4OPENAIENDPOINT }}" \
-                CHAT_KEY="${{ secrets.GROUP3_4OPENAIAPIKEY }}" \
-                OPENAI_CHAT_DEPLOYMENT="gpt-5" \
-                EMBEDDING_ENDPOINT="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}" \
-                EMBEDDING_KEY="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
-                OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
-                SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
-                SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}" \
-                OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
-                OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
-                OTEL_SERVICE_NAME="quadrant-directory-api" \
-                ALLOW_DEV_AUTH=1; then
-              echo "App settings applied."
-              break
-            fi
-            if [ "$attempt" = "3" ]; then
-              echo "::error::Could not apply app settings after 3 attempts."
-              exit 1
-            fi
-            echo "Transient ARM failure -- retrying in 15s."
-            sleep 15
-          done
+          desired="$RUNNER_TEMP/desired-appsettings.json"
+          current="$RUNNER_TEMP/current-appsettings.json"
 
-      # A web app recreated by Terraform (e.g. after a forced-replacement
-      # change like a location move) comes up with no explicit runtime
-      # stack, and Azure was observed defaulting that to PHP -- Oryx then
-      # tried to build this zip as a PHP app and failed with "Couldn't
-      # detect a version for the platform 'php'". The azurerm provider
-      # pinned here (~> 3.0) only validates application_stack.python_version
-      # up to 3.12, so it can't express "3.14" the way this app actually
-      # needs -- hence setting it here via CLI instead, same reasoning as
-      # the app_command_line/app_settings drift-reset steps above.
-      - name: Ensure Python runtime stack
-        run: |
-          for attempt in 1 2 3; do
-            echo "Runtime stack attempt $attempt/3..."
-            if az webapp config set \
+          # Retries exist because these are plain ARM calls and ARM has
+          # transient failures -- observed live as `(BadGatewayConnection)
+          # The network connectivity issue encountered for 'Microsoft.Web'`,
+          # which used to kill the run before Deploy was ever attempted and
+          # after terraform had already applied.
+          retry() {
+            local what="$1"; shift
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                echo "::error::$what failed after 3 attempts."
+                return 1
+              fi
+              echo "$what failed (attempt $attempt/3) -- transient ARM failure, retrying in 15s."
+              sleep 15
+            done
+          }
+
+          # jq --arg keeps every secret a JSON string literal, so a value
+          # containing a quote or backslash cannot corrupt the document.
+          jq -n \
+            --arg database_url "mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1" \
+            --arg chat_endpoint "${{ secrets.GROUP3_4OPENAIENDPOINT }}" \
+            --arg chat_key "${{ secrets.GROUP3_4OPENAIAPIKEY }}" \
+            --arg embedding_endpoint "${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}" \
+            --arg embedding_key "${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
+            --arg search_endpoint "${{ secrets.AISEARCH_ENDPOINT }}" \
+            --arg search_key "${{ secrets.AISEARCH_APIKEY }}" \
+            --arg otel_endpoint "${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
+            --arg otel_headers "${{ secrets.GRAFANA_OTLP_HEADERS }}" \
+            '[
+              {name: "SCM_DO_BUILD_DURING_DEPLOYMENT", value: "true"},
+              {name: "DATABASE_URL",                   value: $database_url},
+              {name: "CHAT_ENDPOINT",                  value: $chat_endpoint},
+              {name: "CHAT_KEY",                       value: $chat_key},
+              {name: "OPENAI_CHAT_DEPLOYMENT",         value: "gpt-5"},
+              {name: "EMBEDDING_ENDPOINT",             value: $embedding_endpoint},
+              {name: "EMBEDDING_KEY",                  value: $embedding_key},
+              {name: "OPENAI_EMBEDDING_DEPLOYMENT",    value: "text-embedding-3-small"},
+              {name: "SEARCH_ENDPOINT",                value: $search_endpoint},
+              {name: "SEARCH_KEY",                     value: $search_key},
+              {name: "OTEL_EXPORTER_OTLP_ENDPOINT",    value: $otel_endpoint},
+              {name: "OTEL_EXPORTER_OTLP_HEADERS",     value: $otel_headers},
+              {name: "OTEL_SERVICE_NAME",              value: "quadrant-directory-api"},
+              {name: "ALLOW_DEV_AUTH",                 value: "1"}
+            ]' > "$desired"
+
+          # Wrapped in a function that owns its own redirect rather than
+          # `retry ... > "$current"`. That form redirects the FUNCTION's
+          # stdout, so retry's own "attempt 2/3" message would be written
+          # into the file ahead of the JSON and break the jq parse below.
+          fetch_current_settings() {
+            az webapp config appsettings list \
               --name ${{ env.WEBAPP_NAME }} \
               --resource-group ${{ env.RESOURCE_GROUP }} \
-              --linux-fx-version "PYTHON|3.14"; then
-              echo "Runtime stack set."
-              break
-            fi
-            if [ "$attempt" = "3" ]; then
-              echo "::error::Could not set the runtime stack after 3 attempts."
-              exit 1
-            fi
-            echo "Transient ARM failure -- retrying in 15s."
-            sleep 15
-          done
+              -o json > "$current"
+          }
+          retry "Reading current app settings" fetch_current_settings
+
+          # Names only, never values -- this list goes to the build log.
+          drifted=$(jq -r --slurpfile cur "$current" '
+            ($cur[0] | map({key: .name, value: .value}) | from_entries) as $have
+            | map(select($have[.name] != .value) | .name)
+            | join(" ")
+          ' "$desired")
+
+          changed=0
+
+          if [ -n "$drifted" ]; then
+            echo "App settings differing from desired state: $drifted"
+            # --output none: the default echoes every setting, secrets included.
+            retry "Applying app settings" \
+              az webapp config appsettings set \
+                --name ${{ env.WEBAPP_NAME }} \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --settings @"$desired" \
+                --output none
+            echo "App settings applied."
+            changed=1
+          else
+            echo "All app settings already match desired state -- skipping the write, which avoids an SCM container restart."
+          fi
+
+          # A web app recreated by Terraform (e.g. after a forced-replacement
+          # change like a location move) comes up with no explicit runtime
+          # stack, and Azure was observed defaulting that to PHP -- Oryx then
+          # tried to build this zip as a PHP app and failed with "Couldn't
+          # detect a version for the platform 'php'". The azurerm provider
+          # pinned here (~> 3.0) only validates application_stack.python_version
+          # up to 3.12, so it can't express "3.14" the way this app actually
+          # needs -- hence setting it here via CLI instead.
+          want_stack="PYTHON|3.14"
+          fetch_current_stack() {
+            az webapp config show \
+              --name ${{ env.WEBAPP_NAME }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --query linuxFxVersion -o tsv > "$RUNNER_TEMP/current-stack.txt"
+          }
+          retry "Reading the current runtime stack" fetch_current_stack
+          have_stack=$(cat "$RUNNER_TEMP/current-stack.txt")
+
+          if [ "$have_stack" != "$want_stack" ]; then
+            echo "Runtime stack is '$have_stack', want '$want_stack'."
+            retry "Setting the runtime stack" \
+              az webapp config set \
+                --name ${{ env.WEBAPP_NAME }} \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --linux-fx-version "$want_stack" \
+                --output none
+            echo "Runtime stack set."
+            changed=1
+          else
+            echo "Runtime stack already '$want_stack' -- skipping the write."
+          fi
+
+          echo "CONFIG_CHANGED=$changed" >> "$GITHUB_ENV"
+
+      # Only runs when the step above actually wrote something. A blind
+      # pre-deploy sleep was tried once and removed (git history: "wait
+      # after appsettings restart", then "drop the 30s pre-deploy sleep")
+      # because it taxed every deploy for a restart that usually wasn't
+      # happening. Gating it on a real write inverts that: the normal path
+      # pays nothing, and the rare deploy that does rotate a secret gets
+      # the delay Azure's own error message asks for instead of racing the
+      # restart it just triggered.
+      - name: Let the SCM container settle after a config write
+        if: env.CONFIG_CHANGED == '1'
+        run: |
+          echo "Configuration changed, which recycles the SCM container. Waiting 60s before deploying so the deploy does not land mid-restart."
+          sleep 60
 
       # `az webapp deployment source config-zip` is deprecated AND was
       # observed live to silently not replace wwwroot's contents on a
@@ -440,49 +544,23 @@ jobs:
       # is the maintained replacement; --clean true forces Kudu to wipe
       # the target directory first so there's nothing stale left for a
       # partial/incremental Oryx build to silently keep around.
-      # The two config-changing steps just above (appsettings, runtime
-      # stack) each recycle the container -- Kudu's SCM site can 502
-      # while it's mid-restart if this fires immediately after. A blind
-      # sleep here was tried before and then removed (see git history:
-      # "wait after appsettings restart" then "drop the 30s pre-deploy
-      # sleep") -- wrong either way, since you can't know the actual
-      # restart time in advance. Retrying the deploy call itself instead
-      # survives the restart regardless of how long it actually takes,
-      # without guessing or wasting time when it's fast.
+      # No wait/poll against Kudu here on purpose. The failure this step
+      # used to hit -- a deploy killed mid-flight by the SCM restart that
+      # the config steps triggered, whose "failure" then made the retry
+      # start a SECOND OneDeploy on top of the first -- is prevented in the
+      # reconcile step above by not causing the restart at all. Detecting
+      # it here instead was tried twice and does not work: Kudu left a
+      # restart-killed deployment marked complete=false for 21 minutes, so
+      # every check keyed on that field either waits on ghosts or misses
+      # the real thing. Prevention upstream, no dependence on Kudu's
+      # bookkeeping downstream.
+      #
+      # The retry that remains is for genuine transients during upload
+      # (network, ARM). With the restart window gone, a failure here should
+      # now be a real failure rather than a phantom, and 3 attempts still
+      # fails the job loudly rather than continuing to the health check.
       - name: Deploy (OneDeploy, triggers Oryx build)
         run: |
-          # `az webapp deploy` polls Kudu synchronously, but that poll can
-          # drop (e.g. a 502 while the container is still recycling from
-          # the settings/runtime-stack steps above) even after Kudu has
-          # already accepted the zip and started an Oryx build. Retrying
-          # in that case doesn't repeat a no-op -- it starts a SECOND real
-          # deployment on top of the first. Observed live: two separate
-          # OneDeploy operations both mid "Running oryx build..." at once,
-          # ~65s apart, competing for the same single B1 core and each
-          # slowing the other down. Waiting here for the in-flight
-          # deployment to actually finish before retrying closes that gap.
-          # is_temp entries are excluded deliberately. A temp-* entry is the
-          # upload half of a deploy ("Receiving changes"), and an upload
-          # aborted partway -- precisely what a dropped CLI call leaves
-          # behind -- can sit there incomplete with no build behind it.
-          # Counting those would make every retry wait out the full cap
-          # below for a deployment that is never going to finish.
-          wait_for_previous_deploy() {
-            for i in $(seq 1 30); do
-              in_flight=$(az webapp log deployment list \
-                --name ${{ env.WEBAPP_NAME }} \
-                --resource-group ${{ env.RESOURCE_GROUP }} \
-                --query 'length([?complete==`false` && is_temp==`false`])' \
-                -o tsv 2>/dev/null || echo 0)
-              if [ "$in_flight" = "0" ]; then
-                return 0
-              fi
-              echo "Previous attempt is still building server-side -- waiting 15s before retrying so we don't start a second deploy on top of it."
-              sleep 15
-            done
-            echo "::warning::Timed out waiting for the previous deployment to finish; retrying anyway."
-          }
-
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt/3..."
             if az webapp deploy \
@@ -495,9 +573,8 @@ jobs:
               echo "Deploy succeeded."
               exit 0
             fi
-            echo "Deploy attempt $attempt failed, likely Kudu still recycling from the settings change above -- retrying in 20s."
+            echo "Deploy attempt $attempt failed -- retrying in 20s."
             sleep 20
-            wait_for_previous_deploy
           done
           echo "::error::Deploy failed after 3 attempts."
           exit 1
