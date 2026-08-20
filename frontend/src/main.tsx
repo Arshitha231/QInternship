@@ -22,8 +22,14 @@ const exporter = new OTLPTraceExporter({
   },
 });
 
-const provider = new WebTracerProvider();
-provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+// Span processors are passed to the constructor, not added afterwards.
+// WebTracerProvider.addSpanProcessor() was removed in the v2 SDK (this
+// project is on @opentelemetry/sdk-trace-web ^2.10.0), and calling it broke
+// `tsc -b` and so the deploy job -- which is the only place the frontend is
+// type-checked before shipping.
+const provider = new WebTracerProvider({
+  spanProcessors: [new BatchSpanProcessor(exporter)],
+});
 provider.register({
   contextManager: new ZoneContextManager()
 });
