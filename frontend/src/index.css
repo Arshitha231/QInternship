@@ -2271,3 +2271,106 @@ button.chart-legend-btn:hover { background: var(--surface-sunk); }
   .tree-node:hover { transform: none; }
   .tree-edge { transition: none; }
 }
+
+/* ===========================================================================
+   Skill bridges — components/graphs/SkillsGraph.tsx
+
+   A path, not a canvas. The old force-directed version needed zoom/pan
+   because it drew a hairball; a chain of four cards needs neither, so this
+   is ordinary flow layout that reflows on a narrow screen instead of a
+   viewport the reader has to navigate.
+   =========================================================================== */
+
+.skill-routes { display: flex; flex-direction: column; gap: 16px; }
+
+.skill-routes-search {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 10px 14px;
+  color: var(--muted);
+}
+.skill-routes-search:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--accent-ring); }
+.skill-routes-search input {
+  flex: 1; border: 0; background: none; font: inherit; font-size: var(--fs-md);
+  color: var(--ink); outline: none; min-width: 0;
+}
+.skill-routes-search input::-webkit-search-cancel-button { filter: grayscale(1) opacity(.5); }
+
+.skill-routes-empty {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 18px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.skill-routes-lead { margin: 0; font-size: var(--fs-md); color: var(--ink); max-width: 70ch; }
+.skill-routes-empty .skill-label { margin: 0; }
+
+.suggest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.suggest-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 12px; cursor: pointer; text-align: left; font: inherit; color: inherit;
+  transition: border-color .12s ease, background .12s ease;
+}
+.suggest-chip:hover { border-color: var(--purple); background: var(--purple-100); }
+.suggest-chip-name { font-weight: 600; font-size: var(--fs-body); }
+/* Every suggestion carries its own reason -- "learn this" with nothing
+   attached is horoscope advice. */
+.suggest-chip-why { font-size: var(--fs-xs); color: var(--muted); }
+
+.skill-routes-result {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 18px 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.skill-routes-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.skill-routes-title { margin: 0 0 2px; font-size: var(--fs-lg); font-weight: 650; }
+
+.route-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.route-chain {
+  border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--page); padding: 12px;
+}
+/* Wraps rather than scrolls. Horizontal scrolling looked right in principle
+   -- the order of the cards IS the information -- and was wrong in practice:
+   a three-hop route overflowed its box and the card scrolled out of sight
+   was the TARGET, the one person the whole chain exists to reach. Wrapping
+   keeps the sequence readable in ordinary reading order and never hides the
+   end of it. */
+.route-chain-scroll {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 4px;
+}
+.route-step { display: inline-flex; align-items: center; gap: 4px; }
+
+.route-pip {
+  display: inline-flex; align-items: center; gap: 8px; flex: none;
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 7px 11px 7px 8px; font: inherit; color: inherit; text-align: left;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+button.route-pip { cursor: pointer; }
+button.route-pip:hover { border-color: var(--purple); box-shadow: var(--shadow-sm); }
+.route-pip .avatar { width: 28px; height: 28px; font-size: var(--fs-xs); flex: none; }
+.route-pip-text { display: flex; flex-direction: column; min-width: 0; }
+.route-pip-name { font-size: var(--fs-body); font-weight: 550; white-space: nowrap; }
+.route-pip-role { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+.route-pip-you { background: var(--purple-100); border-color: transparent; }
+.route-pip-target { border-color: var(--purple); }
+
+/* The connector label. This is the feature: it says why the step exists and
+   doubles as the opening line of the message you are about to send, which
+   is why it is rendered inline rather than hidden behind a hover. */
+.route-via {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  color: var(--muted); font-size: var(--fs-xs); padding: 0 2px;
+}
+.route-via-text { white-space: nowrap; }
+.route-via strong { color: var(--ink); font-weight: 600; }
+
+.route-chain-foot {
+  margin: 9px 0 0; display: flex; align-items: center; gap: 9px;
+  font-size: var(--fs-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .suggest-chip, .route-pip { transition: none; }
+}
