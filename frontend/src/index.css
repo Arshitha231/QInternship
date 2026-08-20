@@ -274,10 +274,10 @@ button { font: inherit; }
   display: flex; align-items: center; gap: 18px; padding: 10px 24px;
 }
 .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.brand-mark {
-  width: 28px; height: 28px; border-radius: var(--radius); background: var(--purple);
-  display: grid; place-items: center; flex-shrink: 0; color: #fff;
-}
+/* The mark supplies its own ground and corner radius (see BrandMark.tsx),
+   so this is only a box to sit it in -- it used to paint a purple square
+   that would now show as a halo behind the logo's own. */
+.brand-mark { display: grid; place-items: center; flex-shrink: 0; line-height: 0; }
 .brand-name { font-size: var(--fs-lg); font-weight: 500; letter-spacing: -0.01em; color: var(--ink); }
 .search { flex: 1; max-width: 660px; margin: 0 auto; position: relative; }
 .search input {
@@ -1782,10 +1782,9 @@ body::after {
 }
 
 /* Brand mark: a real gradient rather than a flat swatch. */
-.brand-mark {
-  background: linear-gradient(145deg, var(--purple), color-mix(in srgb, var(--purple) 55%, #C77DBB));
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--purple) 34%, transparent);
-}
+/* Glow, not fill: the gradient that used to live here was the old mark's
+   background and would sit behind the new one. */
+.brand-mark { filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--purple) 34%, transparent)); }
 
 /* A highlight that sweeps across a result card on hover. Masked to the card
    and driven by transform only, so it composites on the GPU. */
