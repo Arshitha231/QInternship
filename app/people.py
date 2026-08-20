@@ -54,7 +54,9 @@ from app.permissions import ViewMode, can_see_confidential_project
 from app.policy import can_see_direct_reports, compute_visible_fields, enforce, excluded_by_obligations
 from app.query_compiler import apply_filter, compile_query, enforced_person_ref
 from app.query_plan import PeopleQuery
-from app.schemas import OfficeOut, PersonDetail, PersonRef, PersonSummary, ProjectHistoryItem, SkillOut
+from app.schemas import (
+    OfficeOut, PersonDetail, PersonRef, PersonSummary, PersonWithProjects, ProjectHistoryItem, SkillOut,
+)
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
 
@@ -676,6 +678,68 @@ def get_person(
         _write_audit(db, caller, "get_person", f"person_id={person_id}",
                      1 if found else 0, fields_returned)
     # 7. respond (via the return above)
+
+
+# ---------------------------------------------------------------------------
+# get_people_with_projects(person_ids) — the gap that left a compound
+# request like "5 Terraform people and their recent projects" unanswerable:
+# find_people/search_people never return project history, and get_person
+# only ever looks up one person. This is the second half of a two-step
+# chain (app.tool_calling's TOOLS entry + CHAIN_FEW_SHOT_EXAMPLES), never a
+# replacement for either.
+# ---------------------------------------------------------------------------
+
+_MAX_RECENT_PROJECTS = 3
+
+
+def _recent_projects(project_history: list[ProjectHistoryItem] | None) -> list[ProjectHistoryItem] | None:
+    """Current projects first, then most recently started -- "recent" the
+    way a person asking would mean it, not however EmployeeProject rows
+    happen to be stored. None (not []) when the caller can't see project
+    history at all, the same absent-not-empty distinction get_person's own
+    field already carries -- this never turns a genuine "can't see it"
+    into a misleading empty list."""
+    if project_history is None:
+        return None
+    # Stable sort, applied twice: start_month descending first (most
+    # recent first within any group), then current descending (True
+    # first) -- the second sort's stability preserves the first sort's
+    # ordering inside each current/not-current group, giving "current
+    # ones, most recent first, then past ones, most recent first" without
+    # a compound key that would have to fight str/bool ordering directly.
+    by_recency = sorted(project_history, key=lambda p: p.start_month, reverse=True)
+    by_current_then_recency = sorted(by_recency, key=lambda p: p.current, reverse=True)
+    return by_current_then_recency[:_MAX_RECENT_PROJECTS]
+
+
+def get_people_with_projects(
+    db: Session, caller: AuthenticatedUser, person_ids: list[str], view_mode: ViewMode = "work",
+) -> list[PersonWithProjects]:
+    """Recent project history for several people in one call, built
+    entirely from repeated get_person(id) lookups -- same enforce()/
+    compute_visible_fields gate, same per-person audit row, one per id,
+    exactly as if each had been looked up separately. Never a second,
+    differently-filtered read of its own.
+
+    A person_id that doesn't resolve (deleted, restricted, or simply
+    wrong) is dropped from the result rather than erroring the whole
+    batch -- the same redact-never-reject shape get_person's own None
+    return already holds to for one person; here it just means a request
+    about N people comes back with N-1 answers instead of a hard failure
+    for the one that didn't resolve.
+    """
+    people: list[PersonWithProjects] = []
+    for person_id in person_ids:
+        detail = get_person(db, caller, person_id, view_mode)
+        if detail is None:
+            continue
+        people.append(PersonWithProjects(
+            id=detail.id, full_name=detail.full_name, preferred_name=detail.preferred_name,
+            job_title=detail.job_title, org_unit=detail.org_unit, office=detail.office,
+            availability_status=detail.availability_status,
+            recent_projects=_recent_projects(detail.project_history),
+        ))
+    return people
 
 
 # ---------------------------------------------------------------------------

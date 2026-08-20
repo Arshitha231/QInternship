@@ -44,7 +44,9 @@ from app.models import AuditLog
 from app.models import Employee
 from app.org_chart import get_org_chain, resolve_person
 from app.schemas import AmbiguousPersonMatch, PersonChoice, UnknownPerson
-from app.people import find_people, find_related_language_speakers, get_person, search_people_by_plan
+from app.people import (
+    find_people, find_related_language_speakers, get_people_with_projects, get_person, search_people_by_plan,
+)
 from app.permissions import ViewMode
 from app.project_search import find_experts
 from app.query_compiler import ORDERABLE_FIELDS
@@ -330,13 +332,43 @@ TOOLS = [
             "additionalProperties": False,
         },
     }},
+    {"type": "function", "function": {
+        "name": "get_people_with_projects",
+        "description": (
+            "Recent project history for SEVERAL people at once, given their ids -- the second "
+            "step of a two-step plan for a compound request like \"N people with skill X and "
+            "their recent projects\": step one finds the people (find_people/search_people, "
+            "needs_followup=true), step two passes their ids here. find_people/search_people "
+            "never return project history themselves, and get_person only ever looks up one "
+            "person -- use this instead of looping get_person once per person, which the "
+            "chain's own step budget cannot support for more than a couple of people."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Ids of the people to fetch recent project history for -- from a prior "
+                        "step's own result, never invented. \"self\" is accepted for the caller's "
+                        "own id."
+                    ),
+                },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["person_ids"],
+            "additionalProperties": False,
+        },
+    }},
 ]
 
 SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadrant Technologies.
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
 get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people, \
-find_experts. Together they cover people, teams, skills, and projects — nothing else.
+find_experts, get_people_with_projects. Together they cover people, teams, skills, and \
+projects — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
 request — multiple values for the same field ("Bangalore or Singapore"), a field \
@@ -372,6 +404,14 @@ arguments — you do not need to guess ahead of time what the result will contai
 most 3 calls total, so plan within that: if a request would genuinely need more, do the best \
 you can with what 3 calls can establish rather than declaring you need a 4th. Do not set \
 needs_followup just to double-check a result or to fetch something the caller didn't ask for.
+
+A request for SEVERAL people AND a per-person detail find_people/search_people cannot return \
+— "5 people who know Terraform and their recent projects", "everyone on the Payments team and \
+what they're working on" — is exactly this two-step shape: find_people or search_people first \
+(needs_followup true) to get the people, then get_people_with_projects with their ids (read \
+from that result — never invented) to get each one's recent project history in the same call. \
+Never loop get_person once per person for this: the step budget cannot support more than a \
+couple of individual lookups, and get_people_with_projects exists so it doesn't have to.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -533,6 +573,16 @@ CHAIN_FEW_SHOT_EXAMPLES: list[ChainFewShot] = [
     ("who does the owner of the Billing API report to", [
         ("find_project_owner", {"name": "Billing API", "needs_followup": True}),
         ("find_people", {"name": "Diego Hernandez"}),
+    ]),
+    # get_people_with_projects's ids below are what find_people's own
+    # result would actually hand back (PersonSummary.id, real values on
+    # each candidate) -- never invented, same discipline every other
+    # step-2 argument in this list already holds to.
+    ("who are 5 people with Terraform skills and what are their recent projects", [
+        ("find_people", {"skill": "Terraform", "needs_followup": True}),
+        ("get_people_with_projects", {
+            "person_ids": ["e1a2b3c4-0001", "e1a2b3c4-0002", "e1a2b3c4-0003", "e1a2b3c4-0004", "e1a2b3c4-0005"],
+        }),
     ]),
 ]
 
@@ -1667,6 +1717,12 @@ def execute_tool_call(
             limit=args.get("limit"),
         )
         return search_people_by_plan(db, caller, plan, view_mode)
+    if name == "get_people_with_projects":
+        # Same "self" resolution get_person's own branch does above, applied
+        # per-id -- a caller asking about themselves alongside real ids from
+        # a prior chain step doesn't need to know their own id to say so.
+        person_ids = [caller.id if pid == "self" else pid for pid in args.get("person_ids", [])]
+        return get_people_with_projects(db, caller, person_ids, view_mode=view_mode)
     raise ValueError(f"model requested an unknown tool: {name!r}")
 
 

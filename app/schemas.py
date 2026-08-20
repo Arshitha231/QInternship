@@ -128,6 +128,35 @@ class PersonSummary(BaseModel):
     direct_reports: list[PersonRef] | None = None
 
 
+class PersonWithProjects(BaseModel):
+    """get_people_with_projects results -- the same always-visible base
+    fields find_people's PersonSummary carries (so this reads as "a person
+    summary plus their recent projects," not a separately-gated shape),
+    plus each person's own recent project history. Built entirely from
+    repeated get_person(id) calls (see app.people.get_people_with_projects)
+    -- same enforce()/compute_visible_fields gate, same per-person audit
+    row -- never a second, differently-filtered read.
+
+    Fields mirror PersonDetail's own optionality (str | None), not
+    PersonSummary's non-optional one, because that is genuinely what
+    get_person returns them as. recent_projects is None (not []) for a
+    caller who can't see project history at all -- the same absent-not-
+    empty distinction PersonDetail.project_history already carries,
+    inherited rather than re-decided here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    preferred_name: str | None = None
+    job_title: str | None = None
+    org_unit: str | None = None
+    office: OfficeOut | None = None
+    availability_status: str | None = None
+    recent_projects: list[ProjectHistoryItem] | None = None
+
+
 class PersonDetail(BaseModel):
     """get_person result. Only fields the caller is actually allowed to see
     are ever set on the instance; the route serializes with

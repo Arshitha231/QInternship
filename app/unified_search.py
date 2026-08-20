@@ -38,8 +38,8 @@ from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_b
 from app.text_filters import plan_from_text
 from app.permissions import ViewMode
 from app.schemas import (
-    AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary, ProblemExpert, ProjectOwnerResult,
-    UnknownPerson,
+    AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary,
+    PersonWithProjects, ProblemExpert, ProjectOwnerResult, UnknownPerson,
 )
 from app.vocabulary import snap_tool_arguments
 from app.tool_calling import (
@@ -215,6 +215,7 @@ _TOOL_REASONS = {
     "skill_scarcity": "Checked how rare that skill is across the company.",
     "find_experts": "Matched the problem against what our projects actually did, "
                     "then found the people who worked on them.",
+    "get_people_with_projects": "Looked up recent project history for that group of people.",
 }
 
 # Every tool must have one -- a tool added without a reason would otherwise
@@ -570,6 +571,24 @@ def _people_and_citations(
         ]
         return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
 
+    if tool_name == "get_people_with_projects":
+        # Cards show the same standard summary shape every other tool's
+        # cards do -- recent_projects is real, extra context (see
+        # PersonWithProjects), but it lives in the phrased answer, not a
+        # new card field: cards have never carried anything beyond this
+        # summary shape, for any tool, and this one is not the exception
+        # that starts changing that.
+        people = [p for p in result if isinstance(p, PersonWithProjects)]
+        summaries = [
+            PersonSummary(
+                id=p.id, full_name=p.full_name, preferred_name=p.preferred_name,
+                job_title=p.job_title or "", org_unit=p.org_unit or "", office=p.office,
+                availability_status=p.availability_status or "available",
+            )
+            for p in people
+        ]
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
     if tool_name == "get_org_chain":
         # OrgChainNode already carries org_unit/availability_status as
         # plain strings, matching PersonSummary's required fields exactly
@@ -857,5 +876,20 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
             return "No scarcity data came back."
         scarcest = min(items, key=lambda i: i.capable_count)
         return f"Scarcest: {scarcest.skill} ({scarcest.capable_count} people capable)."
+
+    if tool_name == "get_people_with_projects":
+        people = result or []
+        if not people:
+            return "None of those people could be found."
+        # _phrase_people_matches only reads full_name/job_title/office/
+        # availability_status -- every field PersonWithProjects carries
+        # under the same names PersonSummary does -- so this is a real
+        # reuse, not a coincidental duck-type. It doesn't narrate
+        # recent_projects (that needs real prose to read as anything but a
+        # field dump); the deterministic fallback staying silent on that
+        # one part is the acceptable side of "lose the narrative, never
+        # the accuracy" -- every project is still on the person's own card
+        # via a follow-up, never fabricated here to fill the gap.
+        return _phrase_people_matches(people)
 
     return "Done."

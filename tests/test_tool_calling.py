@@ -896,6 +896,57 @@ def test_chain_feedback_never_leaks_a_field_the_caller_could_not_see(db_session)
 
 
 # ---------------------------------------------------------------------------
+# get_people_with_projects dispatch -- the second step of the compound-
+# query chain (find N people -> fetch their recent projects). Closes the
+# gap where "5 Terraform people and their recent projects" had no tool
+# that could answer the second half of the question at all.
+# ---------------------------------------------------------------------------
+
+def test_get_people_with_projects_is_registered_in_tools():
+    names = {t["function"]["name"] for t in tool_calling.TOOLS}
+    assert "get_people_with_projects" in names
+
+
+def test_get_people_with_projects_dispatches_to_the_service_function(db_session):
+    tool_call = ResolvedToolCall(
+        name="get_people_with_projects", arguments={"person_ids": ["report-1", "stranger-1"]})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_get_people_with_projects_resolves_self_at_dispatch(db_session):
+    # Same never-trust-the-model-for-identity resolution get_person's own
+    # branch does -- a caller asking about themselves alongside real ids
+    # from a prior step doesn't need to know their own id.
+    caller = AuthenticatedUser(id="report-1", role="employee")
+    tool_call = ResolvedToolCall(name="get_people_with_projects", arguments={"person_ids": ["self", "stranger-1"]})
+    result = execute_tool_call(db_session, caller, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_get_people_with_projects_feedback_never_leaks_a_confidential_project(db_session):
+    unrelated_employee = AuthenticatedUser(id="stranger-1", role="employee")
+    tool_call = ResolvedToolCall(name="get_people_with_projects", arguments={"person_ids": ["member-1"]})
+
+    result = execute_tool_call(db_session, unrelated_employee, tool_call)
+    feedback = _serialize_step_result(result)
+    assert "Project Secret" not in feedback, (
+        "a confidential project this caller isn't a member of reached the text handed to the "
+        "model -- the feedback mechanism must never carry more than the already-filtered result"
+    )
+
+
+def test_every_tool_has_a_chain_few_shot_or_single_shot_reason_field():
+    # NEEDS_FOLLOWUP_PROPERTY is on every tool's schema already (structural
+    # guarantee); this checks the newest tool specifically wired the
+    # chaining pattern it exists for -- a real CHAIN_FEW_SHOT_EXAMPLES
+    # entry demonstrating it, not just a registered schema nobody
+    # anchored with an example.
+    chained_tool_names = {step_name for _text, steps in tool_calling.CHAIN_FEW_SHOT_EXAMPLES for step_name, _args in steps}
+    assert "get_people_with_projects" in chained_tool_names
+
+
+# ---------------------------------------------------------------------------
 # Follow-up chat (Conversational Assistant plan, phase 1): a stored turn is
 # a PLAN (tool + arguments), never a result -- _history_messages() re-runs
 # each one fresh through execute_tool_call() on every new turn, so a prior
