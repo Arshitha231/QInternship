@@ -696,6 +696,52 @@ class ProjectSkillRequirementOut(BaseModel):
     minimum_level: str
 
 
+class ProjectListItem(BaseModel):
+    """One row of the PRD page's project picker (GET /projects) -- id and
+    name plus enough to decide what to show, never the full record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    type: str
+    is_client_engagement: bool
+    has_requirements: bool
+
+
+class RequirementNoteIn(BaseModel):
+    """A single qualitative requirement note being added -- the free-text
+    field is deliberately named `note`, matching every other schema that
+    carries one, so app.tool_calling._UNTRUSTED_FREE_TEXT_KEYS can exclude
+    it from a model call by name alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str
+    source_doc_id: int | None = None
+
+
+class RequirementNoteOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str
+    source_doc_id: int | None = None
+
+
+class ProjectRequirementsOut(BaseModel):
+    """What get_project_requirements (the PRD assistant's own tool) answers
+    with for one resolved project -- skills and notes together, the
+    combined shape a "what does this project need" question actually
+    wants."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    description: str | None = None
+    skills: list[ProjectSkillRequirementOut]
+    notes: list[RequirementNoteOut]
+
+
 # --- Staffing Continuity Intelligence (app/continuity.py) — HR-only ------
 #
 # The unit these describe is the client ENGAGEMENT (a project), not the

@@ -76,6 +76,10 @@ from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.people import update_own_name_pronunciation as update_own_name_pronunciation_service
 from app.permissions import resolve_view_mode
+from app.project_requirements import RequirementNotesNotAccessible
+from app.project_requirements import add_requirement_notes as add_requirement_notes_service
+from app.project_requirements import get_requirement_notes as get_requirement_notes_service
+from app.project_requirements import list_projects_for_picker as list_projects_for_picker_service
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
 from app.project_skills import set_required_skills as set_required_skills_service
@@ -144,11 +148,14 @@ from app.schemas import (
     PersonRef,
     PersonSummary,
     ProjectDescriptionRequest,
+    ProjectListItem,
     ProjectSkillRequirementIn,
     ProjectSkillRequirementOut,
     ReassignProposalRequest,
     RecordCourseStatusRequest,
     RejectActionRequestBody,
+    RequirementNoteIn,
+    RequirementNoteOut,
     ResolveSubjectRequest,
     SubmitAuthorizationRecordRequest,
     SuggestedOfficialLinkOut,
@@ -1128,6 +1135,67 @@ def set_required_skills_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return result
+
+
+@app.get("/projects", response_model=list[ProjectListItem])
+def list_projects_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[ProjectListItem]:
+    """The PRD page's project picker. HR + work mode only — this listing
+    exists for the PRD feature specifically, not as a general project
+    browser open to every role."""
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Listing projects for PRD upload is an HR action in work mode")
+    return list_projects_for_picker_service(db, user, mode)
+
+
+@app.get("/projects/{project_id}/requirement-notes", response_model=list[RequirementNoteOut])
+def get_requirement_notes_route(
+    project_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[RequirementNoteOut]:
+    """Qualitative requirements recorded against a project — HR-or-owner
+    only, unlike GET .../required-skills, which stays open to anyone who
+    can see the project. Notes are sentences lifted verbatim from a
+    planning document; skills are structured org facts. See
+    app/project_requirements.py's module docstring for why that asymmetry
+    is deliberate, not an oversight."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        result = get_requirement_notes_service(db, user, project_id, mode)
+    except RequirementNotesNotAccessible as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.post("/projects/{project_id}/requirement-notes", response_model=list[RequirementNoteOut])
+def add_requirement_notes_route(
+    project_id: int,
+    body: list[RequirementNoteIn],
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[RequirementNoteOut]:
+    """Appends requirement notes — unlike PUT .../required-skills, never
+    replaces the existing set: a second PRD upload confirming new notes
+    must not erase one recorded months ago. Same HR-or-owner gate as the
+    read route above."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        result = add_requirement_notes_service(db, user, project_id, body, mode)
+    except RequirementNotesNotAccessible as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
 
 def _require_continuity_access(user: AuthenticatedUser, view_mode: str | None) -> str:
     mode = resolve_view_mode(user.role, view_mode)

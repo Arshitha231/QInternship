@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -34,6 +34,11 @@ class UploadedDoc(Base):
     uploaded_by: Mapped[str] = mapped_column(String(36), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
+    # Which project a PRD upload is about. NULL for every other use of this
+    # table (status reports, resumes aren't single-project-scoped) --
+    # set only by app.project_requirements' PRD upload path.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+
     # Set once, by app.proposals.finalize_document, the moment every
     # actionable proposed_changes row from this document has been decided.
     # At that point extracted_text is overwritten to "" — the row itself
@@ -45,3 +50,5 @@ class UploadedDoc(Base):
     # confusion app.doc_extraction.correct_call would otherwise be exposed
     # to if it ever ran against a scrubbed row (it checks this first).
     content_scrubbed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    project = relationship("Project")

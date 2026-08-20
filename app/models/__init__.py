@@ -1,3 +1,5 @@
+from app.models.assistant_conversation import AssistantConversation
+from app.models.assistant_turn import AssistantTurn
 from app.models.audit_log import AuditLog
 from app.models.community_link import CommunityLink
 from app.models.course_requirement import CourseRequirement
@@ -14,6 +16,7 @@ from app.models.org_settings import OrgSettings
 from app.models.org_unit import OrgUnit
 from app.models.project import Project
 from app.models.project_embedding import ProjectEmbedding
+from app.models.project_requirement_note import ProjectRequirementNote
 from app.models.project_skill_requirement import ProjectSkillRequirement
 from app.models.proposed_change import ProposedChange
 from app.models.skill import Skill
@@ -23,6 +26,8 @@ from app.models.uploaded_doc import UploadedDoc
 from app.models.work_authorization_record import WorkAuthorizationRecord
 
 __all__ = [
+    "AssistantConversation",
+    "AssistantTurn",
     "AuditLog",
     "CommunityLink",
     "CourseRequirement",
@@ -39,6 +44,7 @@ __all__ = [
     "OrgUnit",
     "Project",
     "ProjectEmbedding",
+    "ProjectRequirementNote",
     "ProjectSkillRequirement",
     "ProposedChange",
     "Skill",
