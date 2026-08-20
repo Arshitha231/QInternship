@@ -65,7 +65,7 @@ from app.own_skills import SkillAlreadyHeld, SkillCategoryMismatch, SkillNotHeld
 from app.own_skills import add_own_skill as add_own_skill_service
 from app.own_skills import remove_own_skill as remove_own_skill_service
 from app.own_skills import update_own_skill as update_own_skill_service
-from app.people import context_people_message, resolve_context_people
+from app.people import context_people_message, resolve_context_people, resolve_skill
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
@@ -1899,14 +1899,31 @@ async def upload_prd_route(
         raise HTTPException(status_code=415, detail=str(exc)) from exc
 
     result = extract_requirements(doc.extracted_text)
+    # Extraction (mock or real) reads the document, not this system's skill
+    # vocabulary -- it can propose a name ("communication", "strategy")
+    # that PUT /projects/{id}/required-skills' own resolve_skill() will
+    # never recognize, since required-skills is deliberately a controlled
+    # vocabulary (see app/project_skills.py's UnknownSkill), not free text.
+    # Left unfiltered, HR could build an editable preview that then 422s
+    # whole-batch on confirm with no way to tell which row was the problem.
+    # Checked here, once, so the preview HR reviews is exactly what confirm
+    # will actually accept -- an unrecognized "skill" is real signal, just
+    # not a structured one, so it becomes a note instead of being dropped.
+    skills: list[dict] = []
+    demoted_notes: list[dict] = []
+    for s in result.skills:
+        if resolve_skill(db, s.skill) is not None:
+            skills.append({"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence})
+        else:
+            demoted_notes.append({
+                "note": f"Requires {s.skill} — not a recognized skill in this system, recorded as a note instead.",
+                "confidence": s.confidence,
+            })
     return {
         "doc_id": doc.id,
         "filename": doc.filename,
-        "skills": [
-            {"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence}
-            for s in result.skills
-        ],
-        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes],
+        "skills": skills,
+        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes] + demoted_notes,
     }
 
 
