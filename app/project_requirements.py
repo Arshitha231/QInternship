@@ -19,11 +19,13 @@ route directly.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.directory_tools import resolve_project_name
-from app.models import Project, ProjectRequirementNote, ProjectSkillRequirement
+from app.models import Project, ProjectRequirementNote, ProjectSkillRequirement, UploadedDoc
 from app.permissions import ViewMode, effective_role
 from app.project_skills import get_required_skills, visible_project
 from app.schemas import (
@@ -68,15 +70,37 @@ def add_requirement_notes(
     notes: list[RequirementNoteIn], view_mode: ViewMode = "work",
 ) -> list[RequirementNoteOut] | None:
     """APPEND, not replace -- unlike set_required_skills, a second PRD
-    upload confirming new notes must not erase one recorded months ago."""
+    upload confirming new notes must not erase one recorded months ago.
+
+    Also scrubs each referenced source document: confirming a note is the
+    moment its extraction has been reviewed and committed, so the PRD's
+    full text no longer needs to sit in the database. UploadedDoc.
+    content_scrubbed_at already exists for this (previously only ever set
+    by app.proposals.finalize_document, a pipeline this flow bypasses
+    entirely) -- restricted to docs that carry a project_id, so an
+    ordinary POST /docs/upload row (status report, resume) is never
+    touched by this path.
+    """
     project = visible_project(db, caller, project_id, view_mode)
     if project is None:
         return None
     if not _owner_or_hr(caller, project, view_mode):
         raise RequirementNotesNotAccessible("Only the project's owner or HR can add requirement notes")
+
+    source_doc_ids = set()
     for note in notes:
         db.add(ProjectRequirementNote(
             project_id=project_id, note=note.note, source_doc_id=note.source_doc_id, created_by=caller.id))
+        if note.source_doc_id is not None:
+            source_doc_ids.add(note.source_doc_id)
+
+    if source_doc_ids:
+        docs = db.query(UploadedDoc).filter(
+            UploadedDoc.id.in_(source_doc_ids), UploadedDoc.project_id.isnot(None)).all()
+        for doc in docs:
+            doc.extracted_text = ""
+            doc.content_scrubbed_at = datetime.now()
+
     db.commit()
     return get_requirement_notes(db, caller, project_id, view_mode)
 

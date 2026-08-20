@@ -6,6 +6,7 @@ distinctive id/name prefix, same pattern as tests/test_project_skills.py.
 """
 from __future__ import annotations
 
+import io
 from datetime import date
 from types import SimpleNamespace
 
@@ -13,7 +14,7 @@ import pytest
 
 from app.auth import AuthenticatedUser
 from app.models import (
-    Employee, Office, OrgUnit, Project, ProjectRequirementNote, ProjectSkillRequirement, Skill,
+    Employee, Office, OrgUnit, Project, ProjectRequirementNote, ProjectSkillRequirement, Skill, UploadedDoc,
 )
 from app.models.enums import AvailabilityStatus, EmploymentType, ProjectClassification, ProjectType, SkillCategory
 from app.project_requirements import (
@@ -235,3 +236,117 @@ async def test_http_list_projects_hr_only(client, fx, db_session):
 async def test_http_list_projects_forbidden_for_non_hr(client):
     resp = await client.get("/projects", headers=auth_headers("employee"))
     assert resp.status_code == 403
+
+
+# --- PRD upload (extraction preview, no writes) + confirm-time scrub -------
+
+def _docx_bytes(text: str) -> bytes:
+    import docx
+
+    document = docx.Document()
+    for line in text.splitlines():
+        document.add_paragraph(line)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+_PRD_TEXT = """Meridian Health -- Claims Platform Modernization
+
+This engagement requires Terraform at Expert level.
+The client is sensitive about timeline slippage.
+"""
+
+
+async def _upload_prd(client, project_id, role="hr", user_id="prd-uploader-1", filename="prd.docx"):
+    return await client.post(
+        f"/projects/{project_id}/prd",
+        files={"file": (filename, _docx_bytes(_PRD_TEXT),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        headers=auth_headers(role, user_id),
+    )
+
+
+async def test_http_prd_upload_returns_a_preview_without_writing_anything(client, fx, db_session):
+    resp = await _upload_prd(client, fx.project.id)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["skills"][0]["skill"] == "Terraform"
+    assert body["notes"][0]["note"]
+    # A preview, not a write -- neither table gained a row from the upload
+    # alone.
+    assert get_requirement_notes(db_session, HR, fx.project.id) == []
+    assert db_session.query(ProjectSkillRequirement).filter_by(project_id=fx.project.id).count() == 0
+
+
+async def test_http_prd_upload_forbidden_for_non_hr(client, fx, db_session):
+    resp = await _upload_prd(client, fx.project.id, role="employee", user_id=fx.owner.id)
+    assert resp.status_code == 403
+
+
+async def test_http_prd_upload_unknown_project_404s(client):
+    resp = await _upload_prd(client, 9_999_999)
+    assert resp.status_code == 404
+
+
+async def test_confirming_a_note_scrubs_its_source_document(client, fx, db_session):
+    upload = await _upload_prd(client, fx.project.id)
+    doc_id = upload.json()["doc_id"]
+
+    doc = db_session.get(UploadedDoc, doc_id)
+    assert doc.project_id == fx.project.id
+    assert doc.extracted_text  # still has the full text before confirm
+    assert doc.content_scrubbed_at is None
+
+    result = add_requirement_notes(db_session, HR, fx.project.id, [
+        RequirementNoteIn(note="Client is sensitive about timeline slippage.", source_doc_id=doc_id),
+    ])
+    assert result is not None
+
+    db_session.refresh(doc)
+    assert doc.extracted_text == ""
+    assert doc.content_scrubbed_at is not None
+
+
+async def test_confirming_a_note_with_no_source_doc_id_scrubs_nothing(fx, db_session):
+    add_requirement_notes(db_session, HR, fx.project.id, [RequirementNoteIn(note="Hand-authored, no document.")])
+    # Nothing to assert against by id -- this just confirms the write path
+    # above doesn't raise when source_doc_id is absent, the ordinary
+    # hand-authored-note case.
+
+
+async def test_scrub_never_touches_a_docs_upload_row_with_no_project_id(db_session):
+    # The existing /docs/upload pipeline's own rows (status reports,
+    # resumes) must never be scrubbed by this path -- only PRD uploads
+    # (project_id set) are in scope.
+    from datetime import datetime
+
+    other_doc = UploadedDoc(
+        filename="status.docx", content_type="application/octet-stream", byte_size=10,
+        extracted_text="Alex Kim worked on Project X.", uploaded_by=HR.id, uploaded_at=datetime.now(),
+        project_id=None,
+    )
+    db_session.add(other_doc)
+    db_session.commit()
+    doc_id = other_doc.id
+
+    project = Project(
+        name="Project Requirements Fixture Scrub Isolation", type=ProjectType.project, description=None,
+        owning_unit_id=db_session.query(OrgUnit).filter_by(name="Platform Engineering").first().id,
+        owner_id=HR.id, classification=ProjectClassification.internal, is_client_engagement=False,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    add_requirement_notes(db_session, HR, project.id, [
+        RequirementNoteIn(note="x", source_doc_id=doc_id),
+    ])
+
+    db_session.refresh(other_doc)
+    assert other_doc.extracted_text == "Alex Kim worked on Project X."
+    assert other_doc.content_scrubbed_at is None
+
+    db_session.query(ProjectRequirementNote).filter_by(project_id=project.id).delete()
+    db_session.query(Project).filter_by(id=project.id).delete()
+    db_session.query(UploadedDoc).filter_by(id=doc_id).delete()
+    db_session.commit()

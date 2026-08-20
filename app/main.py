@@ -60,7 +60,8 @@ from app.db import engine, get_db
 from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.insight_narrative import narrate as narrate_insights
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
-from app.models import DocSubjectMatch, Employee, Office, OrgUnit, TrainingCourse
+from app.prd_extraction import extract_requirements
+from app.models import DocSubjectMatch, Employee, Office, OrgUnit, Project, TrainingCourse
 from app.models.enums import CourseStatus, SkillCategory, SkillLevel, display_status
 from app.notifications import (
     NotifyDateMilestonesDenied, NotifyHrReviewsDenied, notifications_for, notify_date_milestones,
@@ -1760,6 +1761,53 @@ async def upload_doc_route(
         "people_mentioned": people_mentioned,
         "proposed_changes": len(proposals),
         "status": "pending",
+    }
+
+
+@app.post("/projects/{project_id}/prd", status_code=201)
+async def upload_prd_route(
+    project_id: int,
+    file: UploadFile = File(..., description="A .docx or .pdf requirements document."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Upload a PRD for a project, parse it, and return a PREVIEW of
+    extracted skill requirements and notes. Nothing is saved yet — the
+    caller reviews (and may edit) the preview, then confirms it via
+    PUT /projects/{id}/required-skills and POST /projects/{id}/requirement-notes,
+    the same routes a hand-authored requirement already goes through.
+
+    HR + work mode only, same inline gate as POST /docs/upload — this is a
+    structurally separate pipeline (app/prd_extraction.py, not
+    app/doc_extraction.py's classify/person-disambiguation flow), since a
+    PRD names no person to disambiguate, only what a project needs.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Uploading a PRD is an HR action in work mode")
+
+    if db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    data = await _read_upload_capped(file)
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+
+    try:
+        doc = store_document(db, user, file.filename or "", file.content_type, data, project_id=project_id)
+    except UnsupportedDocument as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+
+    result = extract_requirements(doc.extracted_text)
+    return {
+        "doc_id": doc.id,
+        "filename": doc.filename,
+        "skills": [
+            {"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence}
+            for s in result.skills
+        ],
+        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes],
     }
 
 
