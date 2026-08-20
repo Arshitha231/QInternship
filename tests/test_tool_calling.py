@@ -667,7 +667,7 @@ def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_s
 
     assert execute_count["n"] == CHAIN_STEP_BUDGET  # never exceeds the plan class's declared step budget...
     assert resolve_count["n"] == CHAIN_STEP_BUDGET - 1  # ...and never even ASKS for a step beyond it
-    assert result["result"] == []  # step 3's result, returned as final regardless of needs_followup
+    assert result["result"] == []  # final step's result, returned regardless of needs_followup
     assert result["truncated"] == "steps"  # budget cut it off -- the model still wanted more
     assert "may be incomplete" in result["message"]  # a truncated answer says so, not silently
 
