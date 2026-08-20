@@ -121,6 +121,20 @@ def test_prd_conversations_are_scoped_by_project(db_session):
     assert result.id == convo_a.id
 
 
+def test_prd_project_id_omitted_searches_across_all_projects(db_session):
+    # app.assistant_context.recent_facts()'s own use: the caller's most
+    # recent PRD conversation regardless of which project it's about.
+    # project_id=None must NOT be read as "project_id IS NULL" -- no real
+    # PRD conversation (always project-scoped) ever has a null project_id,
+    # so that reading would silently find nothing for every real caller.
+    open_conversation(db_session, CALLER, "prd", project_id=101)
+    newest = open_conversation(db_session, CALLER, "prd", project_id=202)
+
+    result = get_most_recent_conversation(db_session, CALLER, "prd", project_id=None)
+    assert result is not None
+    assert result.id == newest.id
+
+
 # ---------------------------------------------------------------------------
 # HTTP: POST /ask
 # ---------------------------------------------------------------------------

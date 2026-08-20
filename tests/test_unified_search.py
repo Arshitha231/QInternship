@@ -432,7 +432,7 @@ async def test_org_chain_cards_omit_unset_fields_not_null(client, monkeypatch):
 
     monkeypatch.setattr(
         "app.unified_search.resolve_intent",
-        lambda _msg, _db=None: AssistantTurn(
+        lambda _msg, _db=None, _history_messages=None: AssistantTurn(
             tool_call=ResolvedToolCall(name="get_org_chain", arguments={"person": "Chris Bottom", "direction": "up"})
         ),
     )
@@ -590,7 +590,7 @@ async def test_coordination_across_values_takes_the_assisted_path(client, monkey
     without a question mark and seven with one."""
     captured = {}
 
-    def _fake_resolve(message, _db=None):
+    def _fake_resolve(message, _db=None, _history_messages=None):
         captured["message"] = message
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="search_people",
@@ -801,7 +801,7 @@ async def test_a_chained_answer_shows_every_step_it_took(client, monkeypatch):
     """A chained answer that showed only its final call read as though the
     question had been answered by a filter nobody asked for -- the step that
     resolved the team into an actual team is most of the explanation."""
-    def _fake_resolve(message, _db=None):
+    def _fake_resolve(message, _db=None, _history_messages=None):
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="get_org_chain",
             arguments={"person": "Morgan Manager", "direction": "down", "depth": 1},
@@ -831,7 +831,7 @@ async def test_a_single_call_request_still_takes_exactly_one_call(client, monkey
     successful call."""
     calls = []
 
-    def _fake_resolve(message, _db=None):
+    def _fake_resolve(message, _db=None, _history_messages=None):
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 

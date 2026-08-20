@@ -85,6 +85,7 @@ from app.assistant_conversations import (
     load_history,
     open_or_continue,
 )
+from app.assistant_context import facts_context_message
 from app.project_requirements import RequirementNotesNotAccessible
 from app.project_requirements import add_requirement_notes as add_requirement_notes_service
 from app.project_requirements import get_requirement_notes as get_requirement_notes_service
@@ -2271,12 +2272,17 @@ def ask(
     makes, not answer_service() itself (its signature is unchanged, still
     taking a plain history list either way).
 
+    Also carries facts extracted from the caller's most recent PRD
+    conversation, if any (app.assistant_context) — e.g. a project the PRD
+    assistant confirmed requirements for, so a search-surface question can
+    be answered with that context without the caller repeating it.
+
     And carries the people currently on the caller's screen, if
     body.context_person_ids names any — re-resolved server-side
     (app.people.resolve_context_people) rather than trusted from the
-    client, then handed to the model as their real ids (app.people.
-    context_people_message) so a follow-up like "who is the best of
-    these" can resolve "these" to something concrete instead of the
+    client, then handed to the model as their real ids (app.assistant_
+    context.context_people_message) so a follow-up like "who is the best
+    of these" can resolve "these" to something concrete instead of the
     model having no idea who is being asked about."""
     mode = resolve_view_mode(user.role, body.view_mode)
     try:
@@ -2285,10 +2291,11 @@ def ask(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     history = load_history(db, conversation) if body.conversation_id is not None else body.history
+    context = facts_context_message(db, user, mode, surface="search")
     context_people = context_people_message(resolve_context_people(db, user, body.context_person_ids, mode))
     result = answer_service(
         db, user, body.message, mode, history,
-        extra_context_messages=[context_people] if context_people else None,
+        extra_context_messages=[m for m in (context, context_people) if m] or None,
     )
 
     append_turn(
@@ -2340,7 +2347,24 @@ def prd_ask(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     history = load_history(db, conversation) if body.conversation_id is not None else body.history
-    result = answer_service(db, user, body.message, mode, history, profile=PRD_PROFILE)
+    # PRD_SYSTEM_PROMPT requires a project NAME in the message before it will
+    # call get_project_requirements -- correct for a cold question, but this
+    # surface is already scoped to one project (AssistantConversation.
+    # project_id), and a caller sitting on that project's own page asking
+    # "what does this project need?" has every reason to expect the question
+    # resolves without repeating the name. Resolved server-side (not left to
+    # the frontend to prepend) so every caller of this route gets it, and
+    # stored history stays the raw question — see append_turn below.
+    project = db.get(Project, conversation.project_id) if conversation.project_id else None
+    contextualized_message = f'(Regarding the "{project.name}" project.) {body.message}' if project else body.message
+    # Facts from the caller's most recent SEARCH conversation, if any --
+    # e.g. a skill that turn looked for, so a PRD-surface question can be
+    # answered (or a follow-up suggestion computed) with that context.
+    context = facts_context_message(db, user, mode, surface="prd")
+    result = answer_service(
+        db, user, contextualized_message, mode, history, profile=PRD_PROFILE,
+        extra_context_messages=[context] if context else None, prd_project_id=conversation.project_id,
+    )
 
     append_turn(
         db, conversation, message=body.message,

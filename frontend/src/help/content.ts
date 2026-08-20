@@ -14,7 +14,7 @@
 // empty states are handled by the same rule, with no role logic duplicated
 // here.
 
-export type HelpMode = "profile" | "graphs" | "dashboard" | "continuity" | "review";
+export type HelpMode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "prds";
 
 export interface HelpTopic {
   /** Matches `data-help="<key>"` on the element being described. */
@@ -185,6 +185,16 @@ export const HELP_TOPICS: HelpTopic[] = [
       "step proposes reaches a record until someone accepts it here, field by field.",
     mode: "review",
     tourStep: 15,
+  },
+  {
+    key: "prds",
+    title: "PRDs (HR)",
+    body:
+      "Upload a project's requirements document and review what it proposes — skills and qualitative " +
+      "notes — before anything is saved. Ask the PRD assistant about a project's requirements directly; " +
+      "it only ever answers from what's on record here, never from the general people directory.",
+    mode: "prds",
+    tourStep: 16,
   },
   {
     key: "dashboard",

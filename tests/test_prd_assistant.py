@@ -303,6 +303,46 @@ async def test_http_prd_ask_continuing_reuses_its_conversation_id(client):
     assert second.json()["conversation_id"] == conversation_id
 
 
+async def test_http_prd_ask_contextualizes_the_message_with_the_project_name(client, db_session, monkeypatch):
+    # Browser click-through (Phase 5) surfaced this: PRD_SYSTEM_PROMPT
+    # requires a project NAME in the message before it will call
+    # get_project_requirements, but PRDChat.tsx is already scoped to one
+    # project -- a caller asking "what does this project need?" on that
+    # project's own page got bounced to the out-of-scope reply instead of
+    # an answer, despite the question being perfectly answerable. The fix
+    # is server-side (app/main.py's prd_ask), so this drives the route
+    # directly rather than calling tool_calling.answer() to prove the FIX
+    # ITSELF, not just that the underlying resolver can handle a
+    # project-named question (already covered elsewhere).
+    from app.models.project import Project
+    project = db_session.get(Project, 1)
+    assert project is not None
+
+    seen_messages = []
+
+    def fake_answer_service(db, user, message, mode, history, *, profile, extra_context_messages=None, prd_project_id=None):
+        seen_messages.append(message)
+        return {"message": "ok", "tool_call": None, "arguments": None, "result": None}
+
+    monkeypatch.setattr("app.main.answer_service", fake_answer_service)
+
+    resp = await client.post(
+        "/prd/ask", params={"project_id": 1}, json={"message": "what does this project need?"},
+        headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    assert len(seen_messages) == 1
+    assert project.name in seen_messages[0]
+    assert "what does this project need?" in seen_messages[0]
+
+    # The stored turn still holds the caller's raw question, never the
+    # server-side enrichment -- "store the plans, not the answers" extends
+    # to not storing synthetic context the caller never actually typed.
+    rehydrated = await client.get(
+        "/conversations/prd", params={"project_id": 1}, headers=auth_headers("hr"))
+    assert rehydrated.json()["turns"][-1]["message"] == "what does this project need?"
+
+
 async def test_http_prd_ask_with_someone_elses_conversation_id_404s(client):
     mine = await client.post(
         "/prd/ask", params={"project_id": 3}, json={"message": "what does this need?"},

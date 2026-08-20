@@ -97,14 +97,43 @@ def _month(d: date | None) -> str | None:
     return d.strftime("%Y-%m") if d else None
 
 
+# Common informal terms that name a real skill but share no usable prefix or
+# substring with it -- "finance"/"financial modeling" diverge at the 7th
+# character ("financ-e" vs "financ-ial"), so no substring or margin-checked
+# fuzzy tier catches this without also matching unrelated short words against
+# unrelated skill names (the exact WRatio/partial-ratio false-positive class
+# fixed in app.directory_tools.resolve_project_name — a long, unrelated
+# string can score deceptively high on shared substrings alone). Curated by
+# hand, never fuzzy-guessed, same discipline as LANGUAGE_FAMILIES below.
+# Kept here rather than as a seeded SKILL_CANONICAL_MAP synonym row
+# (seed.py) so it resolves against the database as it already exists,
+# without needing a reseed.
+SKILL_ALIASES: dict[str, str] = {
+    "finance": "Financial Modeling",
+    "financials": "Financial Modeling",
+    "accounting": "GAAP Accounting",
+    "accountant": "GAAP Accounting",
+    "accountancy": "GAAP Accounting",
+}
+
+
 def resolve_skill(db: Session, name: str) -> Skill | None:
     """Case-insensitive lookup that resolves a synonym straight to its
     canonical skill, so a caller never needs to know which name is the
     alias — "SRE" and "Site Reliability Engineering" find the same people.
+
+    Falls back to SKILL_ALIASES (above) when the name matches no skill or
+    seeded synonym at all -- covers a handful of common terms the seeded
+    SKILL_CANONICAL_MAP can't reach lexically.
     """
     skill = db.query(Skill).filter(Skill.name.ilike(name)).first()
     if skill is None:
-        return None
+        alias_target = SKILL_ALIASES.get(name.strip().lower())
+        if alias_target is None:
+            return None
+        skill = db.query(Skill).filter(Skill.name.ilike(alias_target)).first()
+        if skill is None:
+            return None
     if skill.canonical_id is not None:
         return db.get(Skill, skill.canonical_id)
     return skill

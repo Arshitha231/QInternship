@@ -1649,6 +1649,23 @@ def _phrasing_is_grounded(text: str, sanitized_result: Any, arguments: dict | No
     return True
 
 
+def _has_encoding_corruption(text: str) -> bool:
+    """True if `text` contains U+FFFD (the Unicode replacement character)
+    or an unpaired UTF-16 surrogate -- both unambiguous signs that a
+    multi-byte character (observed live: an em dash the model used between
+    a name and its description) was split or mis-decoded somewhere between
+    the model and here, not a plausible thing for the model to have
+    generated on purpose. Treated the same as a failed grounding check --
+    _phrase()'s deterministic template is always a safe fallback, and a
+    caller-facing sentence with a literal replacement character or a
+    surrogate that breaks JSON encoding downstream is worse than the
+    template in every case, not just some.
+    """
+    if "�" in text:
+        return True
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in text)
+
+
 _PHRASING_SYSTEM_PROMPT = (
     "You write a short, natural-language answer to the caller's question, given a "
     "JSON object that is the caller's ENTIRE and ONLY source of truth. It has "
@@ -1740,6 +1757,8 @@ def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -
     if not text:
         return None
     if not _phrasing_is_grounded(text, sanitized, arguments):
+        return None
+    if _has_encoding_corruption(text):
         return None
     return text
 
@@ -2531,7 +2550,7 @@ def execute_chain(
         return final
 
 
-def answer(
+def _answer_core(
     db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work",
     history: list[HistoryTurn] | None = None, *, profile: AssistantProfile = SEARCH_PROFILE,
     extra_context_messages: list[dict] | None = None,
@@ -2568,10 +2587,10 @@ def answer(
 
     `extra_context_messages` (default None, purely additive -- every
     existing call site keeps compiling and behaving unchanged) is where
-    app.people.context_people_message's ids-for-the-caller's-on-screen-
-    people message rides in: appended after `history` and before the
-    current question, the same position a real prior turn would occupy, so
-    it reaches _real_resolve exactly like history_messages already does.
+    app.assistant_context.facts_context_message's cross-surface facts
+    block rides in: appended after `history` and before the current
+    question, the same position a real prior turn would occupy, so it
+    reaches _real_resolve exactly like history_messages already does.
     Never folded into `message` itself -- resolve_intent()'s deterministic
     router sees only the raw message, and this must not push every
     search-surface question off that fast path.
@@ -2617,4 +2636,36 @@ def answer(
             if phrased is not None:
                 raw["message"] = phrased
 
+    return raw
+
+
+def answer(
+    db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work",
+    history: list[HistoryTurn] | None = None, *, profile: AssistantProfile = SEARCH_PROFILE,
+    extra_context_messages: list[dict] | None = None, prd_project_id: int | None = None,
+) -> dict:
+    """Wraps _answer_core to attach a deterministic follow-up suggestion --
+    never by editing the core's own branch logic, so which profile is
+    running never has to be threaded through resolve_intent/execute_chain/
+    phrase_answer just to decide whether to suggest something. Only when a
+    real answer was produced (a tool call happened) -- an out-of-scope
+    reply has no answer to attach a suggestion alongside.
+
+    `prd_project_id` (default None) is the one new, purely additive
+    parameter: POST /prd/ask is the only caller that ever passes it (the
+    conversation's own project, already resolved there) -- every existing
+    call site keeps compiling and behaving unchanged. Local import to
+    avoid a module-load-time cycle (app.assistant_context reads from
+    app.project_requirements/app.directory_tools, neither of which import
+    this module, but importing at call time rather than at the top keeps
+    that true by construction rather than by coincidence).
+    """
+    raw = _answer_core(db, caller, message, view_mode, history, profile=profile,
+                        extra_context_messages=extra_context_messages)
+    if raw.get("tool_call") is not None:
+        from app.assistant_context import requirements_gap_suggestion, unfilled_skill_suggestion
+        if profile.name == "prd" and prd_project_id is not None:
+            raw["suggestion"] = unfilled_skill_suggestion(db, caller, view_mode, prd_project_id, message)
+        elif profile.name == "search":
+            raw["suggestion"] = requirements_gap_suggestion(db, caller, view_mode, message)
     return raw

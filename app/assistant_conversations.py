@@ -98,13 +98,26 @@ def append_turn(
 def get_most_recent_conversation(
     db: Session, caller: AuthenticatedUser, surface: Surface, project_id: int | None = None,
 ) -> AssistantConversation | None:
-    """For GET /conversations/{surface} rehydration on page load. PRD
-    conversations are project-scoped -- passing project_id narrows to that
-    project specifically, so HR working on project B never rehydrates
-    project A's thread; omitted (None) for the search surface, which
-    isn't scoped to any one project."""
+    """For GET /conversations/{surface} rehydration on page load, AND for
+    app.assistant_context.recent_facts()'s cross-surface read -- two
+    different meanings of "project_id omitted" for the "prd" surface, both
+    intentional:
+
+    - GET /conversations/prd always passes a real project_id (PRD
+      conversations are project-scoped, so HR working on project B must
+      never rehydrate project A's thread) -- narrows to that project
+      specifically.
+    - recent_facts(other_surface="prd") deliberately passes None to read
+      the caller's most recent PRD conversation ACROSS ALL of their
+      projects (each derived fact names its own project, so there's no
+      risk of implying the wrong one) -- the project_id filter is skipped
+      entirely rather than matched against NULL, which no real PRD
+      conversation row ever has.
+
+    Omitted (None) for the search surface either way, which isn't scoped
+    to any one project."""
     query = db.query(AssistantConversation).filter(
         AssistantConversation.user_id == caller.id, AssistantConversation.surface == surface)
-    if surface == "prd":
+    if surface == "prd" and project_id is not None:
         query = query.filter(AssistantConversation.project_id == project_id)
     return query.order_by(AssistantConversation.last_active_at.desc()).first()

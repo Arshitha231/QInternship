@@ -805,6 +805,49 @@ class ProjectRequirementsSummaryItem(BaseModel):
     note_count: int
 
 
+# --- Cross-surface context (app/assistant_context.py) ---------------------
+#
+# What crosses between the search and PRD assistants: a tool name plus a
+# resolved, re-checked reference -- never assistant_text (model-written
+# prose) and never document/note prose, which never enters a stored turn's
+# `arguments` in the first place. `ref_type`/`ref_id`, when set, are what
+# recent_facts() re-resolves against the live database (visible_project /
+# is_record_visible) before returning a fact -- a project reclassified
+# confidential or a person deactivated since the turn happened is simply
+# absent, the same freshness guarantee _history_messages() gives a
+# replayed tool call. `kind` is a closed set, not a free string, so a
+# renderer never has to guess what a new kind means.
+class ConversationFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "project_discussed", "skill_discussed", "person_discussed",
+        "requirements_confirmed", "gap_checked",
+    ]
+    label: str
+    ref_type: Literal["project", "skill", "person"] | None = None
+    ref_id: str | None = None
+
+
+# Pure Python, deterministic, computed alongside an answer -- never a tool
+# the model is expected to call (see app/assistant_context.py's
+# suggestion wrappers). `surface` is which assistant's OWN response this
+# suggestion is attached to/rendered on ("search" for a suggestion computed
+# by unified_search()'s wrapper and shown under a search answer, informed
+# by PRD facts; "prd" for one computed by answer()'s PRD-profile wrapper
+# and shown under a PRD answer, informed by search facts) -- not which
+# surface the facts it's built from came from, which is always the other one.
+class FollowUpSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    surface: Literal["search", "prd"]
+    kind: Literal["requirements_gap", "unfilled_skill"]
+    label: str
+    project_name: str | None = None
+    skill: str | None = None
+    minimum_level: str | None = None
+
+
 # --- Staffing Continuity Intelligence (app/continuity.py) — HR-only ------
 #
 # The unit these describe is the client ENGAGEMENT (a project), not the

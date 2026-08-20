@@ -1664,6 +1664,44 @@ def test_phrase_answer_falls_back_when_the_model_names_someone_not_in_the_result
     assert text is None  # ungrounded -- caller (_build_assisted) falls back to _phrase()
 
 
+# ---------------------------------------------------------------------------
+# _has_encoding_corruption() -- observed live in browser click-through: a
+# multi-candidate find_mentor answer came back from the real model with a
+# literal U+FFFD replacement character (and, over the wire as JSON, an
+# unpaired UTF-16 surrogate) where the model had used an em dash between a
+# name and its description. Not a plausible thing for the model to have
+# generated on purpose, and it broke JSON encoding down the line -- treated
+# the same as a failed grounding check.
+# ---------------------------------------------------------------------------
+
+def test_has_encoding_corruption_detects_replacement_character():
+    assert tool_calling._has_encoding_corruption("Sarah White � Cloud Operations Team Manager")
+
+
+def test_has_encoding_corruption_detects_unpaired_surrogate():
+    assert tool_calling._has_encoding_corruption("available\udc9d, at Expert level")
+
+
+def test_has_encoding_corruption_false_for_ordinary_text_with_a_real_em_dash():
+    assert not tool_calling._has_encoding_corruption("Sarah White — Cloud Operations Team Manager")
+
+
+def test_phrase_answer_falls_back_when_the_model_output_is_corrupted(monkeypatch):
+    from app.schemas import PersonSummary
+
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    summary = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: _content_client("Riley Report � Software Engineer, knows Terraform."))
+
+    text = tool_calling.phrase_answer("who knows Terraform", "find_people", {"skill": "Terraform"}, [summary])
+    assert text is None  # corrupted -- caller falls back to _phrase(), never rendered as-is
+
+
 def test_phrasing_prompt_asks_for_up_to_5_named_with_a_reason_each():
     # The prompt's actual instructions, not the model's output (which this
     # suite can't observe live) -- what the model is TOLD to do is the

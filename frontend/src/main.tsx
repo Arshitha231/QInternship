@@ -22,8 +22,9 @@ const exporter = new OTLPTraceExporter({
   },
 });
 
-const provider = new WebTracerProvider();
-provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+const provider = new WebTracerProvider({
+  spanProcessors: [new BatchSpanProcessor(exporter)],
+});
 provider.register({
   contextManager: new ZoneContextManager()
 });

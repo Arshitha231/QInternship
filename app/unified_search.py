@@ -33,6 +33,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.assistant_conversations import append_turn, open_or_continue
+from app.assistant_context import facts_context_message, requirements_gap_suggestion
 from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
@@ -228,7 +229,7 @@ assert set(_TOOL_REASONS) == {t["function"]["name"] for t in TOOLS}, (
 )
 
 
-def unified_search(
+def _unified_search_core(
     db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
     view_mode: ViewMode = "work", conversation_id: int | None = None,
 ) -> dict:
@@ -310,6 +311,23 @@ def unified_search(
     return {"mode": "direct", "results": results}
 
 
+def unified_search(
+    db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
+    view_mode: ViewMode = "work", conversation_id: int | None = None,
+) -> dict:
+    """Wraps _unified_search_core to attach a deterministic follow-up
+    suggestion -- never by editing the core's own branch logic, so an
+    assisted vs. direct decision never has to know suggestions exist.
+    Assisted-mode only: direct mode has no answer prose to attach one
+    alongside, and the suggestion itself (informed by the PRD surface's
+    confirmed requirements) is the kind of thing worth surfacing next to
+    an actual answer, not a bare card grid."""
+    result = _unified_search_core(db, caller, q=q, filters=filters, view_mode=view_mode, conversation_id=conversation_id)
+    if result["mode"] == "assisted":
+        result["suggestion"] = requirements_gap_suggestion(db, caller, view_mode, q or "")
+    return result
+
+
 def _assisted(
     db: Session, caller: AuthenticatedUser, text: str,
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
@@ -323,8 +341,15 @@ def _assisted(
     # to the route -- same 404-not-403 shape POST /ask uses.
     conversation = open_or_continue(db, caller, "search", conversation_id)
 
+    # Facts from the caller's most recent PRD conversation, if any (app.
+    # assistant_context) -- appended as an extra message, never folded
+    # into `text` itself, so resolve_intent()'s deterministic router
+    # (which sees only the raw text, never history_messages) is unaffected.
+    context = facts_context_message(db, caller, view_mode, surface="search")
+    history_messages = [context] if context else None
+
     started = time.monotonic()
-    turn = resolve_intent(text, db)
+    turn = resolve_intent(text, db, history_messages)
     if turn.tool_call is None:
         answer_text = turn.message or OUT_OF_SCOPE_MESSAGE
         append_turn(db, conversation, message=text, tool_call=None, arguments=None, assistant_text=answer_text)
@@ -355,7 +380,7 @@ def _assisted(
     # overview's existing trace list, which until now only ever held one
     # entry because this path never chained.
     if turn.tool_call.needs_followup:
-        raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
+        raw = execute_chain(db, caller, turn.tool_call, text, view_mode, history_messages)
     else:
         raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
