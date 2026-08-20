@@ -451,6 +451,38 @@ jobs:
       # without guessing or wasting time when it's fast.
       - name: Deploy (OneDeploy, triggers Oryx build)
         run: |
+          # `az webapp deploy` polls Kudu synchronously, but that poll can
+          # drop (e.g. a 502 while the container is still recycling from
+          # the settings/runtime-stack steps above) even after Kudu has
+          # already accepted the zip and started an Oryx build. Retrying
+          # in that case doesn't repeat a no-op -- it starts a SECOND real
+          # deployment on top of the first. Observed live: two separate
+          # OneDeploy operations both mid "Running oryx build..." at once,
+          # ~65s apart, competing for the same single B1 core and each
+          # slowing the other down. Waiting here for the in-flight
+          # deployment to actually finish before retrying closes that gap.
+          # is_temp entries are excluded deliberately. A temp-* entry is the
+          # upload half of a deploy ("Receiving changes"), and an upload
+          # aborted partway -- precisely what a dropped CLI call leaves
+          # behind -- can sit there incomplete with no build behind it.
+          # Counting those would make every retry wait out the full cap
+          # below for a deployment that is never going to finish.
+          wait_for_previous_deploy() {
+            for i in $(seq 1 30); do
+              in_flight=$(az webapp log deployment list \
+                --name ${{ env.WEBAPP_NAME }} \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --query 'length([?complete==`false` && is_temp==`false`])' \
+                -o tsv 2>/dev/null || echo 0)
+              if [ "$in_flight" = "0" ]; then
+                return 0
+              fi
+              echo "Previous attempt is still building server-side -- waiting 15s before retrying so we don't start a second deploy on top of it."
+              sleep 15
+            done
+            echo "::warning::Timed out waiting for the previous deployment to finish; retrying anyway."
+          }
+
           for attempt in 1 2 3; do
             echo "Deploy attempt $attempt/3..."
             if az webapp deploy \
@@ -465,6 +497,7 @@ jobs:
             fi
             echo "Deploy attempt $attempt failed, likely Kudu still recycling from the settings change above -- retrying in 20s."
             sleep 20
+            wait_for_previous_deploy
           done
           echo "::error::Deploy failed after 3 attempts."
           exit 1
