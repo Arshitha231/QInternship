@@ -183,3 +183,90 @@ def test_find_skill_trainees_uses_projects_not_already_capable(db_session):
     assert match.skill == "Terraform"
     assert "AWS" in match.adjacent_skills or "Kubernetes" in match.adjacent_skills
     assert match.project_name
+
+
+def test_who_is_routes_to_find_people_by_name():
+    turn = _deterministic_resolve("who is luca")
+    assert turn is not None
+    assert turn.tool_call == ResolvedToolCall(
+        name="find_people", arguments={"name": "luca"})
+
+
+def test_who_is_does_not_steal_manager_questions():
+    turn = _deterministic_resolve("who is my manager")
+    assert turn is not None
+    assert turn.tool_call.name == "get_org_chain"
+
+
+def test_followup_who_is_prefers_prior_result_person(db_session):
+    """After a prior set that includes Luca Followup, 'who is luca' briefs
+    that person instead of returning every Luca in the directory."""
+    from datetime import date
+
+    from app.auth import AuthenticatedUser
+    from app.models import Employee, EmployeeProject, EmployeeSkill, Office, OrgUnit, Project, Skill
+    from app.models.enums import (
+        AvailabilityStatus, EmploymentType, ProjectClassification, ProjectType,
+        SkillCategory, SkillLevel, SkillSource,
+    )
+    from app.people import resolve_skill
+    from app.schemas import HistoryTurn
+    from app.tool_calling import answer
+
+    office = db_session.query(Office).first()
+    unit = db_session.query(OrgUnit).filter(OrgUnit.name == "Platform Engineering").first()
+    assert office and unit
+
+    def ensure_skill(name: str) -> Skill:
+        existing = resolve_skill(db_session, name)
+        if existing:
+            return existing
+        sk = Skill(name=name, category=SkillCategory.technical, canonical_id=None)
+        db_session.add(sk)
+        db_session.flush()
+        return sk
+
+    python = ensure_skill("Python")
+    ensure_skill("SQL")
+
+    luca = Employee(
+        id="followup-luca-1", directory_object_id=None, full_name="Luca Followup",
+        preferred_name=None, job_title="Data Engineer", org_unit_id=unit.id,
+        office_id=office.id, manager_id=None, work_email="luca.followup@example.test",
+        work_phone=None, slack_handle=None, timezone=None,
+        employment_type=EmploymentType.fte, hire_date=date(2021, 1, 1), cost_centre=None,
+        personal_mobile=None, availability_status=AvailabilityStatus.available,
+        away_until=None, delegate_id=None, bio=None, photo_url=None, is_active=True,
+    )
+    db_session.add(luca)
+    db_session.flush()
+    db_session.add(EmployeeSkill(
+        employee_id=luca.id, skill_id=python.id, level=SkillLevel.working,
+        source=SkillSource.self_reported, verified_at=None,
+    ))
+    project = Project(
+        name="Data SQL Upskill Fixture",
+        type=ProjectType.project,
+        description="SQL analytics pipeline and data engineering warehouse work.",
+        owning_unit_id=unit.id, owner_id=luca.id,
+        classification=ProjectClassification.internal,
+    )
+    db_session.add(project)
+    db_session.flush()
+    db_session.add(EmployeeProject(
+        employee_id=luca.id, project_id=project.id, role="Engineer",
+        start_date=date(2024, 1, 1), end_date=None,
+    ))
+    db_session.commit()
+
+    caller = AuthenticatedUser(id="hr-1", role="hr", name="HR")
+    history = [HistoryTurn(
+        message="Who should be trained next for SQL?",
+        tool_call="find_skill_trainees",
+        arguments={"skills": ["SQL"]},
+    )]
+    raw = answer(db_session, caller, "who is luca", view_mode="work", history=history)
+    assert raw["tool_call"] == "brief_person"
+    assert raw["arguments"]["person"] == "Luca Followup"
+    assert raw["message"]
+    assert "No one in the directory matched" not in (raw["message"] or "")

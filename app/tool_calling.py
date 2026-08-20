@@ -600,6 +600,8 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
     ("what courses is Priya Kelly missing", "recommend_training", {"person": "Priya Kelly"}),
     ("brief me on Diego Hernandez", "brief_person", {"person": "Diego Hernandez"}),
     ("give me a quick brief on Katherine Byrne", "brief_person", {"person": "Katherine Byrne"}),
+    ("who is Luca OBrien", "find_people", {"name": "Luca OBrien"}),
+    ("who is luca", "find_people", {"name": "luca"}),
     ("show me my own project history", "get_person", {"person_id": "self"}),
     ("what skills do I have on file", "get_person", {"person_id": "self"}),
     ("pull up my profile", "get_person", {"person_id": "self"}),
@@ -1095,6 +1097,17 @@ _BRIEF_PATTERN = re.compile(
     r"tell\s+me\s+about|profile\s+brief\s+(?:for|on))\s+(?P<name>.+?)[\s?.!]*$",
     re.IGNORECASE,
 )
+# "who is Luca" / "who's Priya Sharma" — identity lookup, not relationship.
+# Excludes "who is my/the/on/above..." which other branches own.
+_WHO_IS_PERSON_PATTERN = re.compile(
+    r"^(?:who\s+is|who's)\s+(?P<name>.+?)[\s?.!]*$",
+    re.IGNORECASE,
+)
+_WHO_IS_NOT_A_PERSON = frozenset({
+    "my", "the", "on", "above", "below", "in", "our", "a", "an",
+    "manager", "backup", "delegate", "cover", "covering", "responsible",
+    "available", "free", "next",
+})
 # "Who should be trained next for Terraform?" / "who should learn Terraform
 # next" — org skill upskilling from related project work, not compliance
 # courses (recommend_training) and not people already Learning the skill.
@@ -1138,6 +1151,28 @@ def _extract_escalation_args(message: str) -> dict | None:
     if re.search(r"\bescalat", text):
         return {"person": "self"}
     return None
+
+
+def _extract_who_is_person(message: str) -> str | None:
+    """Bare identity questions: 'who is Luca', 'who's Priya Sharma'.
+
+    Returns the extracted name for find_people(name=...), or None when the
+    phrasing is a relationship/project question other branches handle.
+    """
+    m = _WHO_IS_PERSON_PATTERN.match(message.strip())
+    if not m:
+        return None
+    name = _clean_extracted_name(m.group("name"))
+    if not name or not _is_clean_subject(name):
+        return None
+    tokens = [t.strip(",.'\"").lower() for t in name.split()]
+    if not tokens or tokens[0] in _WHO_IS_NOT_A_PERSON:
+        return None
+    if any(t in _WHO_IS_NOT_A_PERSON for t in tokens[1:] if t in {
+        "manager", "backup", "delegate", "cover", "covering", "responsible",
+    }):
+        return None
+    return name
 
 
 def _extract_skill_training_skills(message: str) -> list[str] | None:
@@ -1336,6 +1371,13 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     if brief_subject:
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="brief_person", arguments={"person": brief_subject}))
+    who_is = _extract_who_is_person(message)
+    if who_is:
+        # find_people(name=), not query=: the last-resort fallback used to
+        # pass the whole "who is luca" string as query and match nobody,
+        # while name="luca" correctly returns the Lucias.
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": who_is}))
     if describes_a_problem(text):
         # The WHOLE message goes through as `problem`, not an extracted
         # keyword: project_search matches the description against what
@@ -2589,6 +2631,72 @@ def _filter_referring_result(message: str, result: Any) -> Any:
     return result
 
 
+def _name_tokens_match(query: str, full_name: str) -> bool:
+    q = (query or "").strip().lower()
+    full = (full_name or "").strip().lower()
+    if not q or not full:
+        return False
+    if q == full or full.startswith(q + " ") or full.endswith(" " + q) or f" {q} " in f" {full} ":
+        return True
+    q_parts = q.split()
+    name_parts = full.split()
+    if len(q_parts) == 1:
+        return q_parts[0] == name_parts[0] or q_parts[0] in name_parts
+    return all(part in name_parts for part in q_parts)
+
+
+def _match_people_by_name(query: str, people: list) -> list:
+    return [p for p in people if _name_tokens_match(query, getattr(p, "full_name", "") or "")]
+
+
+def _answer_person_from_prior(
+    db: Session, caller: AuthenticatedUser, message: str,
+    history: list[HistoryTurn], view_mode: ViewMode,
+) -> dict | None:
+    """'who is luca' after a result set that already named Luca OBrien —
+    prefer the person from prior results over a cold directory first-name
+    search that returns every Luca."""
+    who = _extract_who_is_person(message)
+    if not who:
+        return None
+    last = next((t for t in reversed(history) if t.tool_call), None)
+    if last is None or not last.tool_call:
+        return None
+    replay = ResolvedToolCall(
+        name=last.tool_call,
+        arguments=dict(last.arguments or {}),
+        routed_via="followup_person",
+    )
+    try:
+        prior = execute_tool_call(db, caller, replay, view_mode)
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not isinstance(prior, list) or not prior:
+        return None
+    matches = _match_people_by_name(who, prior)
+    if not matches:
+        return None
+    if len(matches) == 1:
+        person_name = matches[0].full_name
+        brief = brief_person(db, caller, person=person_name, view_mode=view_mode)
+        _write_audit(db, caller, message, 1, routed_via="followup_person")
+        return {
+            "message": _phrase_or_template(message, "brief_person", {"person": person_name}, brief),
+            "tool_call": "brief_person",
+            "arguments": {"person": person_name},
+            "result": brief,
+        }
+    # Several people in the prior set share that first name — show those,
+    # not the whole-directory Luca list.
+    _write_audit(db, caller, message, len(matches), routed_via="followup_person")
+    return {
+        "message": _phrase_or_template(message, "find_people", {"name": who}, matches),
+        "tool_call": "find_people",
+        "arguments": {"name": who},
+        "result": matches,
+    }
+
+
 def _phrase_or_template(question: str, tool_name: str, arguments: dict, result: Any) -> str | None:
     """Real-model phrasing when configured; otherwise the same deterministic
     templates /search assisted mode uses. Lazy-imports _phrase to avoid the
@@ -2635,6 +2743,10 @@ def answer(
     nothing here is carried past what caller and db already are.
     """
     history = history or []
+
+    person_followup = _answer_person_from_prior(db, caller, message, history, view_mode)
+    if person_followup is not None:
+        return person_followup
 
     # Referring follow-up ("which of those are available?") — re-run the
     # prior tool with fresh auth, then narrow by availability. Only the
