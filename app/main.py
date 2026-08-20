@@ -11,14 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 # --- OpenTelemetry Imports ---
-from opentelemetry import metrics, trace
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
@@ -185,42 +177,6 @@ from app.writes import remove_project_history as remove_project_history_service
 from app.writes import update_employee as update_employee_service
 from app.writes import upsert_project_history as upsert_project_history_service
 
-# Telemetry setup runs at import, once, and is allowed to fail without
-# taking the app with it -- observability is not worth a startup crash. The
-# try/except is the whole point of that, so nothing OTel-related belongs
-# outside it.
-#
-# There used to be a second copy of the metrics half below this block,
-# unguarded, building another exporter/reader/provider and calling
-# set_meter_provider again. The SDK refuses the second registration
-# ("Overriding of current MeterProvider is not allowed"), so it never took
-# effect -- but the reader was still constructed and still started its
-# background export thread, leaving an orphaned exporter polling every 15
-# seconds against a provider nothing reads, plus a warning on every boot.
-# Measured before removal: two PeriodicExportingMetricReader instances per
-# process, one of them useless.
-#
-# Being outside the try/except was the worse half. A raising exporter
-# constructor there would have propagated out of `import app.main` and
-# stopped uvicorn from starting at all -- the exact failure the guard exists
-# to prevent, reintroduced a dozen lines below it.
-try:
-    # Metrics
-    metric_exporter = OTLPMetricExporter()
-    reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=15000)
-    metric_provider = MeterProvider(metric_readers=[reader])
-    metrics.set_meter_provider(metric_provider)
-
-    # Traces
-    trace_exporter = OTLPSpanExporter()
-    trace_provider = TracerProvider()
-    trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
-    trace.set_tracer_provider(trace_provider)
-except Exception as e:
-    print(f"Failed to initialize OpenTelemetry: {e}")
-
-
-# --- Instrument the App ---
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Fails loudly at startup if a DB column has no app/registry.py entry
@@ -247,7 +203,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=_lifespan,
 )
-FastAPIInstrumentor.instrument_app(app)
 # Local frontend dev server only (Vite default port) — the API has no
 # cookie-based session to protect against CSRF here, auth is a header the
 # browser never attaches automatically.

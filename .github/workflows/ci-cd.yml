@@ -48,7 +48,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Run pytest
         run: pytest
@@ -207,7 +207,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Migrate the pinned fixture to head
         env:
@@ -298,26 +298,8 @@ jobs:
       # from the same App Service as the API, so relative fetches (see
       # frontend/src/api.ts) reach it on the same origin. No CORS, no
       # hardcoded backend URL baked into the bundle.
-      #
-      # The two VITE_OTEL_* values reuse the SAME repository secrets the
-      # backend's app settings already use below, rather than a second pair
-      # that could drift out of step with them. They are build-time only:
-      # Vite inlines them, so they end up readable in the shipped bundle.
-      # That is inherent to browser-side OTLP and is why the token must be
-      # write-only and scoped to trace ingestion -- see frontend/src/otel.ts.
-      # Putting them here rather than in the source gets the value out of
-      # git; it does not make it private at runtime, and nothing should be
-      # put through this pair that needs to be.
-      #
-      # Set ONLY here. initTracing() no-ops without an endpoint, so every
-      # other build -- a developer's local one, the PR typecheck job --
-      # neither needs these secrets nor tries to export to a collector that
-      # is not theirs.
       - name: Build frontend
         working-directory: frontend
-        env:
-          VITE_OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.GRAFANA_OTLP_ENDPOINT }}
-          VITE_OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.GRAFANA_OTLP_HEADERS }}
         run: |
           npm ci
           VITE_API_BASE= npm run build
@@ -388,9 +370,6 @@ jobs:
                 OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
                 SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
                 SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}" \
-                OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
-                OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
-                OTEL_SERVICE_NAME="quadrant-directory-api" \
                 ALLOW_DEV_AUTH=1; then
               echo "App settings applied."
               break
