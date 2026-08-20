@@ -93,6 +93,7 @@ from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
+from app.team_builder import TeamBuildUnavailable, build_team
 from app.workforce_reports import ReportUnavailable
 from app.workforce_reports import generate_report as generate_report_service
 from app.skill_routes import RouteDenied
@@ -124,6 +125,8 @@ from app.schemas import (
     TrainingRoster,
     WorkforceInsight,
     WorkforceReport,
+    TeamBuildRequest,
+    TeamProposal,
     WorkforceReportRequest,
     FinalizeDocumentRequest,
     LoginRequest,
@@ -1283,6 +1286,48 @@ def workforce_report_route(
     try:
         return generate_report_service(db, user, body.query, mode)
     except ReportUnavailable as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# AI Team Builder — propose a project team from a natural-language brief.
+#
+# Sits on the same gate as every other dashboard route. The ordering inside
+# app/team_builder.py's build_team is the security property: resolve_scope
+# runs on the CALLER before the brief reaches the planner, and the candidate
+# pool is built from that scope alone.
+# ---------------------------------------------------------------------------
+
+@app.post("/team/build", response_model=TeamProposal)
+def build_team_route(
+    body: TeamBuildRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamProposal:
+    """Turn a project brief into a proposed team, drawn only from people the
+    caller is already authorized to see.
+
+    The model converts the brief into roles and required skills. It does not
+    choose people, does not score them, and produces no statistic: every
+    percentage in the response is computed in app/team_builder.py from
+    database rows. The plan it returns has no scope field, so a brief cannot
+    widen the candidate pool however it is phrased — HR in work mode builds
+    from the organization, a manager builds from their reporting line, and
+    `scope` in the response says which.
+
+    Stateless. `assignments` is how Replace works: re-post the same brief
+    with {role_index: employee_id} and coverage, gaps and concentration
+    risks are all recalculated against the substituted team.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        return build_team(
+            db, user, body.brief, mode,
+            constraints_text=body.constraints,
+            assignments=body.assignments,
+        )
+    except TeamBuildUnavailable as e:
         raise HTTPException(status_code=403, detail=str(e))
 
 

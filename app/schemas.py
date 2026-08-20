@@ -1492,3 +1492,159 @@ class WorkforceReportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# AI Team Builder — app/team_builder.py
+#
+# Every field below is either copied from an authorized row or computed in
+# that module. Nothing here is written by a model except `narrative`, whose
+# numerals are checked back against the computed facts before it is kept
+# (`narrative_source` says whether it survived).
+# ---------------------------------------------------------------------------
+
+class CandidateSkill(BaseModel):
+    """One skill a proposed candidate holds.
+
+    `required` distinguishes "this is why they were picked" from "this is
+    extra they happen to bring" — the second is shown as context and never
+    contributes to the match score.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    level: Literal["Expert", "Working", "Learning"]
+    required: bool
+
+
+class CandidateMatch(BaseModel):
+    """One person proposed for one role.
+
+    Deliberately limited to app/people.py's SUMMARY_FIELDS plus skills and
+    project names — the same always-visible set a bulk directory listing
+    returns. No ABAC/RBAC-gated field appears here, so a team proposal can
+    never disclose more than the caller could read one profile at a time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    #: Shown, never scored — see the module docstring in app/team_builder.py
+    #: for why this column cannot rank anything in the current data.
+    availability_status: str
+    match_pct: int
+    matched_skills: list[CandidateSkill] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    relevant_projects: list[str] = Field(default_factory=list)
+    #: Built from the same values that produced match_pct, so an explanation
+    #: cannot drift from its score.
+    explanation: list[str] = Field(default_factory=list)
+
+
+class ProposedRole(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    required_skills: list[str] = Field(default_factory=list)
+    #: None when nobody in the caller's authorized pool holds any of the
+    #: role's required skills. An unfilled role is a real answer, not an error.
+    candidate: CandidateMatch | None = None
+    #: Ranked replacements, already excluding everyone assigned elsewhere on
+    #: this team. Shipped with the proposal so Replace needs no round trip.
+    alternatives: list[CandidateMatch] = Field(default_factory=list)
+
+
+class TeamCoverageSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    #: None when no proposed member holds this skill at all.
+    best_level: Literal["Expert", "Working", "Learning"] | None = None
+    holder_count: int
+    holders: list[str] = Field(default_factory=list)
+
+
+class TeamConcentrationRisk(BaseModel):
+    """A skill whose capability sits mostly with one person."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    employee_id: str
+    full_name: str
+    share_pct: int
+    holder_count: int
+
+
+class TeamCoverage(BaseModel):
+    """Computed from the database, never from the model.
+
+    `covered` and `coverage_pct` answer different questions on purpose: a
+    skill held only at Learning contributes its partial weight to the
+    percentage but is not listed as covered, because "the team has some
+    exposure to this" and "somebody here can do this" are not the same
+    statement.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    coverage_pct: int
+    skills: list[TeamCoverageSkill] = Field(default_factory=list)
+    covered: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    level_counts: dict[str, int] = Field(default_factory=dict)
+    risks: list[TeamConcentrationRisk] = Field(default_factory=list)
+
+
+class TeamConstraintsOut(BaseModel):
+    """What the backend understood from the constraints box, echoed back.
+
+    Returned so the UI can say which constraints were actually applied — a
+    constraint that was typed and not understood is worse than one that was
+    never typed, and silence would hide the difference.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefer_expert: bool = False
+    minimize_concentration: bool = False
+    max_per_department: int | None = None
+    prefer_experience_with: list[str] = Field(default_factory=list)
+    applied: bool = False
+
+
+class TeamProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Whose people this team was drawn from. Resolved from the CALLER before
+    #: the brief is read; `substituted` is never set by anything in the brief.
+    scope: DashboardScope
+    project_type: str
+    roles: list[ProposedRole] = Field(default_factory=list)
+    coverage: TeamCoverage
+    constraints: TeamConstraintsOut
+    #: Skills the planner named that this directory does not track. Surfaced
+    #: because "nobody has it" and "we don't record it" are different answers.
+    unrecognised_skills: list[str] = Field(default_factory=list)
+    plan_source: Literal["model", "derived"]
+    narrative: str = ""
+    narrative_source: Literal["model", "derived"] = "derived"
+    #: How many authorized people the match ran over. Lets the UI say "ranked
+    #: across your 34 reports" rather than implying the whole company.
+    candidate_pool_size: int = 0
+
+
+class TeamBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brief: str = Field(min_length=1, max_length=1000)
+    #: Free-text constraints, parsed into TeamConstraintsOut.
+    constraints: str = Field(default="", max_length=500)
+    #: Manual replacements as {role_index: employee_id}. Re-posting the same
+    #: brief with these set is how Replace recalculates coverage — the server
+    #: keeps no proposal state between calls.
+    assignments: dict[int, str] = Field(default_factory=dict)
