@@ -930,6 +930,22 @@ _INJECTION_PATTERNS = re.compile(
 # router's return value ever let a later branch, or the real model, see
 # the text at all. Matches "gap" and "gaps" ("what are our gaps").
 _SKILL_GAP_PATTERN = re.compile(r"\bgaps?\b", re.IGNORECASE)
+# The SKILL inside a coverage question, rather than the whole sentence.
+# skill_gap resolves its arguments with resolve_skill(), which matches a
+# skill NAME -- so handing it the raw message made every coverage question
+# report `recognized=False, gap=True`: "do we have a skill gap in
+# Terraform" answered "not recognized, no experts" about a skill 12 people
+# hold at Expert. Confidently wrong, and wrong in the direction that looks
+# like a real finding, which is the worst shape for a demo answer.
+#
+# No match means DEFER (None), never "pass the sentence through and let
+# resolve_skill fail on it" -- same rule as every other branch here: the
+# model gets a real shot at anything the regex can't parse.
+_SKILL_LIST_SEPARATOR = re.compile(r"\s*(?:,|&|\band\b|\bor\b)\s*", re.IGNORECASE)
+_SKILL_GAP_SUBJECT = re.compile(
+    r"\b(?:covered\s+(?:on|in|for)|gaps?\s+(?:in|on|for))\s+(?P<skill>.+?)[\s?.!]*$",
+    re.IGNORECASE,
+)
 
 # Mode 3 (find_experts): phrasings that unambiguously describe a PROBLEM
 # the caller is facing, rather than naming something to filter on.
@@ -1023,6 +1039,18 @@ _MANAGER_CHAIN_TOKEN = re.compile(r"\bmanager'?s?\b", re.IGNORECASE)
 # being read as a relationship question about somebody called
 # "engineering".
 _THIRD_PARTY_MANAGER = re.compile(r"\bmanager\b|\bmanager's\b|\bboss\b", re.IGNORECASE)
+# "who's on <name>'s team" -- a NAMED third party's direct reports.
+#
+# Needed as its own pattern because this phrasing falls between two
+# branches and was being answered by the wrong one. The project-owner
+# branch fires on "who's on ...", captures "Min-jun Sanchez's team" as a
+# PROJECT name, and answers "couldn't find an owner for that"; the
+# relationship branch below would handle it correctly but never runs,
+# because the text contains neither "report" nor "manager". _SELF_TEAM
+# covers only the first-person form ("my team"), which is why the
+# self-referential branch above already gets this right.
+_THIRD_PARTY_TEAM = re.compile(
+    r"\b(?P<name>[^,?.!]+?)'s\s+(?:team|direct\s+reports|reports)\b", re.IGNORECASE)
 
 # Extracts the named subject of a third-party relationship question so it
 # can be looked up structurally (find_people(name=...)) instead of thrown
@@ -1164,8 +1192,20 @@ _CHAIN_INDICATOR = re.compile(
 # "what is/what's/tell me" were missing, so "what is X's reporting chain"
 # left the interrogative attached to the name and looked up an employee
 # literally called "what is X".
+# "who's on X's team" adds a preposition the other filler forms don't have
+# ("who is X" strips cleanly, "who's on X" did not), so the subject came
+# through as "Who's on Min-jun Sanchez" and matched 13 people by fuzzy name
+# instead of resolving the one that was named.
+# Imperative wrappers around a question that is otherwise well-formed.
+# Kept separate from _LEADING_FILLER (below) because this set is stripped
+# from the whole message before the router's keyword branches run, where
+# removing an interrogative opener would delete a branch's own trigger.
+_IMPERATIVE_PREFIX = re.compile(
+    r"^(?:show\s+me\s+|tell\s+me\s+|give\s+me\s+|pull\s+up\s+"
+    r"|list\s+|find\s+|everyone\s+)+", re.IGNORECASE)
 _LEADING_FILLER = re.compile(
-    r"^(?:show\s+me\s+|tell\s+me\s+|what(?:\s+is|'s)\s+|who\s+(?:is|does|are)\s+"
+    r"^(?:show\s+me\s+|tell\s+me\s+|what(?:\s+is|'s)\s+"
+    r"|who(?:'s|s|\s+is|\s+are)?\s+(?:on|in)\s+|who\s+(?:is|does|are)\s+"
     r"|list\s+|find\s+|everyone\s+)+", re.IGNORECASE)
 _CHAIN_ABOVE_BELOW_PATTERN = re.compile(
     r"\b(?P<direction>above|below)\s+(?:employee\s+)?(?P<name>.+?)(?:,|\s+in\s+the\s+chain|\s*\?|$)",
@@ -1240,6 +1280,28 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     ambiguous phrasing is exactly what returning None is for, not a case
     to widen a regex for.
     """
+    # Leading filler is stripped from the WHOLE message before any pattern
+    # runs, not just from an already-extracted name.
+    #
+    # Several extractors are anchored at string start (_REPORTS_TO_NAME_
+    # PATTERN's own `^...(?:who\s+)?reports?\s+to`), so an imperative
+    # wrapper stopped them matching at all: "who reports to Min-jun
+    # Sanchez?" routed and answered with 4 people, while "list everyone who
+    # reports to Min-jun Sanchez" matched nothing, failed _wants_assistant's
+    # router check, fell to find_people's name-only SQL path, and rendered
+    # an empty page. Same question, same data, and sentence MOOD decided
+    # which one got an answer -- RC5 (ARCHITECTURE_2.md §2) in a second
+    # guise, after punctuation stopped deciding it.
+    #
+    # Deliberately NOT _LEADING_FILLER, which is the wider set used on an
+    # already-extracted NAME. That set also strips interrogative openers
+    # ("who's on ..."), and several branches below key on exactly those as
+    # keywords -- stripping them here turned "Who's on the Billing API?"
+    # into "the Billing API?", which matches no branch at all and made a
+    # working project question defer. Imperative wrappers are noise;
+    # interrogative forms are load-bearing, and only the first kind is
+    # safe to remove before the keyword branches run.
+    message = _IMPERATIVE_PREFIX.sub("", message.strip()).strip() or message.strip()
     text = message.lower()
     if _INJECTION_PATTERNS.search(text):
         return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
@@ -1281,8 +1343,35 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     if "scarc" in text:
         return AssistantTurn(tool_call=ResolvedToolCall(name="skill_scarcity", arguments={}))
     if _SKILL_GAP_PATTERN.search(text) or "covered on" in text:
+        gap_match = _SKILL_GAP_SUBJECT.search(message)
+        if gap_match is None:
+            # Matched a coverage keyword but the skill itself isn't
+            # extractable ("what are our gaps?") -- defer rather than ask
+            # about a skill named after the whole question.
+            return None
+        # `required_skills` is a LIST, and "gaps on Rust and Terraform" names
+        # two skills -- passing the conjunction through as one string asks
+        # resolve_skill() for a skill literally called "Rust and Terraform"
+        # and reports both as unrecognised.
+        skills = [
+            cleaned for cleaned in (
+                _clean_extracted_name(part)
+                for part in _SKILL_LIST_SEPARATOR.split(gap_match.group("skill"))
+            ) if cleaned
+        ]
+        if not skills:
+            return None
         return AssistantTurn(tool_call=ResolvedToolCall(
-            name="skill_gap", arguments={"required_skills": [message.strip(" ?.!")]}))
+            name="skill_gap", arguments={"required_skills": skills}))
+    # Checked BEFORE the project-owner branch, which would otherwise
+    # swallow "who's on X's team" and look for a project by that name.
+    team_match = _THIRD_PARTY_TEAM.search(message)
+    if team_match:
+        team_subject = _clean_extracted_name(team_match.group("name"))
+        if team_subject and _is_clean_subject(team_subject):
+            return AssistantTurn(tool_call=ResolvedToolCall(
+                name="get_org_chain",
+                arguments={"person": team_subject, "direction": "down", "depth": 1}))
     if "owns" in text or "responsible for" in text or "who is on" in text or "who's on" in text:
         project = re.sub(
             r"^(whos?|who is|who's)\s+(owns?|responsible for|on)\s+(the\s+)?", "", message, flags=re.IGNORECASE
@@ -1543,6 +1632,68 @@ _AVAILABILITY_WORDS = ("available", "away", "restricted")
 # invented single-word name) are the cost of staying this simple.
 _NAME_SPAN = re.compile(r"\b[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){1,2}\b")
 
+# A phrasing that describes a non-empty list of PEOPLE has to actually
+# name one of them. Stated as a positive requirement rather than as a
+# blocklist of denial phrasings, because the blocklist version lost: it
+# caught "No one is listed here for Platform Engineering" and the very
+# next sample produced "I don't have any matches for Platform
+# Engineering", which is the same failure wearing different words. There
+# is no bounded set of ways to say "nothing matched"; there IS a bounded
+# set of names that must appear if the sentence is about these rows.
+_MIN_NAME_TOKEN = 3
+
+
+def _ignores_a_non_empty_result(text: str, sanitized_result: Any) -> bool:
+    """True when the model's prose names nobody from a result that
+    actually contains people -- i.e. it is not describing this result.
+
+    The failure this closes was measured, not hypothetical: "Who works in
+    Platform Engineering?" returns 50 correct people, because an org_unit
+    filter matches that unit AND every team nested beneath it -- so each
+    person's own org_unit reads "Mobile Team C", never the unit that was
+    asked about. The model compared the two, decided the rows must be
+    wrong, and answered "No one is listed here for Platform Engineering"
+    over a full, correct result set: the single worst shape an answer can
+    have, since it contradicts the result cards rendered beside it.
+    Measured 2 times in 6 on identical input. phrase_answer's system
+    prompt now also states that results are pre-filtered and must not be
+    re-adjudicated, which moves that rate but cannot pin it to zero --
+    a demo-visible contradiction needs a deterministic floor, not a
+    better average.
+
+    Scoped to lists whose entries are person records, which is what keeps
+    it safe: skill_gap returns a non-empty list of coverage rows and
+    legitimately says "no experts, and no one working with it", a claim
+    about the CONTENT of a row rather than about whether rows came back.
+    Those rows carry no full_name, so they are never in scope here.
+
+    Token-level matching, for the same reason _phrasing_is_grounded checks
+    invented names word-by-word rather than phrase-by-phrase: "Sean
+    Wilson's reports" and "Sean" both count as naming Sean Wilson, and a
+    surname alone is a normal way to refer back to someone already
+    introduced.
+
+    Failing this returns None from phrase_answer, so the deterministic
+    _phrase() template answers instead -- it is built from these same rows
+    structurally and so cannot claim they are absent.
+    """
+    if not isinstance(sanitized_result, list) or not sanitized_result:
+        return False
+    if not all(isinstance(item, dict) and "full_name" in item for item in sanitized_result):
+        return False
+    lowered = text.lower()
+    for item in sanitized_result:
+        for field in ("full_name", "preferred_name"):
+            value = item.get(field)
+            if not isinstance(value, str):
+                continue
+            for token in re.split(r"[^\w'-]+", value):
+                if len(token) >= _MIN_NAME_TOKEN and re.search(
+                    rf"\b{re.escape(token.lower())}\b", lowered
+                ):
+                    return False
+    return True
+
 
 def _collect_strings(value: Any, into: set[str]) -> None:
     if isinstance(value, str):
@@ -1605,6 +1756,12 @@ def _phrasing_is_grounded(text: str, sanitized_result: Any, arguments: dict | No
     Engineering" the skill vs. "Site Reliability Engineer" the job title)
     was rejected as if invented, silently dropping a real answer.
     """
+    # Cheapest check first, and the only one that fails on prose the model
+    # was structurally entitled to write from this data -- everything below
+    # is about invented content, this is about a denial of real content.
+    if _ignores_a_non_empty_result(text, sanitized_result):
+        return False
+
     items = sanitized_result if isinstance(sanitized_result, list) else (
         [sanitized_result] if sanitized_result is not None else [])
     real_names: set[str] = set()
@@ -1696,6 +1853,15 @@ _PHRASING_SYSTEM_PROMPT = (
     "breaks.\n\n"
     "Otherwise -- a single result, or a `result` that isn't a list of candidates "
     "-- answer directly in one or two sentences.\n\n"
+    "`result` IS the answer: it was already matched and filtered server-side "
+    "against `arguments` before you saw it. Describe what came back -- never "
+    "re-adjudicate whether an entry really satisfies the request, and never tell "
+    "the caller the entries don't match what they asked for. A filter is not "
+    "always a literal string equality: an `org_unit` matches that unit AND every "
+    "team nested beneath it, so an entry whose own team is a sub-team of the one "
+    "asked about is a correct match, not a mismatch. If a non-empty `result` "
+    "looks to you like it contradicts `arguments`, it doesn't -- summarise the "
+    "entries and say nothing about the discrepancy.\n\n"
     "If `result` is null, an empty list, or otherwise shows nothing matched, say "
     "that plainly. No preamble, no mention that you are an AI, no restating the "
     "question, no disclaimers."

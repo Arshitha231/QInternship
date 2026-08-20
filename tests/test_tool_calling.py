@@ -1769,3 +1769,137 @@ def test_is_clean_subject_rejects_sentences_and_accepts_names():
     assert not tool_calling._is_clean_subject("which of Sean Wilson")
     # A backstop for anything the token list doesn't name.
     assert not tool_calling._is_clean_subject("one two three four five six")
+
+
+# ---------------------------------------------------------------------------
+# The deterministic router's ARGUMENTS, not just which tool it picks. Both
+# regressions below routed to the RIGHT tool and then asked it the wrong
+# question, which is why "assert turn.tool_call.name == ..." alone missed
+# them: a confidently wrong answer, not an error.
+# ---------------------------------------------------------------------------
+
+def test_skill_gap_extracts_the_skill_not_the_whole_question():
+    # Regression: required_skills was [the entire message], so skill_gap's
+    # resolve_skill() looked for a skill named "Are we covered on Terraform"
+    # and reported recognized=False/gap=True -- "we have no Terraform" about
+    # a skill 12 people hold at Expert.
+    turn = _deterministic_resolve("Are we covered on Terraform?")
+    assert turn.tool_call.name == "skill_gap"
+    assert turn.tool_call.arguments == {"required_skills": ["Terraform"]}
+
+    turn = _deterministic_resolve("do we have a skill gap in Kubernetes")
+    assert turn.tool_call.arguments == {"required_skills": ["Kubernetes"]}
+
+
+def test_skill_gap_splits_a_conjunction_into_separate_skills():
+    turn = _deterministic_resolve("what are our gaps on Rust and Terraform")
+    assert turn.tool_call.name == "skill_gap"
+    assert turn.tool_call.arguments == {"required_skills": ["Rust", "Terraform"]}
+
+
+def test_skill_gap_defers_when_no_skill_is_named():
+    # A coverage keyword with nothing extractable after it defers to the
+    # model rather than asking about a skill named after the question.
+    assert _deterministic_resolve("what are our gaps?") is None
+
+
+def test_named_third_party_team_is_an_org_chain_not_a_project_lookup():
+    # Regression: the project-owner branch fires on "who's on ...", so this
+    # was answered as a search for a PROJECT called "Min-jun Sanchez's team"
+    # ("couldn't find an owner for that"). _SELF_TEAM covers only the
+    # first-person form, so nothing downstream caught it either.
+    for text in ("Who's on Min-jun Sanchez's team?",
+                 "who is on Min-jun Sanchez's team",
+                 "Min-jun Sanchez's direct reports"):
+        turn = _deterministic_resolve(text)
+        assert turn.tool_call.name == "get_org_chain", text
+        assert turn.tool_call.arguments == {
+            "person": "Min-jun Sanchez", "direction": "down", "depth": 1}, text
+
+
+def test_project_questions_still_reach_find_project_owner():
+    # The team branch above must not swallow an ordinary project question.
+    for text in ("Who's on the Billing API?", "who owns the Billing API"):
+        turn = _deterministic_resolve(text)
+        assert turn.tool_call.name == "find_project_owner", text
+        assert turn.tool_call.arguments == {"name": "Billing API"}, text
+
+
+# ---------------------------------------------------------------------------
+# _ignores_a_non_empty_result: a phrasing that names nobody from a
+# non-empty list of people is not describing that list.
+# ---------------------------------------------------------------------------
+
+def _person_rows():
+    return [{"id": "1", "full_name": "Aditi Nguyen", "job_title": "Software Engineer",
+             "org_unit": "Mobile Team C"},
+            {"id": "2", "full_name": "Advait Kang", "job_title": "Senior Software Engineer",
+             "org_unit": "Backend Team B"}]
+
+
+# What find_people was actually called with -- the org unit the caller
+# asked about is legitimate vocabulary for the answer even though no row
+# repeats it, which is the whole subtree-match case (see phrase_answer).
+_ORG_ARGS = {"org_unit": "Platform Engineering"}
+
+
+def test_phrasing_that_denies_a_non_empty_people_result_is_rejected():
+    # Measured live: an org_unit filter matches the unit AND every team
+    # under it, so no row's own org_unit equals the unit asked about, and
+    # the model concluded the rows were wrong.
+    for denial in ("No one is listed here for Platform Engineering.",
+                   "I don't have any matches for Platform Engineering.",
+                   "There are no people in Platform Engineering."):
+        assert not tool_calling._phrasing_is_grounded(denial, _person_rows(), _ORG_ARGS), denial
+
+
+def test_phrasing_that_names_someone_from_the_result_is_kept():
+    text = ("Here are some people in Platform Engineering: Aditi Nguyen — "
+            "Software Engineer on Mobile Team C.")
+    assert tool_calling._phrasing_is_grounded(text, _person_rows(), _ORG_ARGS)
+
+
+def test_a_surname_alone_counts_as_naming_someone():
+    assert tool_calling._phrasing_is_grounded("Nguyen leads that work.", _person_rows(), _ORG_ARGS)
+
+
+def test_skill_coverage_rows_may_legitimately_say_no_one():
+    # skill_gap returns a non-empty list whose rows carry no full_name, and
+    # "no one working with it" there is a fact ABOUT a row, not a claim that
+    # no rows came back. Must stay out of scope for the check above.
+    rows = [{"skill": "Rust", "recognized": True, "expert_count": 0,
+             "working_count": 0, "learning_count": 0, "gap": True}]
+    assert tool_calling._phrasing_is_grounded(
+        "Rust is a gap: no experts and no one currently working with it.", rows)
+
+
+def test_an_empty_result_may_still_be_phrased_as_empty():
+    assert tool_calling._phrasing_is_grounded("No one matched that search.", [])
+
+
+def test_imperative_phrasing_routes_the_same_as_the_question_form():
+    # Regression: several extractors are anchored at string start, so an
+    # imperative wrapper stopped them matching -- "who reports to X?"
+    # answered with the right people while "list everyone who reports to X"
+    # matched nothing, failed the _wants_assistant router check, and
+    # rendered an empty page. Sentence MOOD decided which one got an
+    # answer, which is RC5 in a second guise.
+    for imperative, question in (
+        ("list everyone who reports to Sean Wilson", "who reports to Sean Wilson"),
+        ("tell me who owns the Billing API", "who owns the Billing API"),
+        ("show me who can mentor me in Terraform", "who can mentor me in Terraform"),
+    ):
+        left, right = _deterministic_resolve(imperative), _deterministic_resolve(question)
+        assert right is not None, question
+        assert left is not None, imperative
+        assert left.tool_call.name == right.tool_call.name, imperative
+        assert left.tool_call.arguments == right.tool_call.arguments, imperative
+
+
+def test_stripping_imperatives_leaves_interrogative_triggers_intact():
+    # The whole-message strip must not remove an opener a branch keys on:
+    # "who's on ..." IS the project branch's trigger, so stripping it left
+    # "the Billing API?", which matches nothing.
+    turn = _deterministic_resolve("Who's on the Billing API?")
+    assert turn.tool_call.name == "find_project_owner"
+    assert turn.tool_call.arguments == {"name": "Billing API"}

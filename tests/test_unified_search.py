@@ -878,3 +878,72 @@ def test_other_tools_arguments_are_left_alone():
     pairs -- rewriting them would be churn, not clarity."""
     args = {"person": "Zain Nguyen", "direction": "up", "depth": 1}
     assert _humanize_args("get_org_chain", args) == args
+
+
+# ---------------------------------------------------------------------------
+# Which phrasing wins.
+#
+# phrase_answer (the model) is normally preferred over _phrase (a template),
+# and should be -- it reads better and it only ever sees an already
+# permission-filtered result. Two results break that rule, and both were
+# found by asking the DEPLOYED app real questions rather than by reading the
+# code, so both get a test.
+# ---------------------------------------------------------------------------
+
+def test_the_model_may_not_phrase_an_ambiguous_name():
+    """_phrase_ambiguous_person names the candidates by title and team and
+    asks which one. Asked "who does Giulia Iyer report to", the model wrote
+    "There are two people named Giulia Iyer in the data, and this result
+    doesn't include their managers" -- fluent, true, and useless: it names
+    neither and asks nothing the caller can act on."""
+    from app.schemas import AmbiguousPersonMatch, PersonChoice
+    from app.unified_search import _model_cannot_phrase
+
+    match = AmbiguousPersonMatch(query="Giulia Iyer", matches=[
+        PersonChoice(id="a", full_name="Giulia Iyer", job_title="Account Executive",
+                     org_unit="Enterprise Sales Team"),
+        PersonChoice(id="b", full_name="Giulia Iyer", job_title="Senior Infrastructure Engineer",
+                     org_unit="Networking Team"),
+    ])
+    assert _model_cannot_phrase("get_org_chain", match) is True
+
+    text = _phrase("get_org_chain", {"direction": "up"}, match)
+    assert "Which one did you mean?" in text
+    # Both candidates distinguished, since the name alone cannot.
+    assert "Account Executive" in text and "Senior Infrastructure Engineer" in text
+
+
+def test_the_model_may_not_phrase_an_empty_org_chain():
+    """Empty means "nobody there" OR "restricted for your role", and the
+    result cannot tell them apart. Asked as an ordinary employee for a
+    manager's direct reports, the model wrote "No direct reports were found
+    for Kenji Hernandez." He has eight -- the same question as HR returns
+    all of them. That is the app stating something false."""
+    from app.unified_search import _model_cannot_phrase
+
+    assert _model_cannot_phrase("get_org_chain", []) is True
+
+    text = _phrase("get_org_chain", {"direction": "down"}, [])
+    assert "visible to your role" in text
+    # Must not assert the absence as fact.
+    assert "No direct reports were found" not in text
+
+
+def test_an_unknown_name_is_also_the_templates_to_answer():
+    from app.schemas import UnknownPerson
+    from app.unified_search import _model_cannot_phrase
+
+    assert _model_cannot_phrase("get_org_chain", UnknownPerson(query="Nobody At All")) is True
+
+
+def test_the_model_still_phrases_everything_else():
+    """The narrow exception must stay narrow -- a non-empty chain, and any
+    other tool, still gets the better-reading model phrasing."""
+    from app.schemas import OrgChainNode
+    from app.unified_search import _model_cannot_phrase
+
+    node = OrgChainNode(id="x", full_name="A Manager", job_title="Director", org_unit="Eng",
+                        depth=1, availability_status="available", has_reports=True)
+    assert _model_cannot_phrase("get_org_chain", [node]) is False
+    assert _model_cannot_phrase("find_people", []) is False
+    assert _model_cannot_phrase("find_mentor", []) is False
