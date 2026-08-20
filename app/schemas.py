@@ -64,7 +64,7 @@ class ProjectHistoryItem(BaseModel):
     # This person's own one-line account of what they did on the project —
     # EmployeeProject.contribution, not Project.description (project_desc
     # above). Same visibility precedent as project_desc: EDITABLE gates who
-    # may WRITE it (it/work, see app.permissions and app.proposals'
+    # may WRITE it (hr/work, see app.permissions and app.proposals'
     # FIELD_FOR_CHANGE_TYPE), but nothing narrows who may READ it beyond
     # project_history's own BASE_FIELDS gate — it was simply missing from
     # this model entirely, which is why accepting a document's contribution
@@ -126,6 +126,19 @@ class PersonSummary(BaseModel):
     manager: PersonRef | None = None
     delegate: PersonRef | None = None
     direct_reports: list[PersonRef] | None = None
+    # Whether this person manages anyone — a bare boolean, never the
+    # identities, so it is safe on a bulk list where direct_reports is not.
+    # Set on EVERY row (unlike direct_reports, which is single-match only),
+    # because the org-tree UI needs it per card to decide whether to offer
+    # an expand control, and finding out the other way round would be one
+    # extra request per person on screen.
+    #
+    # Carries the same visibility gate as direct_reports and get_org_chain's
+    # "down" direction (app.policy.can_see_direct_reports): in employee view
+    # mode the key is absent, matching the fact that the downward chain it
+    # advertises would come back empty there anyway. Advertising an expand
+    # that expands to nothing is worse than not advertising it.
+    has_reports: bool | None = None
 
 
 class PersonDetail(BaseModel):

@@ -831,13 +831,13 @@ def _apply_creation(db: Session, payload: dict) -> Employee:
 
 
 # ---------------------------------------------------------------------------
-# IT, work mode: CRUD on project descriptions.
+# HR, work mode: CRUD on project descriptions.
 #
 # "CRUD on project entries" scoped to the description field specifically —
-# EDITABLE gives it exactly {"project_desc"}, so creating or deleting the
+# EDITABLE grants exactly "project_desc" here, so creating or deleting the
 # Project row itself (which would take name, type, classification, owner,
-# owning unit — none of them editable by it) is out of scope by the same
-# table that governs the edits. Remove therefore clears the description; it
+# owning unit — none of them editable) is out of scope by the same table
+# that governs the edits. Remove therefore clears the description; it
 # does not delete a project out from under the people staffed on it.
 # ---------------------------------------------------------------------------
 
@@ -871,8 +871,8 @@ def clear_project_description(
     db: Session, caller: AuthenticatedUser, project_id: int, view_mode: ViewMode
 ) -> Project:
     """The 'remove' of the CRUD set. Separate function rather than a null
-    through set_project_description so the audit trail distinguishes "IT
-    wrote an empty description" from "IT removed the description"."""
+    through set_project_description so the audit trail distinguishes "HR
+    wrote an empty description" from "HR removed the description"."""
     _authorize(caller.role, view_mode, {"project_desc"})
 
     project = db.get(Project, project_id)
@@ -888,10 +888,11 @@ def clear_project_description(
 
 
 # ---------------------------------------------------------------------------
-# IT, work mode: edit anyone's project history EXCEPT their own.
+# HR, work mode: edit anyone's project history EXCEPT their own.
 #
-# Until now IT could only reach EmployeeProject through the doc-review
-# pipeline (app/proposals.py's accept/edit committing a proposed_change).
+# The review pipeline (app/proposals.py's accept/edit committing a
+# proposed_change) only reaches EmployeeProject when a document proposed
+# the change.
 # That works when a document proposed the change; it is no help at all for
 # "this person's role on Nightingale is wrong, fix it", which is an
 # ordinary correction with no document behind it. These two functions are
@@ -904,10 +905,10 @@ def clear_project_description(
 #
 # The self-exclusion is the whole reason this is a separate section rather
 # than another field on update_employee. Same rule, same wording, and the
-# same hole it closes as the HR path above (writes.py's update_employee:
-# "an hr caller giving themselves a raise") -- an IT caller writing
-# themselves onto a project they never staffed, or promoting their own
-# role on one they did.
+# same hole it closes as the internal-fields path above (writes.py's
+# update_employee: "an hr caller giving themselves a raise") -- a caller
+# writing themselves onto a project they never staffed, or promoting their
+# own role on one they did.
 # ---------------------------------------------------------------------------
 
 # Which EDITABLE capability each editable membership key belongs to. A key
@@ -1020,7 +1021,7 @@ def remove_project_history(
     contribution prose with it, but the thing being decided is whether this
     person was on this project at all, which is squarely what
     "project_entry" names. Requiring "contribution" as well would mean a
-    future IT that kept membership rights but lost prose rights could no
+    future role that kept membership rights but lost prose rights could no
     longer delete a row it is still allowed to create.
     """
     _authorize(caller.role, view_mode, {"project_entry"})

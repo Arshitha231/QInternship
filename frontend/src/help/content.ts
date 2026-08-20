@@ -9,7 +9,7 @@
 //
 // A topic whose target element is not in the DOM is SKIPPED, not an error.
 // That is load-bearing rather than defensive: the Continuity tab only
-// exists for hr, Review only for it-in-work-mode, and the results panel
+// exists for hr, Review only for hr-in-work-mode, and the results panel
 // only exists after a search. Skipping absent targets means role-gating and
 // empty states are handled by the same rule, with no role logic duplicated
 // here.
@@ -79,7 +79,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     key: "viewmode",
     title: "Work / employee mode",
     body:
-      "HR and IT can act in two capacities. Work mode exposes the extra fields and edit surfaces their " +
+      "HR can act in two capacities. Work mode exposes the extra fields and edit surfaces the " +
       "job needs; employee mode shows exactly what an ordinary colleague sees. Useful for checking what " +
       "you're about to expose before you share a screen.",
     tourStep: 6,
@@ -93,9 +93,9 @@ export const HELP_TOPICS: HelpTopic[] = [
     key: "tabs",
     title: "Sections",
     body:
-      "Profile is search and people. Graphs draws the org four ways. Continuity (HR) and Review (IT) " +
-      "appear only for the roles that own them — which is why the tabs you see change with who you " +
-      "sign in as.",
+      "Profile is search and people. Graphs draws the org four ways. Continuity and Review are HR's " +
+      "and appear only for the role that owns them — which is why the tabs you see change with who " +
+      "you sign in as.",
     tourStep: 7,
   },
   {
@@ -179,7 +179,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   },
   {
     key: "review",
-    title: "Review (IT)",
+    title: "Review (HR)",
     body:
       "The queue of changes extracted from uploaded documents, waiting on a human. Nothing an automated " +
       "step proposes reaches a record until someone accepts it here, field by field.",

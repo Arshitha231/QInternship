@@ -127,6 +127,13 @@ count only while active, so managing one person who has since been
 deactivated doesn't leave someone holding a manager's view of an empty team.
 Both unit names fail closed: a name matching no unit grants nothing.
 
+The IT rule staying first is deliberate even now that `it` grants nothing an
+`employee` doesn't. It has always meant an IT lead with reports resolves to
+`it` and does not get a manager's `direct_reports` view — that was true when
+`it` was the privileged role and is unchanged by its privileges moving to
+`hr`. Reordering it below `manager` would be a separate decision about the
+demo shim, not part of this one.
+
 This is why signing in as a VP can yield `manager` rather than something
 grander — the directory role is an access claim, not a rung on the org chart.
 
@@ -242,7 +249,7 @@ app/
                        create_employee, the restrict/deactivate maker-checker
                        (request → _resolve_approver → approve/reject), reactivate,
                        and list_deactivated_employees — see HR employee lifecycle below
-  proposals.py        the IT review workflow over extracted changes: resolve_subject,
+  proposals.py        the HR review workflow over extracted changes: resolve_subject,
                        accept / edit / reassign / correct / reject, undo, and
                        finalize_document (accept some, dismiss the rest, scrub the doc)
   doc_extraction.py   .docx/.pdf → classify → typed extraction calls → staged rows.
@@ -323,7 +330,7 @@ frontend/src/
     PeopleAdminPage.tsx         the HR-only Admin tab: create an employee, and the
                                 deactivated-employees list (the one place they can be
                                 found and put back)
-    ReviewPage.tsx              IT's document review: one card per uploaded document,
+    ReviewPage.tsx              HR's document review: one card per uploaded document,
                                 checkbox-selectable suggestions, one Update button that
                                 applies the checked ones and clears the doc, an Undo on
                                 anything already accepted, and a ✕ to discard a whole
@@ -722,13 +729,16 @@ from a broken sweep.
    arrive from a dev header or an Entra app-role claim. The org tree
    (`config.hr_org_unit_name`) is the fallback signal only where there is no
    request to read a claim from — a scheduled sweep.
-8. Privilege is a table, not a ladder. `it` may edit project descriptions and
-   review AI-extracted changes; it may not read salaries. `hr` is the reverse.
-   Neither is a superset of the other, and `app/permissions.py`'s ALLOWED /
-   EDITABLE tables are where that is decided.
+8. Privilege is a table, not a ladder. `hr` reads internal information, edits
+   project descriptions and reviews AI-extracted changes; `it` reads and
+   writes exactly what `employee` does. `it` used to hold the last two of
+   those and never salaries — proof the tables are the decision and not a
+   ranking, since moving them to `hr` was an edit to `app/permissions.py`'s
+   ALLOWED / EDITABLE tables and the two role gates that name a role
+   directly (`proposals._authorize`, the upload route), not a restructure.
 9. The model's output is never a database write. Extraction emits typed
    `propose_project_update` calls that land in `proposed_changes` as
-   `pending`; only an IT reviewer's explicit accept moves content into
+   `pending`; only an HR reviewer's explicit accept moves content into
    `EmployeeProject` / `EmployeeSkill`, and only then is it searchable.
 10. Nothing is deleted, only marked. Employees deactivate (`is_active`),
     documents are scrubbed but keep their row, rejected proposals are kept.
@@ -755,16 +765,25 @@ and on every write:
 
 | | `employee` mode | `work` mode |
 |---|---|---|
-| `employee` / `manager` | base fields | *unreachable — pinned to employee mode* |
-| `hr` | base fields | \+ salary, DOB, hire_date, cost_centre, training, project_desc |
-| `it` | base fields | \+ project_desc (**no** salary/DOB) |
+| `employee` / `manager` / `it` | base fields | *unreachable — pinned to employee mode* |
+| `hr` | base fields | \+ salary, DOB, hire_date, cost_centre, training |
+
+`it` used to sit on its own row here, with a work mode that granted
+`project_desc` editing and the document review queue but never salary. That
+split is gone: administering the system that holds people's records is not
+the same as owning the records, so **`it` now reads and writes exactly what
+`employee` does**, and both of its former privileges — project-description
+CRUD and the whole review pipeline — belong to `hr`. `hr` is the only role
+with a reachable work mode. (`project_desc` is absent from the table because
+it is readable by everyone now, in either mode; only *editing* it is gated,
+and that is `hr`/work.)
 
 Three things are worth knowing before changing any of this:
 
 - **`resolve_view_mode` is the only place the client's parameter is read.**
-  Anything other than `hr`/`it` is answered in employee mode however it asks;
-  an unrecognised value narrows rather than 400s. `hr`/`it` default to work
-  mode when they don't ask, which is what they got before view modes existed.
+  Anything other than `hr` is answered in employee mode however it asks; an
+  unrecognised value narrows rather than 400s. `hr` defaults to work mode
+  when it doesn't ask, which is what it got before view modes existed.
 - **Employee-mode output is identical whoever is looking.** Enforced in three
   places, not one — the field table, `is_record_visible`, and
   `department_filter` — because each is a separate pipeline stage and any one
@@ -772,7 +791,7 @@ Three things are worth knowing before changing any of this:
   supposed to be anonymous. The sharp edge: **HR loses its restricted-record
   exemption in employee mode**, so `restricted-1` 404s for them there too.
 - **Whole surfaces disappear in employee mode, not just fields.** Continuity
-  (HR), Review (IT), Admin (HR) and the official-link/mentor-sweep panels (HR)
+  (HR), Review (HR), Admin (HR) and the official-link/mentor-sweep panels (HR)
   are work-mode surfaces: an ordinary colleague has no work-authorization
   review dates, no document review queue, no create-employee form and no
   bootstrapping queue, so neither does anyone previewing that lens. Several
@@ -785,7 +804,7 @@ Three things are worth knowing before changing any of this:
   HR's blanket exemption for confidential projects in
   `project_skills._visible_project`.
 - **`manager` has no work mode, and that has a consequence worth stating.**
-  `resolve_view_mode` pins every role outside `WORK_MODE_ROLES` (`hr`/`it`) to
+  `resolve_view_mode` pins every role outside `WORK_MODE_ROLES` (`hr`) to
   employee mode however it asks, and `effective_role` collapses every role
   there — so a manager sees `direct_reports` through **neither** `find_people`
   nor the org chart. `find_people` was always like this; the org chart only
@@ -1008,7 +1027,7 @@ nobody can name.
 
 ## Document extraction and review
 
-`POST /docs/upload` (IT, work mode) parses a .docx/.pdf, stores the extracted
+`POST /docs/upload` (HR, work mode) parses a .docx/.pdf, stores the extracted
 text in `uploaded_docs`, and queues what it says in `proposed_changes` as
 `pending`. Name resolution runs through the same `find_people` fuzzy search
 the directory uses, and **returns nothing on ambiguity** — the dataset
@@ -1016,12 +1035,12 @@ contains two people called Priya Sharma on purpose, and `employee_id` is
 nullable precisely so "I don't know who this is" is a reviewable outcome
 rather than a coin flip.
 
-Review is IT-only, work mode: `GET /proposed_changes?doc_id=` (grouped by
+Review is HR-only, work mode: `GET /proposed_changes?doc_id=` (grouped by
 employee, unresolved first), then `accept` (commits + re-indexes + audits with
 `source=ai_extraction`), `reassign` (re-points it, stays pending), `correct`
 (back through the function-calling loop, stays pending), or `reject` (the row
 is kept, not deleted — a rejected proposal is the most useful row in the table
-when extraction quality is next reviewed). IT's fallback for anything it won't
+when extraction quality is next reviewed). HR's fallback for anything it won't
 accept is the manual edit endpoints.
 
 Accepted skills land as `Learning` / `self`-sourced, never higher: a document
@@ -1105,11 +1124,13 @@ cleared in one click, without having to reason about checkboxes first.
       (see Certification tracking above)
 - [x] 16. Fourth role (`it`) + view modes: visibility re-keyed by
       `(role, view_mode)`, employee-mode output identical for every role,
-      HR/IT write endpoints enforced server-side (see Roles and view modes)
+      privileged write endpoints enforced server-side (see Roles and view
+      modes). `it`'s extra privileges were later moved wholesale to `hr` —
+      the re-key survived that unchanged, which is the point of it
 - [x] 17. Rule 6 actually implemented — `app/search_reindex.py`, shared with
       `build_search_index.py` and wired into every write path including the
       pre-existing `update_own_bio`, which never re-indexed
-- [x] 18. Document upload → typed-call extraction → IT review workflow
+- [x] 18. Document upload → typed-call extraction → HR review workflow
       (`uploaded_docs`, `proposed_changes`; see Document extraction and review)
 - [x] 19. Review reshaped around the document rather than the queue: pick the
       suggestions you want, one Update applies them and dismisses the rest,

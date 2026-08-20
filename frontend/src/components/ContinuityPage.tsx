@@ -7,6 +7,8 @@ import type {
   ContinuityOverview, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, PersonSummary,
   ViewMode,
 } from "../types";
+import { AlertCircle, Check, Clock } from "../icons";
+import { MetricCards } from "./MetricCards";
 
 // HR-only. Only ever mounted when identity.role === "hr" — see App.tsx's
 // tab gating, which is the entire non-HR-invisibility guarantee on this
@@ -299,14 +301,21 @@ export function ContinuityPage({ identity, viewMode }: { identity: Identity; vie
             <div className="skel skel-card" style={{ height: 120 }} />
           ) : (
             <>
-              <div className="continuity-summary-cards">
-                {(["high", "medium", "low"] as const).map((sev) => (
-                  <div key={sev} className={`card continuity-summary-card continuity-summary-${sev}`}>
-                    <p className="continuity-summary-count">{overview.by_severity[sev] ?? 0}</p>
-                    <p className="continuity-summary-label">{SEVERITY_LABEL[sev]} exposure</p>
-                  </div>
-                ))}
-              </div>
+              {/* Each severity gets an icon that matches what it means, rather
+                  than three copies of one glyph tinted differently — colour
+                  alone would be the only signal otherwise, which fails for
+                  anyone who can't separate the reds from the greens. */}
+              <MetricCards
+                metrics={(["high", "medium", "low"] as const).map((sev) => ({
+                  id: sev,
+                  tone: sev,
+                  icon: sev === "high" ? <AlertCircle size={15} />
+                    : sev === "medium" ? <Clock size={15} />
+                    : <Check size={15} />,
+                  value: overview.by_severity[sev] ?? 0,
+                  label: `${SEVERITY_LABEL[sev]} exposure`,
+                }))}
+              />
               {overview.engagements.length === 0 ? (
                 <div className="state-block">
                   <strong>No engagements need attention right now</strong>

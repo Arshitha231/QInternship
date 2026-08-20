@@ -3,8 +3,9 @@ import { ApiError, createCommunityLink, deleteCommunityLink, getPerson, listComm
 import type { CommunityLinkOut, Identity, PersonDetail, PersonSummary, ViewMode } from "../types";
 import { EmployeeSearchPicker } from "./ReviewPage";
 import { CANONICAL_ROLE_META, locationNote, roleCaption, roleMeta } from "../community";
-import { useZoomPan, ZoomPanFrame } from "./ZoomPanFrame";
+import { useFitOnChange, useZoomPan, ZoomPanFrame } from "./ZoomPanFrame";
 import { X } from "../icons";
+import { avatarStyle } from "../avatarHue";
 
 // Community Graph canvas: a zoomable/pannable node graph (pan/zoom/home
 // chrome shared with Department/Team/Skills via ZoomPanFrame -- see that
@@ -128,7 +129,7 @@ function ContactCard({
           <X size={12} />
         </button>
       )}
-      <span className="avatar" aria-hidden="true">{initials(name)}</span>
+      <span className="avatar" style={avatarStyle(name)} aria-hidden="true">{initials(name)}</span>
       <p className="tree-node-name">{name}</p>
       <p className="tree-node-role">{person.job_title ?? link.role_label}</p>
       {/* No status line at all when the field isn't on the payload, rather
@@ -342,6 +343,10 @@ export function CommunityGraphCanvas({
   // what's visible; pan/zoom explore the rest.
   const size = radius * 2 + 154 + 80;
   const center = { x: size / 2, y: size / 2 };
+  // Refit whenever the ring's size changes -- adding or removing a
+  // connection changes the radius, and a ring that grew past the frame used
+  // to just get its top and bottom cards clipped off.
+  useFitOnChange(zoomPan.fit, zoomPan.frameRef, zoomPan.contentRef, `${size}:${visibleLinks.length}`);
 
   const nodes: ContactNode[] = useMemo(() => {
     return visibleLinks.map((link, i) => {
@@ -391,7 +396,7 @@ export function CommunityGraphCanvas({
     <div className="community-canvas-wrap">
       {removeError && <p className="bio-error">{removeError}</p>}
 
-      <ZoomPanFrame height={FRAME_HEIGHT} {...zoomPan} extra={editToggle}>
+      <ZoomPanFrame height="var(--graph-height)" {...zoomPan} extra={editToggle}>
         <div className="community-canvas-ring" style={{ width: size, height: size }}>
           <svg width={size} height={size} className="community-canvas-edges">
             {nodes.map((n) => (
@@ -403,7 +408,7 @@ export function CommunityGraphCanvas({
             className="community-canvas-node tree-node tree-node-focus"
             style={{ left: center.x, top: center.y }}
           >
-            <span className="avatar" aria-hidden="true">{initials(selfName)}</span>
+            <span className="avatar" style={avatarStyle(selfName)} aria-hidden="true">{initials(selfName)}</span>
             <p className="tree-node-name">{selfName}</p>
             <p className="tree-node-role">{selfPerson?.job_title ?? ""}</p>
             <p className="tree-node-status">

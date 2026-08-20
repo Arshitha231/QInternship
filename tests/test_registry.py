@@ -174,9 +174,9 @@ def test_hr_sees_strictly_more_than_employee_and_manager_in_work_mode_only():
 
 
 def test_it_never_gets_hr_only_fields_in_either_view_mode():
-    # "it administers the directory, it does not read salaries" --
-    # permissions.ALLOWED's own framing for ("it","work"). Pinned here since
-    # it's the one role/mode combination where a naive "widen hr's rule to
-    # cover it too" edit could accidentally leak HR_ONLY to it.
+    # it reads what an employee reads -- it holds no privileges at all now,
+    # and never held this one even when it did. Pinned here because "it" is
+    # still spelled out per-mode in both tables, so a naive "widen hr's rule
+    # to cover it too" edit could accidentally leak HR_ONLY to it.
     for view_mode in VIEW_MODES:
         assert Sensitivity.HR_ONLY not in ALLOWED_SENSITIVITY[("it", view_mode)]

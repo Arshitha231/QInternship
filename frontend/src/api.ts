@@ -221,8 +221,8 @@ export function updateEmployee(
   });
 }
 
-// --- IT, work mode: edit anyone's project history except their own -------
-// Both calls 403 for any non-"it" identity, in employee mode, and on the
+// --- HR, work mode: edit anyone's project history except their own -------
+// Both calls 403 for any non-"hr" identity, in employee mode, and on the
 // caller's OWN record (app/writes.py's _refuse_own_record) — ProfilePage
 // only renders the controls when all three already hold, but that is a
 // convenience, not the enforcement.
@@ -448,7 +448,7 @@ export function reactivateEmployee(
   });
 }
 
-// viewMode matters for direction="down": an hr/it caller previewing the
+// viewMode matters for direction="down": an hr caller previewing the
 // ordinary view loses the downward chain, exactly as they lose every other
 // privilege there. (A manager keeps their own team chart — they are pinned
 // to employee mode permanently and never had a work mode to give up; see
@@ -568,7 +568,7 @@ export function getHrReviewQueue(
   return request<HrReviewQueueItem[]>(`/continuity/review-queue?${params}`, identity);
 }
 
-// --- AI-assisted doc upload for IT — IT-only, work mode only. Every call
+// --- AI-assisted doc upload for HR — HR-only, work mode only. Every call
 // here 403s for any other (role, view_mode); ReviewPage never renders the
 // calling UI at all outside that pair, same non-visibility guarantee
 // Continuity's HR-only calls above have.

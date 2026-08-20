@@ -219,7 +219,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         viewMode={viewMode}
         onViewModeChange={(next) => {
           setViewMode(next);
-          // Review is IT's WORK-mode surface specifically (it edits real
+          // Review is one of HR's WORK-mode surfaces (it edits real
           // records) -- it doesn't exist in employee mode. If it was open
           // when the toggle switched away from work mode, there'd be no tab
           // left to click back out of it.
@@ -288,7 +288,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             Continuity
           </button>
         )}
-        {identity.role === "it" && viewMode === "work" && (
+        {identity.role === "hr" && viewMode === "work" && (
           <button
             role="tab"
             aria-selected={mode === "review"}
@@ -369,7 +369,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           </div>
         ) : mode === "continuity" && identity.role === "hr" && viewMode === "work" ? (
           <div data-help="continuity"><ContinuityPage identity={identity} viewMode={viewMode} /></div>
-        ) : mode === "review" && identity.role === "it" && viewMode === "work" ? (
+        ) : mode === "review" && identity.role === "hr" && viewMode === "work" ? (
           <div data-help="review"><ReviewPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "admin" && identity.role === "hr" && viewMode === "work" ? (
           <div data-help="admin">
@@ -392,7 +392,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           "profile",
           "graphs",
           ...(identity.role === "hr" && viewMode === "work" ? (["continuity"] as const) : []),
-          ...(identity.role === "it" && viewMode === "work" ? (["review"] as const) : []),
+          ...(identity.role === "hr" && viewMode === "work" ? (["review"] as const) : []),
         ]}
         onExit={() => setHelp("off")}
         onRequestMode={(m) => {

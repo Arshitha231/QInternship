@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { avatarStyle } from "../avatarHue";
 import {
   addOwnSkill, ApiError, getOrgChart, getPerson, removeOwnSkill, removeProjectHistory,
   requestDeactivation, requestRestriction, updateEmployee, updateOwnBio,
@@ -17,6 +18,7 @@ import {
   LinkIcon, MapPin, Phone, Slack, UserReports, Users, Volume,
 } from "../icons";
 import { EmployeeSearchPicker } from "./ReviewPage";
+import { SaveToggle } from "./SaveToggle";
 
 export interface ProfileStackEntry {
   id: string;
@@ -462,12 +464,10 @@ export function ProfilePage({
   const [error, setError] = useState<string | null>(null);
   const [editingBio, setEditingBio] = useState(false);
   const [bioDraft, setBioDraft] = useState("");
-  const [savingBio, setSavingBio] = useState(false);
   const [bioError, setBioError] = useState<string | null>(null);
 
   const [editingPronunciation, setEditingPronunciation] = useState(false);
   const [pronunciationDraft, setPronunciationDraft] = useState("");
-  const [savingPronunciation, setSavingPronunciation] = useState(false);
   const [pronunciationError, setPronunciationError] = useState<string | null>(null);
 
   const [editingSkills, setEditingSkills] = useState(false);
@@ -476,7 +476,6 @@ export function ProfilePage({
   const [editingEmployee, setEditingEmployee] = useState(false);
   const [employeeForm, setEmployeeForm] = useState<EmployeeFormState | null>(null);
   const [employeeInitial, setEmployeeInitial] = useState<EmployeeFormState | null>(null);
-  const [savingEmployee, setSavingEmployee] = useState(false);
   const [employeeError, setEmployeeError] = useState<string | null>(null);
 
   const [restrictBusy, setRestrictBusy] = useState(false);
@@ -508,11 +507,11 @@ export function ProfilePage({
   // only enforcement that matters.
   const canEditEmployee = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
   // Same presentation-only mirror, of app/writes.py's project-history gate:
-  // EDITABLE grants "project_entry"/"contribution" to it/work, and
+  // EDITABLE grants "project_entry"/"contribution" to hr/work, and
   // _refuse_own_record blocks the caller's own record. !isOwnProfile is the
-  // visible half of that second rule — an IT person looking at their own
+  // visible half of that second rule — an HR person looking at their own
   // profile sees no edit controls at all, rather than buttons that 403.
-  const canEditProjectHistory = identity.role === "it" && viewMode === "work" && !isOwnProfile;
+  const canEditProjectHistory = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
 
   useEffect(() => {
     let cancelled = false;
@@ -581,17 +580,19 @@ export function ProfilePage({
     setEditingBio(true);
   }
 
+  // Re-throws after recording the message. SaveToggle drives the button's
+  // own state off this promise, so a handler that swallowed its failure
+  // would make the button report "Saved" for a write that never happened.
+  // The inline error line stays here — the button says whether it worked,
+  // this says why it didn't.
   async function saveBio() {
-    setSavingBio(true);
     setBioError(null);
     try {
       const updated = await updateOwnBio(identity, bioDraft.trim());
       setDetail((prev) => (prev ? { ...prev, bio: updated.bio } : prev));
-      setEditingBio(false);
     } catch (e) {
       setBioError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
-    } finally {
-      setSavingBio(false);
+      throw e;
     }
   }
 
@@ -602,16 +603,13 @@ export function ProfilePage({
   }
 
   async function savePronunciation() {
-    setSavingPronunciation(true);
     setPronunciationError(null);
     try {
       const updated = await updateOwnNamePronunciation(identity, pronunciationDraft.trim());
       setDetail((prev) => (prev ? { ...prev, name_pronunciation: updated.name_pronunciation } : prev));
-      setEditingPronunciation(false);
     } catch (e) {
       setPronunciationError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
-    } finally {
-      setSavingPronunciation(false);
+      throw e;
     }
   }
 
@@ -636,26 +634,29 @@ export function ProfilePage({
   async function saveEmployee() {
     if (!employeeForm || !employeeInitial) return;
     if (!employeeFormValid(employeeForm)) {
+      // Thrown, not returned: returning resolves the promise SaveToggle is
+      // waiting on, and the button would confirm a save that was refused
+      // before it ever reached the network. The button is disabled while the
+      // form is invalid, so this is a backstop rather than the usual path.
       setEmployeeError("Name, job title, work email and hire date can't be empty.");
-      return;
+      throw new Error("employee form incomplete");
     }
     const changes = diffEmployeeForm(employeeInitial, employeeForm);
     if (Object.keys(changes).length === 0) {
       // Nothing actually changed — closing is the honest outcome, not a
       // no-op PATCH that would still write an audit_log row for no reason.
+      // Closing here also unmounts the button before it can confirm, which
+      // is right: there is nothing to confirm.
       setEditingEmployee(false);
       return;
     }
-    setSavingEmployee(true);
     setEmployeeError(null);
     try {
       const updated = await updateEmployee(identity, personId, changes, viewMode);
       setDetail(updated);
-      setEditingEmployee(false);
     } catch (e) {
       setEmployeeError(e instanceof ApiError ? e.message : "Couldn't save — try again.");
-    } finally {
-      setSavingEmployee(false);
+      throw e;
     }
   }
 
@@ -758,7 +759,7 @@ export function ProfilePage({
         </div>
       )}
       <div className="profile-header">
-        <span className="avatar" aria-hidden="true">{initials(detail.full_name)}</span>
+        <span className="avatar" style={avatarStyle(detail.full_name)} aria-hidden="true">{initials(detail.full_name)}</span>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="p-name-line">
             <h2 className="p-name">{detail.preferred_name || detail.full_name}</h2>
@@ -774,7 +775,7 @@ export function ProfilePage({
               </button>
             )}
             {isOwnProfile && !editingPronunciation && (
-              <button className="link-btn" style={{ fontSize: 12.5 }} onClick={startEditingPronunciation}>
+              <button className="link-btn" style={{ fontSize: "var(--fs-sm)" }} onClick={startEditingPronunciation}>
                 {detail.name_pronunciation ? "Edit pronunciation" : "Add pronunciation"}
               </button>
             )}
@@ -790,12 +791,14 @@ export function ProfilePage({
                 autoFocus
                 placeholder="e.g. nuh-VAY-uh"
               />
-              <button className="btn" onClick={() => setEditingPronunciation(false)} disabled={savingPronunciation}>
+              <button className="btn" onClick={() => setEditingPronunciation(false)}>
                 Cancel
               </button>
-              <button className="btn btn-primary" onClick={savePronunciation} disabled={savingPronunciation}>
-                {savingPronunciation ? "Saving…" : "Save"}
-              </button>
+              <SaveToggle
+                size="sm"
+                onSave={savePronunciation}
+                onConfirmed={() => setEditingPronunciation(false)}
+              />
               {pronunciationError && <p className="bio-error" style={{ width: "100%" }}>{pronunciationError}</p>}
             </div>
           )}
@@ -1006,15 +1009,16 @@ export function ProfilePage({
           </div>
           {employeeError && <p className="bio-error">{employeeError}</p>}
           <div className="bio-actions">
-            <button className="btn" onClick={() => setEditingEmployee(false)} disabled={savingEmployee}>
+            <button className="btn" onClick={() => setEditingEmployee(false)}>
               Cancel
             </button>
-            <button
-              className="btn btn-primary" onClick={saveEmployee}
-              disabled={savingEmployee || !employeeFormValid(employeeForm)}
-            >
-              {savingEmployee ? "Saving…" : "Save changes"}
-            </button>
+            <SaveToggle
+              idleText="Save changes"
+              savingText="Saving…"
+              onSave={saveEmployee}
+              disabled={!employeeFormValid(employeeForm)}
+              onConfirmed={() => setEditingEmployee(false)}
+            />
           </div>
         </section>
       )}
@@ -1026,7 +1030,7 @@ export function ProfilePage({
               <div className="card-head">
                 <h2>About</h2>
                 {isOwnProfile && !editingBio && (
-                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={startEditingBio}>Edit</button>
+                  <button className="link-btn" style={{ fontSize: "var(--fs-sm)" }} onClick={startEditingBio}>Edit</button>
                 )}
               </div>
               {editingBio ? (
@@ -1042,16 +1046,17 @@ export function ProfilePage({
                   />
                   {bioError && <p className="bio-error">{bioError}</p>}
                   <div className="bio-actions">
-                    <button className="btn" onClick={() => setEditingBio(false)} disabled={savingBio}>Cancel</button>
-                    <button className="btn btn-primary" onClick={saveBio} disabled={savingBio}>
-                      {savingBio ? "Saving…" : "Save"}
-                    </button>
+                    <button className="btn" onClick={() => setEditingBio(false)}>Cancel</button>
+                    <SaveToggle
+                      onSave={saveBio}
+                      onConfirmed={() => setEditingBio(false)}
+                    />
                   </div>
                 </div>
               ) : detail.bio ? (
-                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>{detail.bio}</p>
+                <p style={{ margin: 0, fontSize: "var(--fs-body)", color: "var(--muted)" }}>{detail.bio}</p>
               ) : (
-                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                <p style={{ margin: 0, fontSize: "var(--fs-body)", color: "var(--muted)" }}>
                   You haven't added an about yet. <button className="link-btn" onClick={startEditingBio}>Add one</button>
                 </p>
               )}
@@ -1066,7 +1071,7 @@ export function ProfilePage({
               <div className="card-head">
                 <h2>Skills</h2>
                 {isOwnProfile && !editingSkills && (
-                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingSkills(true)}>
+                  <button className="link-btn" style={{ fontSize: "var(--fs-sm)" }} onClick={() => setEditingSkills(true)}>
                     Edit
                   </button>
                 )}
@@ -1090,7 +1095,7 @@ export function ProfilePage({
                   </div>
                 ))
               ) : (
-                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                <p style={{ margin: 0, fontSize: "var(--fs-body)", color: "var(--muted)" }}>
                   You haven't added any skills yet.{" "}
                   <button className="link-btn" onClick={() => setEditingSkills(true)}>Add some</button>
                 </p>
@@ -1103,7 +1108,7 @@ export function ProfilePage({
               <div className="card-head">
                 <h2>Languages</h2>
                 {isOwnProfile && !editingLanguages && (
-                  <button className="link-btn" style={{ fontSize: 12.5 }} onClick={() => setEditingLanguages(true)}>
+                  <button className="link-btn" style={{ fontSize: "var(--fs-sm)" }} onClick={() => setEditingLanguages(true)}>
                     Edit
                   </button>
                 )}
@@ -1127,7 +1132,7 @@ export function ProfilePage({
                   ))}
                 </div>
               ) : (
-                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                <p style={{ margin: 0, fontSize: "var(--fs-body)", color: "var(--muted)" }}>
                   You haven't added any languages yet.{" "}
                   <button className="link-btn" onClick={() => setEditingLanguages(true)}>Add some</button>
                 </p>
@@ -1146,7 +1151,7 @@ export function ProfilePage({
                 <span className="abac-badge">Self/chain/HR</span>
               </div>
               {detail.training_status.length === 0 ? (
-                <p style={{ margin: 0, fontSize: 13.5, color: "var(--muted)" }}>
+                <p style={{ margin: 0, fontSize: "var(--fs-body)", color: "var(--muted)" }}>
                   No courses are expected for this role.
                 </p>
               ) : (
@@ -1246,7 +1251,7 @@ export function ProfilePage({
             <section className="card">
               <div className="card-head">
                 <h2><Users size={15} className="reports-icon" />Direct reports</h2>
-                <span className="link-sm" style={{ color: "var(--muted)", fontSize: 12.5 }}>{reports.length}</span>
+                <span className="link-sm" style={{ color: "var(--muted)", fontSize: "var(--fs-sm)" }}>{reports.length}</span>
               </div>
               <ul className="reports-list">
                 {reports.map((r) => (

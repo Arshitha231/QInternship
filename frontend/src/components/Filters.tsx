@@ -72,7 +72,7 @@ export function Filters({
             value={filters.language ?? ""}
             onChange={(e) => set("language", e.target.value || undefined)}
           />
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--fs-body)", color: "var(--muted)" }}>
             <input
               type="checkbox"
               style={{ width: "auto" }}
