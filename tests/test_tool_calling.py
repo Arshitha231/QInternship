@@ -147,7 +147,7 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     calls = []
 
-    def fake_real_resolve(message, history_messages=None):
+    def fake_real_resolve(message, history_messages=None, profile=None):
         calls.append(message)
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"query": message}))
 
@@ -166,7 +166,7 @@ def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(
         tool_calling, "_real_resolve",
-        lambda message, history_messages=None: None)  # simulates OpenAIError degrade
+        lambda message, history_messages=None, profile=None: None)  # simulates OpenAIError degrade
 
     turn = resolve_intent("Taylor Cloud")
     assert turn.tool_call == ResolvedToolCall(
@@ -198,7 +198,7 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
 
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, history_messages=None: (_ for _ in ()).throw(
+                        lambda message, history_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not be called")))
     real_mode_turn = resolve_intent("who is my manager?")
 
@@ -229,7 +229,7 @@ def test_retry_after_execution_failure_stamps_routed_via(monkeypatch):
     # as a real _real_resolve() call never would -- to confirm
     # _retry_after_execution_failure() is what stamps it, classified the
     # same way a first attempt would be.
-    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})))
     failed_call = ResolvedToolCall(name="find_people", arguments={"name": "Wrong Name"})
     corrected = _retry_after_execution_failure("who is Wrong Name", failed_call, "no such person")
@@ -248,7 +248,7 @@ def test_execute_with_retry_never_retries_in_mock_mode(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "execute_tool_call",
                         lambda db, caller, tool_call, view_mode="work": (_ for _ in ()).throw(ValueError("bad arguments")))
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, extra_messages=None: (_ for _ in ()).throw(
+                        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not retry in mock mode")))
 
     tool_call = ResolvedToolCall(name="find_people", arguments={"name": "X"})
@@ -261,7 +261,7 @@ def test_execute_with_retry_does_not_retry_on_first_success(db_session, monkeypa
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": "OK")
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, extra_messages=None: (_ for _ in ()).throw(
+                        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not retry when the first attempt succeeds")))
 
     tool_call = ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})
@@ -281,7 +281,7 @@ def test_execute_with_retry_succeeds_after_one_correction(db_session, monkeypatc
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", flaky_execute)
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         assert extra_messages is not None  # this IS the retry call, not the initial resolve
         assert "Wrong Name" in extra_messages[0]["content"]  # the failure is actually described
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"}))
@@ -307,7 +307,7 @@ def test_execute_with_retry_gives_up_after_max_retries(db_session, monkeypatch):
 
     retry_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         retry_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"Attempt {retry_count['n']}"}))
@@ -328,7 +328,7 @@ def test_execute_with_retry_stops_immediately_if_the_model_offers_no_correction(
 
     calls = {"n": 0}
 
-    def no_correction(message, extra_messages=None):
+    def no_correction(message, extra_messages=None, profile=None):
         calls["n"] += 1
         return None  # model itself degraded on the retry attempt
 
@@ -516,7 +516,7 @@ def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session,
     # call, no special-casing needed in execute_tool_call itself.
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         assert extra_messages is not None  # this IS the retry call
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="search_people",
@@ -551,7 +551,7 @@ def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_ses
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     prompts_seen = []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         if extra_messages:
             prompts_seen.append(extra_messages[0]["content"])
         return None  # give up after the first retry prompt -- we only need to inspect it
@@ -638,7 +638,7 @@ def test_deterministic_match_never_triggers_execute_chain(db_session, monkeypatc
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("a deterministic match must never chain")))
     monkeypatch.setattr(
         tool_calling, "_real_resolve",
-        lambda message, extra_messages=None: (_ for _ in ()).throw(
+        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
             AssertionError("a confident deterministic match must never call the real model")))
 
     result = answer(db_session, CALLER, "who is my manager?")
@@ -654,7 +654,7 @@ def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_s
         execute_count["n"] += 1
         return []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         resolve_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"step {resolve_count['n']}"}, needs_followup=True))
@@ -700,7 +700,7 @@ def test_execute_chain_stops_on_the_records_budget_before_the_step_cap(db_sessio
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"offset": call_count["n"] * 3}, needs_followup=True))
@@ -728,7 +728,7 @@ def test_execute_chain_stops_on_the_wall_clock_budget(db_session, monkeypatch):
         time.sleep(0.05)  # 50ms -- comfortably over the 20ms test budget
         return []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "next"}))
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
@@ -750,7 +750,7 @@ def test_execute_chain_not_truncated_when_the_model_finishes_within_budget(db_se
     def fake_execute(db, caller, tool_call, view_mode="work"):
         return ["done"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         return AssistantTurn(message="Nobody matches.")  # plain text -- model is done, no more calls
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
@@ -816,7 +816,7 @@ def test_execute_chain_stops_when_the_model_says_it_is_done(db_session, monkeypa
     def fake_execute(db, caller, tool_call, view_mode="work"):
         return ["team resolved"] if tool_call.name == "get_org_chain" else ["filtered result"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         # The model has what it needs after step 1 -- answers in plain
         # text, no further function call.
         return AssistantTurn(message="Nobody on that team matches.")
@@ -842,7 +842,7 @@ def test_chain_failure_returns_the_generic_message_not_an_earlier_steps_result(d
             raise ValueError("bad filter, always fails")
         return ["step one result"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         if not extra_messages:
             return None
         first = extra_messages[0]
@@ -874,7 +874,7 @@ def test_chain_writes_one_audit_row_per_step_sharing_one_chain_id(db_session, mo
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Asked after step 1 -- offer a genuine second step.
@@ -1154,7 +1154,7 @@ def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeyp
 
     captured = {}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         captured["history_messages"] = history_messages
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
 
@@ -1185,11 +1185,11 @@ def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeyp
 # ---------------------------------------------------------------------------
 
 def test_answer_phrases_a_successful_call(db_session, monkeypatch):
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": None, "tool_call": "search_people", "arguments": {"order_by": "hire_date"}, "result": ["ok"],
         })
     monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: "Jordan Diaz has the most tenure.")
@@ -1202,11 +1202,11 @@ def test_answer_leaves_message_none_when_phrase_answer_has_nothing(db_session, m
     # No real model configured, or its output failed grounding -- either
     # way phrase_answer degrades to None, and the frontend's own generic
     # fallback ("N people match.") covers it exactly as it always has.
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": None, "tool_call": "search_people", "arguments": {}, "result": ["ok"],
         })
     monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: None)
@@ -1219,11 +1219,11 @@ def test_answer_does_not_override_a_procedural_message_with_phrasing(db_session,
     # raw["message"] here is a specific procedural message (disambiguation
     # prompt, broadening explanation) the model has no way to reconstruct
     # from the result alone -- kept verbatim, same as _build_assisted().
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="find_people", arguments={"name": "X"})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": "Did you mean Xavier or Ximena?", "tool_call": "find_people", "arguments": {}, "result": [],
         })
     monkeypatch.setattr(
@@ -1238,11 +1238,11 @@ def test_answer_phrases_before_the_truncation_note_not_instead_of_it(db_session,
     # Mirrors _build_assisted's truncated branch exactly: the budget note
     # describes the CHAIN running out of steps, not who was found, so it
     # can only ever supplement a real answer -- phrase first, append after.
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}, needs_followup=True)))
     monkeypatch.setattr(
         tool_calling, "execute_chain",
-        lambda db, caller, tool_call, message, view_mode="work", history_messages=None: {
+        lambda db, caller, tool_call, message, view_mode="work", history_messages=None, profile=None: {
             "message": "Stopped after running out of reasoning steps.", "tool_call": "search_people",
             "arguments": {}, "result": ["ok"], "truncated": "steps",
         })
@@ -1258,7 +1258,7 @@ def test_execute_chain_threads_history_into_its_own_followup_resolution(db_sessi
 
     captured = {}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         captured["history_messages"] = history_messages
         return AssistantTurn(message="done")
 
@@ -1279,7 +1279,7 @@ def test_execute_chain_step_trace_carries_plan_only_never_a_result(db_session, m
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))

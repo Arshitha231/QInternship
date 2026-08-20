@@ -758,6 +758,19 @@ class ProjectRequirementsOut(BaseModel):
     notes: list[RequirementNoteOut]
 
 
+class ProjectRequirementsSummaryItem(BaseModel):
+    """One row of list_project_requirements_summary -- the PRD assistant's
+    other tool, for "what have we captured so far" questions. Counts only,
+    never the requirements themselves (that's what get_project_requirements
+    is for, once a specific project is named)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    skill_count: int
+    note_count: int
+
+
 # --- Staffing Continuity Intelligence (app/continuity.py) — HR-only ------
 #
 # The unit these describe is the client ENGAGEMENT (a project), not the

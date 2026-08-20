@@ -30,6 +30,11 @@ There is exactly one plan class today -- the general model-routed chain
 reachable from /ask and /search's assisted mode -- so this is currently
 one dict with one entry, not several; the shape is what makes a second
 plan class a registry edit later instead of a new code path.
+
+The PRD assistant (app.tool_calling.PRD_PROFILE) is that second plan
+class -- the change that proves the claim above. Its own entry,
+"prd_chain", needed no change to execute_chain itself: only a registry
+entry and a profile that points at it.
 """
 from __future__ import annotations
 
@@ -67,6 +72,14 @@ PLAN_CLASS_BUDGETS: dict[str, ChainBudget] = {
     # measured latency (tens to low hundreds of ms per step) with room
     # for a slow step, not so high it stops meaning anything.
     DEFAULT_PLAN_CLASS: ChainBudget(steps=3, max_records=100, max_wall_clock_ms=8_000),
+    # Lower max_records than assistant_chain: a PRD conversation is about
+    # one project's requirements, not directory fan-out -- a chain
+    # returning dozens of records here is a signal something went wrong
+    # (get_project_requirements/list_project_requirements_summary each
+    # return small, bounded lists by construction), not normal operation.
+    # steps/max_wall_clock_ms otherwise unchanged from the default: this
+    # assistant's tools resolve in one or two calls, not a longer chain.
+    "prd_chain": ChainBudget(steps=3, max_records=60, max_wall_clock_ms=8_000),
 }
 
 

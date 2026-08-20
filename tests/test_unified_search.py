@@ -808,7 +808,7 @@ async def test_a_chained_answer_shows_every_step_it_took(client, monkeypatch):
             needs_followup=True,
         ))
 
-    def _fake_next(message, extra_messages=None, history_messages=None):
+    def _fake_next(message, extra_messages=None, history_messages=None, profile=None):
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 

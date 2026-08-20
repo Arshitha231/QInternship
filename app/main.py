@@ -175,6 +175,7 @@ from app.schemas import (
     UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
 )
+from app.tool_calling import PRD_PROFILE
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
 from app.writes import (
@@ -2276,6 +2277,57 @@ def ask(
 
     history = load_history(db, conversation) if body.conversation_id is not None else body.history
     result = answer_service(db, user, body.message, mode, history)
+
+    append_turn(
+        db, conversation, message=body.message,
+        tool_call=result.get("tool_call"), arguments=result.get("arguments"),
+        assistant_text=result.get("message") if result.get("tool_call") is None else None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
+
+
+@app.post("/prd/ask")
+def prd_ask(
+    body: AskRequest,
+    project_id: int | None = Query(
+        None,
+        description=(
+            "Which project's PRD conversation to open. Required when "
+            "starting a new conversation (body.conversation_id absent); "
+            "ignored when continuing one."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The PRD assistant's own entry point — the same resolve -> execute ->
+    phrase pipeline as POST /ask (both call answer_service()), run under
+    PRD_PROFILE instead of the default search profile, so this can only
+    ever call get_project_requirements/list_project_requirements_summary —
+    it has no people-search tool to call even if asked. HR + work mode
+    only, inline gate (POST /docs/upload's convention).
+
+    A PRD conversation is always about exactly one project — `project_id`
+    is required to open a fresh one, and picks which project's thread it
+    opens against; once `body.conversation_id` continues an existing one,
+    that conversation's own stored project_id is what's actually used (see
+    app.assistant_conversations.open_or_continue), so project_id is not
+    required on a continuing call.
+    """
+    mode = resolve_view_mode(user.role, body.view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="The PRD assistant is an HR action in work mode")
+    if body.conversation_id is None and project_id is None:
+        raise HTTPException(status_code=422, detail="project_id is required to start a new PRD conversation")
+
+    try:
+        conversation = open_or_continue(db, user, "prd", body.conversation_id, project_id=project_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    history = load_history(db, conversation) if body.conversation_id is not None else body.history
+    result = answer_service(db, user, body.message, mode, history, profile=PRD_PROFILE)
 
     append_turn(
         db, conversation, message=body.message,

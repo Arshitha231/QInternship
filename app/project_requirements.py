@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
@@ -32,6 +33,7 @@ from app.schemas import (
     AmbiguousProjectMatch,
     ProjectListItem,
     ProjectRequirementsOut,
+    ProjectRequirementsSummaryItem,
     RequirementNoteIn,
     RequirementNoteOut,
 )
@@ -156,3 +158,33 @@ def get_project_requirements_by_name(
     notes = get_requirement_notes(db, caller, project.id, view_mode) or []
     return ProjectRequirementsOut(
         project_name=project.name, description=project.description, skills=skills, notes=notes)
+
+
+def list_project_requirements_summary(
+    db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work",
+) -> list[ProjectRequirementsSummaryItem]:
+    """The PRD assistant's other tool, for "what have we captured so far"
+    questions -- counts only, never the requirements themselves (that's
+    what get_project_requirements answers once a specific project is
+    named). Same hard HR-only fail-fast gate, checked first.
+    """
+    if effective_role(caller.role, view_mode) != "hr":
+        return []
+
+    skill_counts = dict(
+        db.query(ProjectSkillRequirement.project_id, func.count())
+        .group_by(ProjectSkillRequirement.project_id).all()
+    )
+    note_counts = dict(
+        db.query(ProjectRequirementNote.project_id, func.count())
+        .group_by(ProjectRequirementNote.project_id).all()
+    )
+    project_ids = set(skill_counts) | set(note_counts)
+    if not project_ids:
+        return []
+    projects = db.query(Project).filter(Project.id.in_(project_ids)).order_by(Project.name).all()
+    return [
+        ProjectRequirementsSummaryItem(
+            project_name=p.name, skill_count=skill_counts.get(p.id, 0), note_count=note_counts.get(p.id, 0))
+        for p in projects
+    ]

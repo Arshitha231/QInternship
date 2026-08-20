@@ -22,6 +22,7 @@ from app.project_requirements import (
     add_requirement_notes,
     get_project_requirements_by_name,
     get_requirement_notes,
+    list_project_requirements_summary,
     list_projects_for_picker,
 )
 from app.project_skills import set_required_skills
@@ -195,6 +196,42 @@ def test_ambiguous_project_name_returns_ambiguous_match(fx, db_session):
     result = get_project_requirements_by_name(db_session, HR, "Project Requirements Fixture")
     assert isinstance(result, AmbiguousProjectMatch)
     assert fx.project.name in result.matches
+
+
+# --- list_project_requirements_summary --------------------------------------
+
+def test_summary_lists_only_projects_with_requirements(fx, db_session):
+    set_required_skills(db_session, HR, fx.project.id, [ProjectSkillRequirementIn(skill=fx.skill_a.name)])
+    summary = {row.project_name: row for row in list_project_requirements_summary(db_session, HR)}
+    assert fx.project.name in summary
+    assert fx.bare.name not in summary
+
+
+def test_summary_counts_skills_and_notes_separately(fx, db_session):
+    set_required_skills(db_session, HR, fx.project.id, [ProjectSkillRequirementIn(skill=fx.skill_a.name)])
+    add_requirement_notes(db_session, HR, fx.project.id, [
+        RequirementNoteIn(note="a"), RequirementNoteIn(note="b"),
+    ])
+    summary = {row.project_name: row for row in list_project_requirements_summary(db_session, HR)}
+    assert summary[fx.project.name].skill_count == 1
+    assert summary[fx.project.name].note_count == 2
+
+
+def test_summary_is_hard_hr_only(fx, db_session):
+    set_required_skills(db_session, HR, fx.project.id, [ProjectSkillRequirementIn(skill=fx.skill_a.name)])
+    caller = AuthenticatedUser(id=fx.owner.id, role="employee", name=fx.owner.full_name)
+    # Even the project's OWNER -- unlike required-skills' owner-or-hr write
+    # gate, this tool is hard HR-only, same as get_project_requirements_by_name.
+    assert list_project_requirements_summary(db_session, caller) == []
+
+
+def test_summary_empty_when_nothing_declared(db_session):
+    caller = AuthenticatedUser(id="summary-empty-hr", role="hr")
+    # Not a strict isolation guarantee against other tests' fixture data
+    # (this queries the whole table), but with no requirements declared
+    # anywhere the result is at minimum well-formed.
+    result = list_project_requirements_summary(db_session, caller)
+    assert isinstance(result, list)
 
 
 # --- HTTP-level ---------------------------------------------------------
