@@ -780,6 +780,16 @@ button { font: inherit; }
    states the relationship the geometry was only implying. */
 .tree-tier {
   display: flex; justify-content: center; position: relative;
+  /* Stretch every tier to the width of the widest one, rather than letting
+     each shrink-wrap its own cards. Two things were wrong without this, both
+     visible the moment a tree had rows of different sizes: the tint bands
+     were three different widths and so read as three boxes rather than as
+     horizontal bands, and the labels -- positioned against each tier's own
+     right edge -- landed at three different x positions, making a ragged
+     left margin out of what is supposed to be a legend column. The cards
+     inside stay centred (justify-content above), so only the band and the
+     label anchor move. */
+  align-self: stretch;
   padding: 12px 18px; border-radius: var(--radius-card);
 }
 .tree-tier::before {
@@ -811,6 +821,27 @@ button { font: inherit; }
 
 .tree-branch { display: flex; flex-direction: column; align-items: center; }
 .tree-children-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 26px 18px; margin-top: 32px; }
+
+/* A revealed subtree fades and rises into place instead of appearing
+   mid-layout with everything around it already moved. This is the ONE
+   animation in the tree that carries information: it says "this is the part
+   that just appeared", which is exactly what the reader needs to find after
+   a row of cards has reflowed around it.
+
+   Short (.22s) and on the container, not per card: a staggered per-card
+   entrance looks impressive and delays the moment the subtree is actually
+   readable, which is the opposite of what someone who just clicked "Show
+   team" wants.
+
+   The connector lines are deliberately NOT animated. They are measured from
+   the final layout, so animating them would mean drawing lines to positions
+   the cards have not reached yet -- lines pointing at nothing, which is the
+   exact appearance of the bug this pass fixed. */
+.tree-children-row { animation: tree-reveal .22s ease-out both; }
+@keyframes tree-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
 
 .tree-node {
   display: flex; flex-direction: column; align-items: center; text-align: center;
@@ -2183,4 +2214,17 @@ button.chart-legend-btn:hover { background: var(--surface-sunk); }
    should not have to hover to find out which they got. */
 .insight-summary-source {
   margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: 1.45;
+}
+
+/* ---------- graphs: reduced motion ----------
+   The viewport transition and the reveal are both movement in service of
+   comprehension, not decoration -- but a reader who has asked the OS for
+   less motion has asked for less motion. Everything still works: the scale
+   and the reveal both land in their final state immediately. */
+@media (prefers-reduced-motion: reduce) {
+  .zoom-pan-viewport { transition: none; }
+  .tree-children-row { animation: none; }
+  .tree-node { transition: none; }
+  .tree-node:hover { transform: none; }
+  .tree-edge { transition: none; }
 }

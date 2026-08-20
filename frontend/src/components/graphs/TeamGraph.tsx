@@ -151,7 +151,6 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
   const { wrapRef, registerNode, registerBranch, linePaths, svgSize } = useTreeConnectors(
     groups,
     [hubId, teammates, focusId, openId, childrenCache],
-    zoomPan.zoom,
   );
   useFitOnChange(
     zoomPan.fit,
