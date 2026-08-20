@@ -68,6 +68,11 @@ class PeopleQuery(BaseModel):
     filters: list[Filter] = []
     filter_groups: list[list[Filter]] = []
     order_by: Field | None = None
+    # Ignored when order_by is None. Every orderable field so far
+    # (full_name, ...) only ever needed ascending -- hire_date is the first
+    # with a real descending use ("who joined most recently"), so this
+    # stays a plain default rather than something every caller must set.
+    order_dir: Literal["asc", "desc"] = "asc"
     limit: int | None = None
 
 

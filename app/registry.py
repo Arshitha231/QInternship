@@ -164,7 +164,14 @@ REGISTRY: dict[str, FieldSpec] = {
     # ABAC grant (permissions.abac_extra_fields) on top of this HR_ONLY
     # floor -- see the module docstring; that grant is untouched by this
     # registry, same as personal_mobile's ABAC grant below is.
-    "hire_date": _f("hire_date", "date", set(), Sensitivity.HR_ONLY, filterable=False),
+    # filterable=True, unlike the rest of this tier: "who has the most
+    # experience"/"who joined most recently" have no other grounded path to
+    # an answer, and INVARIANT 6 (app/policy.py's enforce()) already gates
+    # order_by on a restricted field to hr alone, the same as it gates
+    # every other HR_ONLY field -- this widens what hr can ask, not who can
+    # ask it. No filter ops (`set()`): a raw "hired before <date>" filter
+    # is a real feature nobody's asked for yet, not bundled in for free.
+    "hire_date": _f("hire_date", "date", set(), Sensitivity.HR_ONLY, filterable=True),
     "cost_centre": _f("cost_centre", "str", set(), Sensitivity.HR_ONLY, filterable=False),
     "salary": _f("salary", "str", set(), Sensitivity.HR_ONLY, filterable=False),
     "salary_currency": _f("salary_currency", "str", set(), Sensitivity.HR_ONLY, filterable=False),

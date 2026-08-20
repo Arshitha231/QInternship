@@ -46,7 +46,13 @@ ORG_UNIT_MAX_DEPTH = 10  # mirrors app.people.ORG_UNIT_MAX_DEPTH
 # leading underscore) since app.tool_calling's search_people tool schema
 # also reads this, to build its order_by enum from the same source of
 # truth compile_query() itself enforces, instead of a second hand-typed list.
-ORDERABLE_FIELDS = frozenset({"id", "full_name", "preferred_name", "work_email", "availability_status"})
+#
+# hire_date is a plain Employee column too (unlike org_unit/office/skills),
+# so it belongs here on the same mechanical grounds -- app/registry.py's
+# filterable=True is what actually decides whether a given caller may use
+# it (enforce()'s INVARIANT 6 gates it to hr), not this set.
+ORDERABLE_FIELDS = frozenset(
+    {"id", "full_name", "preferred_name", "work_email", "availability_status", "hire_date"})
 
 
 def _resolve_skill_id(db, name: str) -> int | None:
@@ -206,7 +212,8 @@ def compile_query(db, plan: PeopleQuery, decision: PolicyDecision) -> Select:
     if plan.order_by is not None:
         if plan.order_by not in ORDERABLE_FIELDS:
             raise UnsupportedFilterError(f"order_by on '{plan.order_by}' is not compilable yet")
-        stmt = stmt.order_by(getattr(Employee, plan.order_by))
+        column = getattr(Employee, plan.order_by)
+        stmt = stmt.order_by(column.desc() if plan.order_dir == "desc" else column)
 
     return stmt.limit(decision.max_rows)
 
