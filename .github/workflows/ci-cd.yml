@@ -287,26 +287,49 @@ jobs:
       # not secrets (see terraform/main.tf's own comment on this), only
       # the admin password is -- DB_PASSWORD is the same secret Terraform
       # uses via TF_VAR_db_pwd.
+      #
+      # Retried, for the same reason the Deploy step below is: these are
+      # plain ARM calls and ARM has transient failures. Observed live --
+      # `(BadGatewayConnection) The network connectivity issue encountered
+      # for 'Microsoft.Web'` on the runtime-stack step, which killed the run
+      # before Deploy was even attempted. The retry loop existed one step too
+      # late to help: a blip on either of these two config calls wastes the
+      # whole job, including a terraform apply that already ran.
+      #
+      # Idempotent, so retrying is free -- both calls set an absolute desired
+      # state rather than mutating a previous one.
       - name: Ensure required app settings
         run: |
-          az webapp config appsettings set \
-            --name ${{ env.WEBAPP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --settings \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-              DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1" \
-              CHAT_ENDPOINT="${{ secrets.GROUP3_4OPENAIENDPOINT }}" \
-              CHAT_KEY="${{ secrets.GROUP3_4OPENAIAPIKEY }}" \
-              OPENAI_CHAT_DEPLOYMENT="gpt-5" \
-              EMBEDDING_ENDPOINT="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}" \
-              EMBEDDING_KEY="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
-              OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
-              SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
-              SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}" \
-              OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
-              OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
-              OTEL_SERVICE_NAME="quadrant-directory-api"
-              ALLOW_DEV_AUTH=1
+          for attempt in 1 2 3; do
+            echo "App settings attempt $attempt/3..."
+            if az webapp config appsettings set \
+              --name ${{ env.WEBAPP_NAME }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --settings \
+                SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+                DATABASE_URL="mssql+pymssql://QuadrantAdmin:${{ secrets.DB_PASSWORD }}@tempest-azure-sql.database.windows.net:1433/tempest-database1" \
+                CHAT_ENDPOINT="${{ secrets.GROUP3_4OPENAIENDPOINT }}" \
+                CHAT_KEY="${{ secrets.GROUP3_4OPENAIAPIKEY }}" \
+                OPENAI_CHAT_DEPLOYMENT="gpt-5" \
+                EMBEDDING_ENDPOINT="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_ENDPOINT }}" \
+                EMBEDDING_KEY="${{ secrets.GROUP3_4_TEXT_EMBEDDING_3_SMALL_APIKEY }}" \
+                OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
+                SEARCH_ENDPOINT="${{ secrets.AISEARCH_ENDPOINT }}" \
+                SEARCH_KEY="${{ secrets.AISEARCH_APIKEY }}" \
+                OTEL_EXPORTER_OTLP_ENDPOINT="${{ secrets.GRAFANA_OTLP_ENDPOINT }}" \
+                OTEL_EXPORTER_OTLP_HEADERS="${{ secrets.GRAFANA_OTLP_HEADERS }}" \
+                OTEL_SERVICE_NAME="quadrant-directory-api" \
+                ALLOW_DEV_AUTH=1; then
+              echo "App settings applied."
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::Could not apply app settings after 3 attempts."
+              exit 1
+            fi
+            echo "Transient ARM failure -- retrying in 15s."
+            sleep 15
+          done
 
       # A web app recreated by Terraform (e.g. after a forced-replacement
       # change like a location move) comes up with no explicit runtime
@@ -319,10 +342,22 @@ jobs:
       # the app_command_line/app_settings drift-reset steps above.
       - name: Ensure Python runtime stack
         run: |
-          az webapp config set \
-            --name ${{ env.WEBAPP_NAME }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --linux-fx-version "PYTHON|3.14"
+          for attempt in 1 2 3; do
+            echo "Runtime stack attempt $attempt/3..."
+            if az webapp config set \
+              --name ${{ env.WEBAPP_NAME }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --linux-fx-version "PYTHON|3.14"; then
+              echo "Runtime stack set."
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::Could not set the runtime stack after 3 attempts."
+              exit 1
+            fi
+            echo "Transient ARM failure -- retrying in 15s."
+            sleep 15
+          done
 
       # `az webapp deployment source config-zip` is deprecated AND was
       # observed live to silently not replace wwwroot's contents on a
