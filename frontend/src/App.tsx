@@ -340,12 +340,18 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
             />
-            {/* Follow-up chat only where there's an assistant turn to follow
-                up on -- a direct/structured search has no conversational
-                answer for "which of those..." to attach to. Remounts
-                (key=debouncedQuery) on a brand new question, so an old
-                conversation never appears to answer a different one. */}
-            {!loading && !error && response?.mode === "assisted" && (
+            {/* Available under every search, direct or assisted -- a bare
+                name/skill match still deserves a way to ask a follow-up
+                ("which of those are in Bangalore?") without retyping the
+                whole thing as a question. This costs nothing extra for a
+                direct search: the model is only ever called once the box
+                is actually used, so a plain lookup stays exactly as free
+                as it is today (see unified_search.py's
+                test_direct_mode_never_calls_the_model — untouched by
+                this). Remounts (key=debouncedQuery) on a brand new
+                question, so an old conversation never appears to answer
+                a different one. */}
+            {!loading && !error && response !== null && (
               <AskChat key={debouncedQuery} identity={identity} viewMode={viewMode} onSelect={(id, name) => {
                 setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
                 resetProfile(id, name);

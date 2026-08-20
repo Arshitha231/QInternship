@@ -477,10 +477,19 @@ export interface AskStep {
   latency_ms: number;
 }
 
+// null when a chain finished on its own within budget (or wasn't a chain
+// at all); otherwise which axis of the plan class's budget ended it —
+// "steps" | "records" | "wall_clock" (app/chain_budgets.py). The note
+// this implies is already folded into `message` server-side, so no UI
+// needs to read this field to show the user it's incomplete — it's here
+// for anything that wants to distinguish the reason programmatically.
+export type ChainTruncationReason = "steps" | "records" | "wall_clock" | null;
+
 export interface AskResponse {
   message: string | null;
   tool_call: string | null;
   arguments: Record<string, unknown> | null;
   result: unknown;
   steps?: AskStep[];
+  truncated?: ChainTruncationReason;
 }

@@ -48,6 +48,7 @@ from app.tool_calling import (
     describes_a_problem,
     _deterministic_resolve,
     names_a_real_person,
+    phrase_answer,
     ResolvedToolCall,
     execute_chain,
     execute_with_fallback,
@@ -339,17 +340,27 @@ def _assisted(
         raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
-    return _build_assisted(db, caller, raw, elapsed_ms, reason, view_mode)
+    return _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
 
 
 def _build_assisted(
     db: Session, caller: AuthenticatedUser, raw: dict, elapsed_ms: int, reason: str,
-    view_mode: ViewMode = "work",
+    text: str, view_mode: ViewMode = "work",
 ) -> dict:
     tool_name = raw["tool_call"]
     result = raw["result"]
     results, citations = _people_and_citations(db, caller, tool_name, result, view_mode)
-    answer_text = raw["message"] or _phrase(tool_name, raw["arguments"] or {}, result)
+    # raw["message"] (disambiguation prompts, broadening explanations) is a
+    # specific procedural message the model has no way to reconstruct from
+    # the result alone -- kept verbatim. Otherwise, prefer a real model
+    # phrasing of the already-permission-filtered result (see phrase_answer's
+    # docstring for why that's safe); _phrase()'s template is only the
+    # fallback for when no real model is configured or the call fails.
+    answer_text = (
+        raw["message"]
+        or phrase_answer(text, tool_name, raw["arguments"] or {}, result)
+        or _phrase(tool_name, raw["arguments"] or {}, result)
+    )
     return {
         "mode": "assisted",
         "results": results,
@@ -658,11 +669,48 @@ def _phrase_experts(experts: list[ProblemExpert]) -> str:
 
 
 
+# Same count phrase_answer's system prompt asks the real model for ("name
+# up to 5 of them") -- this is its fallback (mock mode, or a failed model
+# call), and the two should show the same amount of the result regardless
+# of which one actually wrote the sentence.
+_TOP_MATCHES_SHOWN = 5
+
+
+def _phrase_people_matches(people: list[PersonSummary]) -> str:
+    """Several people match a structured filter (find_people/search_people
+    with more than one result). There's no ranking to report here -- every
+    one of them satisfies the same criteria equally, so this never claims
+    a "best" match the data doesn't support (same discipline _phrase_experts
+    holds to: never invent anything the tool didn't actually return).
+
+    Names a handful with enough real, already-returned context (role,
+    office, availability) to judge fit at a glance, instead of a bare
+    name -- a plain comma-separated list of 5 names is still a wall of
+    text with nothing to tell one match from another. The rest aren't
+    lost: every match, shown or not, is still a full card in the results
+    grid below this sentence, and a follow-up question narrows the list
+    without retyping the original one.
+    """
+    shown = people[:_TOP_MATCHES_SHOWN]
+    bits = []
+    for p in shown:
+        descriptor = ", ".join(part for part in (p.job_title, p.office.city if p.office else None) if part)
+        avail = " · available" if p.availability_status == "available" else ""
+        bits.append(f"{p.full_name} ({descriptor}{avail})" if descriptor or avail else p.full_name)
+    listed = "; ".join(bits)
+    remaining = len(people) - len(shown)
+    tail = f" {remaining} more match too — ask a follow-up to narrow it down." if remaining > 0 else ""
+    return f"{len(people)} {'person matches' if len(people) == 1 else 'people match'}: {listed}.{tail}"
+
+
 def _phrase(tool_name: str, args: dict, result: Any) -> str:
-    """Builds the overview's prose server-side from the already-filtered
-    result — the same job app/../frontend's old client-side phraseAnswer()
-    did, moved here because the frontend is meant to be a pure renderer now.
-    Never invents anything the tool didn't actually return.
+    """The deterministic fallback template for the overview's prose, used
+    when phrase_answer() (app.tool_calling) has no real model to ask or its
+    call fails -- mock mode, and any real-mode degradation, both need an
+    answer regardless. Never invents anything the tool didn't actually
+    return, same discipline the real model is prompted to follow in
+    phrase_answer's system prompt, so a request answers identically in
+    substance whichever of the two actually wrote the sentence.
     """
     if tool_name == "search_people":
         # Was falling through to the catch-all "Done." -- the structured
@@ -672,9 +720,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         people = result or []
         if not people:
             return "No one in the directory matched those criteria."
-        names = [p.full_name for p in people[:5]]
-        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
-        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+        return _phrase_people_matches(people)
 
     if tool_name == "find_people":
         people = result or []
@@ -698,9 +744,7 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
             if len(bits) > 1:
                 return f"{bits[0]} {', '.join(bits[1:])}."
             return f"Found 1 match: {person.full_name}."
-        names = [p.full_name for p in people[:5]]
-        extra = f", and {len(people) - 5} more" if len(people) > 5 else ""
-        return f"Found {len(people)} match{'es' if len(people) != 1 else ''}: {', '.join(names)}{extra}."
+        return _phrase_people_matches(people)
 
     if tool_name == "get_person":
         if result is None:

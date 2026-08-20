@@ -4,20 +4,25 @@ against app.tool_calling's internals — no live endpoint, no real Azure
 OpenAI call.
 """
 import json
+import time
 from types import SimpleNamespace
+
+from openai import OpenAIError
 
 import app.tool_calling as tool_calling
 from app.auth import AuthenticatedUser
+from app.chain_budgets import CEILING, DEFAULT_PLAN_CLASS, PLAN_CLASS_BUDGETS, ChainBudget
 from app.models import AuditLog
 from app.schemas import HistoryTurn
 from app.tool_calling import (
-    MAX_CHAIN_STEPS,
     MAX_ROUTING_RETRIES,
     OUT_OF_SCOPE_MESSAGE,
     AssistantTurn,
     ResolvedToolCall,
     _chain_step_messages,
     _deterministic_resolve,
+    _exhausted_axis,
+    _extract_record_ids,
     _llm_routed_via,
     _retry_after_execution_failure,
     _serialize_step_result,
@@ -27,6 +32,8 @@ from app.tool_calling import (
     execute_with_retry,
     resolve_intent,
 )
+
+CHAIN_STEP_BUDGET = PLAN_CLASS_BUDGETS[DEFAULT_PLAN_CLASS].steps
 
 CALLER = AuthenticatedUser(id="retry-test", role="hr")
 
@@ -578,9 +585,149 @@ def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_s
     first_call = ResolvedToolCall(name="find_people", arguments={"name": "start"}, needs_followup=True)
     result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
 
-    assert execute_count["n"] == MAX_CHAIN_STEPS  # never exceeds the hard cap...
-    assert resolve_count["n"] == MAX_CHAIN_STEPS - 1  # ...and never even ASKS for a step beyond it
+    assert execute_count["n"] == CHAIN_STEP_BUDGET  # never exceeds the plan class's declared step budget...
+    assert resolve_count["n"] == CHAIN_STEP_BUDGET - 1  # ...and never even ASKS for a step beyond it
     assert result["result"] == []  # step 3's result, returned as final regardless of needs_followup
+    assert result["truncated"] == "steps"  # budget cut it off -- the model still wanted more
+    assert "may be incomplete" in result["message"]  # a truncated answer says so, not silently
+
+
+def test_execute_chain_stops_on_the_records_budget_before_the_step_cap(db_session, monkeypatch):
+    """Steps is the wrong single axis: a chain cheap in steps can still be
+    expensive in exposure. Each step here "finds" 3 new distinct records,
+    well under a generous step budget -- the records axis is what
+    actually ends this chain, at step 2 (6 distinct records >= 5), not the
+    step count (which would allow up to 10)."""
+    from app.schemas import PersonSummary
+
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "budget_for",
+        lambda plan_class: ChainBudget(steps=10, max_records=5, max_wall_clock_ms=60_000))
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        # Real PersonSummary instances, not SimpleNamespace -- this result
+        # also flows through _chain_step_messages/_serialize_step_result
+        # (the model gets asked for a next step), which needs something
+        # actually JSON-serializable, same as a real tool result would be.
+        offset = tool_call.arguments.get("offset", 0)
+        return [
+            PersonSummary(
+                id=f"person-{offset + i}", full_name=f"Person {offset + i}", job_title="Engineer",
+                org_unit="Engineering", availability_status="available")
+            for i in range(3)
+        ]
+
+    call_count = {"n": 0}
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        call_count["n"] += 1
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"offset": call_count["n"] * 3}, needs_followup=True))
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"offset": 0}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    assert result["truncated"] == "records"
+    assert len(result["steps"]) == 2  # step 1: 3 distinct (under 5); step 2: 6 total (over 5) -- stops here
+
+
+def test_execute_chain_stops_on_the_wall_clock_budget(db_session, monkeypatch):
+    """A chain cheap in both steps and records can still be expensive in
+    time -- a slow dependency on step one alone exhausts a tight
+    wall-clock budget before either of the other two axes come close."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(
+        tool_calling, "budget_for",
+        lambda plan_class: ChainBudget(steps=10, max_records=1000, max_wall_clock_ms=20))
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        time.sleep(0.05)  # 50ms -- comfortably over the 20ms test budget
+        return []
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "next"}))
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "start"}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    assert result["truncated"] == "wall_clock"
+    assert len(result["steps"]) == 1
+
+
+def test_execute_chain_not_truncated_when_the_model_finishes_within_budget(db_session, monkeypatch):
+    """The budget only matters when the model still wants more -- a chain
+    that finishes on its own well inside every axis is not truncated just
+    because SOME step count was reached."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_execute(db, caller, tool_call, view_mode="work"):
+        return ["done"]
+
+    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+        return AssistantTurn(message="Nobody matches.")  # plain text -- model is done, no more calls
+
+    monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
+    monkeypatch.setattr(tool_calling, "_real_resolve", fake_real_resolve)
+
+    first_call = ResolvedToolCall(name="find_people", arguments={"name": "X"}, needs_followup=True)
+    result = execute_chain(db_session, CALLER, first_call, "who on X's team knows Y")
+
+    assert result["truncated"] is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_record_ids() / _exhausted_axis(): the two building blocks the
+# records and (indirectly) steps/wall-clock axes above are built from,
+# tested in isolation from the chain loop itself.
+# ---------------------------------------------------------------------------
+
+def test_extract_record_ids_from_a_list_of_records():
+    items = [SimpleNamespace(id="a"), SimpleNamespace(id="b")]
+    assert _extract_record_ids(items) == ["a", "b"]
+
+
+def test_extract_record_ids_from_a_single_record():
+    assert _extract_record_ids(SimpleNamespace(id="solo")) == ["solo"]
+
+
+def test_extract_record_ids_falls_back_to_owner_id():
+    # find_project_owner's ProjectOwnerResult has owner_id, not id.
+    assert _extract_record_ids(SimpleNamespace(owner_id="proj-owner-1")) == ["proj-owner-1"]
+
+
+def test_extract_record_ids_empty_for_a_result_with_no_identifiable_id():
+    # skill_gap/skill_scarcity's aggregate stats -- not a record fan-out.
+    assert _extract_record_ids({"gap": True}) == []
+    assert _extract_record_ids(None) == []
+
+
+def test_exhausted_axis_checks_steps_first():
+    # Every axis is technically exhausted here -- steps is still what's
+    # reported, deterministically, not whichever the caller checked first.
+    budget = ChainBudget(steps=3, max_records=1, max_wall_clock_ms=1)
+    assert _exhausted_axis(step=3, distinct_records=5, elapsed_ms=5000, budget=budget) == "steps"
+
+
+def test_exhausted_axis_checks_records_before_wall_clock():
+    budget = ChainBudget(steps=10, max_records=5, max_wall_clock_ms=1)
+    assert _exhausted_axis(step=2, distinct_records=5, elapsed_ms=5000, budget=budget) == "records"
+
+
+def test_exhausted_axis_wall_clock_when_neither_steps_nor_records_are_over():
+    budget = ChainBudget(steps=10, max_records=100, max_wall_clock_ms=1000)
+    assert _exhausted_axis(step=2, distinct_records=1, elapsed_ms=1500, budget=budget) == "wall_clock"
+
+
+def test_exhausted_axis_none_when_nothing_is_exhausted():
+    budget = ChainBudget(steps=10, max_records=100, max_wall_clock_ms=10_000)
+    assert _exhausted_axis(step=2, distinct_records=1, elapsed_ms=50, budget=budget) is None
 
 
 def test_execute_chain_stops_when_the_model_says_it_is_done(db_session, monkeypatch):
@@ -960,6 +1107,98 @@ def test_the_real_refusal_still_passes_through_unchanged(monkeypatch):
     turn = tool_calling._real_resolve("what's the weather")
     assert turn.message == tool_calling.OUT_OF_SCOPE_MESSAGE
     assert turn.off_contract_text is None
+
+
+# ---------------------------------------------------------------------------
+# phrase_answer() -- the second, narrowly-scoped call that phrases the
+# overview's answer from a result execute_tool_call() already produced.
+# Unlike _real_resolve's own free text (never rendered, see above), this
+# call's output IS the answer -- so what matters here is that it only ever
+# runs with a real model configured, degrades to None (never raises) on
+# failure, and is handed nothing beyond the already-permission-filtered
+# result -- never a second, less-filtered read.
+# ---------------------------------------------------------------------------
+
+def test_phrase_answer_is_never_called_without_a_real_model_configured():
+    # _mode() defaults to "mock" in tests (conftest clears CHAT_ENDPOINT/
+    # CHAT_KEY) -- no monkeypatch needed to prove the no-model case.
+    assert tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None) is None
+
+
+def test_phrase_answer_grounds_its_prompt_in_only_the_already_filtered_result(monkeypatch):
+    from app.schemas import PersonSummary
+
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    summary = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    seen_calls = []
+
+    def fake_create(**kwargs):
+        seen_calls.append(kwargs)
+        return _fake_content_response("Riley Report is a Software Engineer in Engineering.")
+
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))))
+
+    text = tool_calling.phrase_answer(
+        "who is Riley Report", "find_people", {"name": "Riley Report"}, [summary])
+
+    assert text == "Riley Report is a Software Engineer in Engineering."
+    assert len(seen_calls) == 1
+    # No tools offered on this call -- it phrases a sentence, it never picks
+    # a function the way _real_resolve's routing call does.
+    assert "tools" not in seen_calls[0]
+    # The user turn carries nothing but the question and the result this
+    # function was handed -- never a second query against the database, and
+    # never more than that one already-filtered PersonSummary.
+    user_turn = next(m["content"] for m in seen_calls[0]["messages"] if m["role"] == "user")
+    assert json.loads(user_turn.split("JSON:\n", 1)[1]) == {
+        "tool": "find_people", "arguments": {"name": "Riley Report"},
+        "result": [summary.model_dump(mode="json")],
+    }
+
+
+def test_phrase_answer_degrades_to_none_on_a_model_failure(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    def fake_create(**_kwargs):
+        raise OpenAIError("boom")
+
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))))
+
+    text = tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None)
+    assert text is None
+
+
+def test_phrase_answer_treats_blank_model_output_the_same_as_no_model(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: _content_client("   "))
+
+    text = tool_calling.phrase_answer("who is Riley Report", "find_people", {"name": "Riley Report"}, None)
+    assert text is None
+
+
+def test_phrasing_prompt_asks_for_up_to_5_named_with_a_reason_each():
+    # The prompt's actual instructions, not the model's output (which this
+    # suite can't observe live) -- what the model is TOLD to do is the
+    # contract this function holds to. "up to 5" matches
+    # unified_search._TOP_MATCHES_SHOWN, the deterministic fallback's own
+    # count, so a request doesn't visibly change shape depending on which
+    # of the two wrote the sentence.
+    prompt = tool_calling._PHRASING_SYSTEM_PROMPT
+    assert "up to 5" in prompt
+    assert "relevant" in prompt
+    # Must not claim a ranking the data doesn't support -- equally-matching
+    # filter results are not "the best," they just all satisfy the filter.
+    assert "best" in prompt and "unless the data itself ranks them" in prompt
+    # Flowing prose, not a list -- .ai-overview-answer renders one <p>, and
+    # a bulleted/numbered response would collapse to an unreadable run-on.
+    assert "no bullets" in prompt.lower() or "no numbered list" in prompt.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -673,7 +673,6 @@ button { font: inherit; }
   text-transform: uppercase; letter-spacing: .03em; margin: 0 0 8px;
 }
 .ai-overview-answer { font-size: 14.5px; line-height: 1.55; color: var(--ink); margin: 0; }
-.ai-overview-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 
 .citation-link {
   background: none; border: none; padding: 0; font: inherit; color: var(--purple-800); font-weight: 600;
