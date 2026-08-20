@@ -144,6 +144,13 @@ export function TeamBuilder({
           />
         </details>
 
+        {/* Shown on the form, before anything has been generated, and again
+            at the head of the result. Deliberately not a tooltip and not
+            collapsed: the whole risk this addresses is somebody acting on a
+            ranked list of colleagues as though it were a staffing decision,
+            and a caveat you have to hover to find does not reach them. */}
+        <TechnicalOnlyNotice />
+
         <div className="tb-actions">
           <button className="btn btn-primary" onClick={generate} disabled={!brief.trim() || busy}>
             {busy ? <Loader size={15} /> : <Sparkles size={15} />}
@@ -176,6 +183,38 @@ export function TeamBuilder({
     </div>
   );
 }
+
+/** The standing caveat on every proposed team.
+ *
+ *  Rendered twice on purpose -- once on the form and once at the head of the
+ *  result -- because the two moments are different. On the form it sets
+ *  expectations before anyone invests in a brief; on the result it is in
+ *  front of the reader at the moment they might act on a list of named
+ *  colleagues.
+ *
+ *  Not a tooltip, not a <details>, not dismissible. The failure this guards
+ *  against is someone treating a skills ranking as a staffing decision, and
+ *  a warning behind an interaction does not reach the person making it.
+ */
+function TechnicalOnlyNotice({ prominent = false }: { prominent?: boolean }) {
+  return (
+    <aside className={`tb-notice ${prominent ? "tb-notice-prominent" : ""}`} role="note">
+      <AlertCircle size={15} />
+      <div>
+        <p className="tb-notice-title">Technical recommendation only</p>
+        <p className="tb-notice-body">
+          This recommendation is based primarily on technical skills, proficiency,
+          and relevant project experience. Team formation involves many other
+          factors — including availability, collaboration, communication, business
+          needs, project context, and individual preferences — that may not be
+          represented here. Do not rely solely on this recommendation when forming
+          a team.
+        </p>
+      </div>
+    </aside>
+  );
+}
+
 
 function ProposalView({
   proposal,
@@ -213,7 +252,12 @@ function ProposalView({
 
   return (
     <div className={`tb-result ${busy ? "tb-result-busy" : ""}`}>
-      {/* Scope first. Which people this was drawn from is the single most
+      {/* Repeated here rather than relying on the copy up in the form: by
+          the time a team is on screen the form has usually been scrolled
+          past, and this is the moment the caveat is actually needed. */}
+      <TechnicalOnlyNotice prominent />
+
+      {/* Scope next. Which people this was drawn from is the single most
           load-bearing fact on the screen, and it is decided server-side
           from the caller -- never from the brief. */}
       <p className="tb-scope">

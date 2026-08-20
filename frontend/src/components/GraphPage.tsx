@@ -7,7 +7,8 @@ import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
 import { CommunityPage } from "./CommunityPage";
 import { TeamBuilder, useTeamBuilderState } from "./TeamBuilder";
-import { ChevronLeft, ChevronRight, Home, Sparkles } from "../icons";
+import { TeamFinder, useTeamFinderState } from "./TeamFinder";
+import { ChevronLeft, ChevronRight, Home, SearchIcon, Sparkles } from "../icons";
 import { avatarStyle } from "../avatarHue";
 
 type GraphKind = "department" | "team" | "skills" | "community";
@@ -57,10 +58,11 @@ export function GraphPage({
   // and putting it beside them would say the two kinds of picture are the
   // same kind of thing. The existing hierarchy is untouched underneath --
   // switching back restores it exactly, including the focus person.
-  const [mode, setMode] = useState<"hierarchy" | "build">("hierarchy");
+  const [mode, setMode] = useState<"hierarchy" | "build" | "find">("hierarchy");
   // Held here so a generated team survives a look at the real hierarchy --
   // see useTeamBuilderState.
   const teamState = useTeamBuilderState();
+  const finderState = useTeamFinderState();
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
   useEffect(() => {
@@ -124,6 +126,15 @@ export function GraphPage({
           >
             Build Team <Sparkles size={13} />
           </button>
+          <button
+            role="tab"
+            data-help="graph-find-team"
+            aria-selected={mode === "find"}
+            className={`tab tab-ai ${mode === "find" ? "active" : ""}`}
+            onClick={() => setMode("find")}
+          >
+            Find a Team <SearchIcon size={13} />
+          </button>
         </div>
 
         <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
@@ -131,6 +142,22 @@ export function GraphPage({
 
       {mode === "build" ? (
         <TeamBuilder identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} state={teamState} />
+      ) : mode === "find" ? (
+        <TeamFinder
+          identity={identity}
+          viewMode={viewMode}
+          state={finderState}
+          // "View Team Graph" re-centres the REAL hierarchy on the unit's
+          // manager and opens the Team view. This feature recommends an
+          // existing team, so the existing picture of it is the correct
+          // picture -- drawing a second one would be inventing a view of
+          // something the app already renders.
+          onViewTeamGraph={(employeeId) => {
+            onFocusChange(employeeId);
+            setKind("team");
+            setMode("hierarchy");
+          }}
+        />
       ) : (
       <>
       <div className="graph-viewbar">

@@ -94,6 +94,7 @@ from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
 from app.team_builder import TeamBuildUnavailable, build_team
+from app.team_finder import find_teams
 from app.workforce_reports import ReportUnavailable
 from app.workforce_reports import generate_report as generate_report_service
 from app.skill_routes import RouteDenied
@@ -126,7 +127,9 @@ from app.schemas import (
     WorkforceInsight,
     WorkforceReport,
     TeamBuildRequest,
+    TeamFindRequest,
     TeamProposal,
+    TeamRecommendationResult,
     WorkforceReportRequest,
     FinalizeDocumentRequest,
     LoginRequest,
@@ -1330,6 +1333,39 @@ def build_team_route(
         )
     except TeamBuildUnavailable as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Find the Right Team — which EXISTING team to go and ask.
+#
+# A different question from POST /team/build, and so a different gate. This
+# route ranks org units behind is_record_visible, the employee-discovery
+# rule that /search and the find_experts tool already aggregate behind for
+# every caller. resolve_scope is deliberately NOT used: it confines a
+# manager to their own reporting line, which would make "which other team
+# should I talk to" answerable only with "one of yours".
+# ---------------------------------------------------------------------------
+
+@app.post("/team/find", response_model=TeamRecommendationResult)
+def find_team_route(
+    body: TeamFindRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamRecommendationResult:
+    """Rank existing teams and departments for a technical question.
+
+    Creates nothing and changes nothing. The model turns the question into
+    skills and does no more than that — it never sees an employee row, never
+    picks a unit, and produces no statistic. Every count comes from
+    employees this caller is permitted to discover, filtered before any
+    aggregation, so a headcount cannot disclose somebody they cannot see.
+
+    Contact details are the unit head's name, title and work_email, all
+    universally-visible BASE_FIELDS.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    return find_teams(db, user, body.query, mode)
 
 
 # ---------------------------------------------------------------------------
