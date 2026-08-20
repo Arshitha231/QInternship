@@ -11,6 +11,8 @@ These tests hold find_people to the exact same guarantees test_visibility.py
 already proved for the plain SQL path — this is the same pipeline with a
 different retrieval source, so nothing about permissions should differ.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from app.models import Employee, EmployeeSkill, Office, OrgUnit, Skill
@@ -275,3 +277,76 @@ async def test_embedding_failure_falls_back_to_keyword_fuzzy(client, search_inde
     resp2 = await client.get("/people", params={"name": "good with dashboards"}, headers=auth_headers("employee"))
     assert resp2.status_code == 200
     assert "Dana Powers" not in [p["full_name"] for p in resp2.json()]
+
+
+# ---------------------------------------------------------------------------
+# Embedding cache (app/search_client.py). The expensive caller is not the
+# query: project_search's excerpt picker embeds the problem PLUS every
+# sentence of every matched project on every request.
+# ---------------------------------------------------------------------------
+
+class _CountingEmbedClient:
+    def __init__(self):
+        self.batches = []
+
+    @property
+    def embeddings(self):
+        return self
+
+    def create(self, model, input):
+        self.batches.append(list(input))
+        return SimpleNamespace(data=[
+            SimpleNamespace(index=i, embedding=[float(len(t)), 0.0, 1.0])
+            for i, t in enumerate(input)
+        ])
+
+
+def test_embed_texts_only_sends_texts_it_has_not_seen(monkeypatch):
+    import app.search_client as sc
+    sc.clear_vector_cache()
+    client = _CountingEmbedClient()
+    monkeypatch.setattr(sc, "_get_openai_client", lambda: client)
+
+    first = sc.embed_texts(["alpha", "beta"])
+    second = sc.embed_texts(["beta", "gamma"])
+
+    assert client.batches == [["alpha", "beta"], ["gamma"]]  # beta reused
+    assert second[0] == first[1]                             # and identical
+    sc.clear_vector_cache()
+
+
+def test_embed_texts_keeps_input_order_when_partly_cached(monkeypatch):
+    """rebuild_embeddings zips results back onto its pending rows, so order
+    is load-bearing -- and a partial cache hit is where it would break."""
+    import app.search_client as sc
+    sc.clear_vector_cache()
+    client = _CountingEmbedClient()
+    monkeypatch.setattr(sc, "_get_openai_client", lambda: client)
+
+    sc.embed_texts(["bb"])
+    out = sc.embed_texts(["a", "bb", "cccc"])
+    assert [v[0] for v in out] == [1.0, 2.0, 4.0]  # length-derived, in order
+    sc.clear_vector_cache()
+
+
+def test_a_failed_embedding_call_is_not_cached_as_a_failure(monkeypatch):
+    import app.search_client as sc
+    from openai import OpenAIError
+    sc.clear_vector_cache()
+
+    class _Flaky:
+        tries = 0
+
+        @property
+        def embeddings(self): return self
+
+        def create(self, model, input):
+            type(self).tries += 1
+            if type(self).tries == 1:
+                raise OpenAIError("transient")
+            return SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[1.0])])
+
+    monkeypatch.setattr(sc, "_get_openai_client", lambda: _Flaky())
+    assert sc.embed_texts(["x"]) is None      # degrades, as documented
+    assert sc.embed_texts(["x"]) == [[1.0]]   # and recovers on the next call
+    sc.clear_vector_cache()
