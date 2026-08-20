@@ -51,6 +51,12 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewDocId, setPreviewDocId] = useState<number | null>(null);
   const [previewSkills, setPreviewSkills] = useState<SkillDraft[]>([]);
+  // Proposed skills that don't resolve against the catalog -- kept apart
+  // from previewSkills (never merged with existing requirements, since
+  // there's nothing existing to merge with) so confirming them is a
+  // visibly distinct "create this in the catalog" decision, not folded
+  // silently into "attach an existing skill."
+  const [previewNewSkills, setPreviewNewSkills] = useState<SkillDraft[]>([]);
   const [previewNotes, setPreviewNotes] = useState<NoteDraft[]>([]);
 
   const [confirming, setConfirming] = useState(false);
@@ -97,6 +103,7 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
     // switch -- it was never confirmed, and it names a different project.
     setPreviewDocId(null);
     setPreviewSkills([]);
+    setPreviewNewSkills([]);
     setPreviewNotes([]);
     setUploadError(null);
     setConfirmError(null);
@@ -123,6 +130,11 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
         merged.set(s.skill.toLowerCase(), { skill: s.skill, minimum_level: s.minimum_level as SkillLevelName, fromUpload: true });
       }
       setPreviewSkills([...merged.values()]);
+      // Not merged with anything existing -- these are proposals for
+      // skills that AREN'T in the catalog yet, so there's no existing row
+      // to collide with. Confirming one creates it (create_if_missing).
+      setPreviewNewSkills(
+        result.new_skills.map((s) => ({ skill: s.skill, minimum_level: s.minimum_level as SkillLevelName, fromUpload: true })));
       // Notes are append-only server-side (never a replace), so the
       // preview only needs the newly extracted ones -- existing notes
       // stay exactly as they are without needing to be re-sent here.
@@ -139,10 +151,14 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
     setConfirming(true);
     setConfirmError(null);
     try {
-      await setRequiredSkills(
-        identity, selectedId,
-        previewSkills.map((s) => ({ skill: s.skill, minimum_level: s.minimum_level })),
-      );
+      await setRequiredSkills(identity, selectedId, [
+        ...previewSkills.map((s) => ({ skill: s.skill, minimum_level: s.minimum_level })),
+        // create_if_missing: true only here -- these rows were shown to
+        // HR distinctly as "not yet in the system" and kept, so confirming
+        // them is an explicit decision to add them to the catalog, not a
+        // silent side effect of accepting the rest of the preview.
+        ...previewNewSkills.map((s) => ({ skill: s.skill, minimum_level: s.minimum_level, create_if_missing: true })),
+      ]);
       if (previewNotes.length > 0) {
         await addRequirementNotes(
           identity, selectedId,
@@ -152,6 +168,7 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
       }
       setPreviewDocId(null);
       setPreviewSkills([]);
+      setPreviewNewSkills([]);
       setPreviewNotes([]);
       setJustConfirmed(true);
       setRefreshToken((t) => t + 1);
@@ -211,7 +228,7 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
             <div className="skill-edit">
               <h3>Required skills</h3>
               {previewSkills.length === 0 ? (
-                <p className="continuity-meta">No skills proposed — add one below if needed.</p>
+                <p className="continuity-meta">No recognized skills proposed — add one below if needed.</p>
               ) : (
                 <ul className="skill-edit-list">
                   {previewSkills.map((s, i) => (
@@ -248,6 +265,45 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
               >
                 + Add a skill
               </button>
+
+              {previewNewSkills.length > 0 && (
+                <>
+                  <h3>New skills — not yet in this system</h3>
+                  <p className="continuity-meta">
+                    These names don't match anything in the skill catalog. Confirming one adds it as a new,
+                    permanent skill everyone's profile can be matched against — remove any row you don't want
+                    created.
+                  </p>
+                  <ul className="skill-edit-list">
+                    {previewNewSkills.map((s, i) => (
+                      <li className="skill-edit-row" key={i}>
+                        <input
+                          className="edit-input skill-edit-name" value={s.skill}
+                          aria-label={`New skill ${i + 1} name`}
+                          onChange={(e) => setPreviewNewSkills((rows) =>
+                            rows.map((r, j) => (j === i ? { ...r, skill: e.target.value } : r)))}
+                        />
+                        <select
+                          className="skill-edit-level" value={s.minimum_level}
+                          aria-label={`New skill ${i + 1} level`}
+                          onChange={(e) => setPreviewNewSkills((rows) =>
+                            rows.map((r, j) => (j === i ? { ...r, minimum_level: e.target.value as SkillLevelName } : r)))}
+                        >
+                          {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                        <span className="pill">new — will be created</span>
+                        <button
+                          type="button" className="icon-btn"
+                          aria-label={`Remove ${s.skill || "this new skill"}`}
+                          onClick={() => setPreviewNewSkills((rows) => rows.filter((_, j) => j !== i))}
+                        >
+                          <X size={14} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
 
               <h3>Notes</h3>
               {previewNotes.length === 0 ? (
@@ -293,6 +349,7 @@ export function PRDsPage({ identity, viewMode }: { identity: Identity; viewMode:
                   onClick={() => {
                     setPreviewDocId(null);
                     setPreviewSkills([]);
+                    setPreviewNewSkills([]);
                     setPreviewNotes([]);
                   }}
                 >

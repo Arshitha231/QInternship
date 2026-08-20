@@ -121,6 +121,44 @@ def test_unknown_skill_name_raises_and_writes_nothing(fx, db_session):
     assert get_required_skills(db_session, caller, fx.project.id) == []
 
 
+# --- create_if_missing: the PRD-upload "new skill" precedent, mirroring
+# app.proposals._commit_skill's own create-by-name behavior for resumes ---
+
+def test_create_if_missing_false_by_default_still_rejects_unknown_skill(fx, db_session):
+    # A hand-typed entry (never shown to a human as "this is new" first)
+    # must still fail loudly on a typo -- create_if_missing defaults False
+    # for every caller that doesn't explicitly opt in.
+    with pytest.raises(UnknownSkill):
+        set_required_skills(db_session, HR, fx.project.id, [
+            ProjectSkillRequirementIn(skill="Project Skills Fixture Typo Xyz"),
+        ])
+
+
+def test_create_if_missing_true_creates_the_skill_row(fx, db_session):
+    name = "Project Skills Fixture New Skill"
+    assert db_session.query(Skill).filter(Skill.name.ilike(name)).first() is None
+
+    result = set_required_skills(db_session, HR, fx.project.id, [
+        ProjectSkillRequirementIn(skill=name, minimum_level="Working", create_if_missing=True),
+    ])
+    assert [(r.skill, r.minimum_level) for r in result] == [(name, "Working")]
+
+    created = db_session.query(Skill).filter(Skill.name.ilike(name)).first()
+    assert created is not None
+    assert created.category == SkillCategory.technical
+
+
+def test_create_if_missing_does_not_duplicate_an_existing_skill(fx, db_session):
+    # resolve_skill is checked FIRST -- create_if_missing only ever fires
+    # on a genuine miss, never mints a second row for a name that already
+    # resolves (case-insensitively, or through a synonym).
+    result = set_required_skills(db_session, HR, fx.project.id, [
+        ProjectSkillRequirementIn(skill=fx.skill_a.name.upper(), minimum_level="Expert", create_if_missing=True),
+    ])
+    assert [(r.skill, r.minimum_level) for r in result] == [(fx.skill_a.name, "Expert")]
+    assert db_session.query(Skill).filter(Skill.name.ilike(fx.skill_a.name)).count() == 1
+
+
 def test_synonym_resolves_to_canonical_skill_name(fx, db_session):
     caller = AuthenticatedUser(id=fx.owner.id, role="employee", name=fx.owner.full_name)
     result = set_required_skills(db_session, caller, fx.project.id, [

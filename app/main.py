@@ -1881,6 +1881,16 @@ async def upload_prd_route(
     structurally separate pipeline (app/prd_extraction.py, not
     app/doc_extraction.py's classify/person-disambiguation flow), since a
     PRD names no person to disambiguate, only what a project needs.
+
+    A proposed skill that doesn't resolve against the vocabulary comes back
+    under `new_skills`, not `skills` — same shape, but confirming it means
+    PUT .../required-skills will create that Skill row (create_if_missing),
+    not just attach an existing one. Split out rather than folded into
+    `skills` so the frontend can show HR which rows are "attach" and which
+    are "create," and rather than silently dropped or turned into a note
+    so a real, human-reviewed decision to add it to the catalog is still
+    available — see app.proposals._commit_skill for the identical
+    create-by-name precedent on the resume/status-report review pipeline.
     """
     mode = resolve_view_mode(user.role, view_mode)
     if user.role != "hr" or mode != "work":
@@ -1902,28 +1912,21 @@ async def upload_prd_route(
     # Extraction (mock or real) reads the document, not this system's skill
     # vocabulary -- it can propose a name ("communication", "strategy")
     # that PUT /projects/{id}/required-skills' own resolve_skill() will
-    # never recognize, since required-skills is deliberately a controlled
-    # vocabulary (see app/project_skills.py's UnknownSkill), not free text.
-    # Left unfiltered, HR could build an editable preview that then 422s
-    # whole-batch on confirm with no way to tell which row was the problem.
-    # Checked here, once, so the preview HR reviews is exactly what confirm
-    # will actually accept -- an unrecognized "skill" is real signal, just
-    # not a structured one, so it becomes a note instead of being dropped.
+    # never recognize on its own, since required-skills is deliberately a
+    # controlled vocabulary (see app/project_skills.py's UnknownSkill), not
+    # free text. Checked here, once, so HR sees which rows already exist in
+    # the catalog and which would be new before confirming either way.
     skills: list[dict] = []
-    demoted_notes: list[dict] = []
+    new_skills: list[dict] = []
     for s in result.skills:
-        if resolve_skill(db, s.skill) is not None:
-            skills.append({"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence})
-        else:
-            demoted_notes.append({
-                "note": f"Requires {s.skill} — not a recognized skill in this system, recorded as a note instead.",
-                "confidence": s.confidence,
-            })
+        target = skills if resolve_skill(db, s.skill) is not None else new_skills
+        target.append({"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence})
     return {
         "doc_id": doc.id,
         "filename": doc.filename,
         "skills": skills,
-        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes] + demoted_notes,
+        "new_skills": new_skills,
+        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes],
     }
 
 

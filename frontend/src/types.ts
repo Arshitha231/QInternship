@@ -545,6 +545,12 @@ export interface ProjectListItem {
 export interface ProjectSkillRequirementIn {
   skill: string;
   minimum_level: "Learning" | "Working" | "Expert";
+  // Defaults false server-side. True only for a row already shown to a
+  // human as "not yet in the system" and explicitly kept (PRDsPage's "new
+  // skills" section) -- app/project_skills.py's set_required_skills still
+  // rejects an unknown name outright when this is absent/false, same as a
+  // hand-typed entry with a typo always has.
+  create_if_missing?: boolean;
 }
 
 export interface ProjectSkillRequirementOut {
@@ -597,6 +603,12 @@ export interface UploadPrdResult {
   doc_id: number;
   filename: string;
   skills: PrdSkillProposal[];
+  // Same shape as `skills` -- proposed, but the name doesn't resolve
+  // against the skill catalog yet. Confirming one of these means PUT
+  // .../required-skills will CREATE that Skill row (create_if_missing),
+  // not just attach an existing one -- kept separate from `skills` so the
+  // frontend can show HR which is which before they confirm either way.
+  new_skills: PrdSkillProposal[];
   notes: PrdNoteProposal[];
 }
 

@@ -737,6 +737,16 @@ class ProjectSkillRequirementIn(BaseModel):
 
     skill: str
     minimum_level: Literal["Learning", "Working", "Expert"] = "Working"
+    # Default False preserves set_required_skills' existing strict behavior
+    # (UnknownSkill on a name that doesn't resolve) for every caller that
+    # doesn't set it -- a hand-typed entry with a typo should still fail
+    # loudly, not silently mint a new skill. True is for a caller that has
+    # already shown the name to a human as "not yet in the system" and had
+    # them explicitly keep it (see POST /projects/{id}/prd's new_skills and
+    # PRDsPage.tsx) -- the same "nothing writes without a person accepting
+    # it" discipline this app already applies everywhere else, just also
+    # covering "and that acceptance may create a catalog entry."
+    create_if_missing: bool = False
 
 
 class ProjectSkillRequirementOut(BaseModel):
