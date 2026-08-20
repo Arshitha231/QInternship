@@ -418,3 +418,38 @@ async def test_scrub_never_touches_a_docs_upload_row_with_no_project_id(db_sessi
     db_session.query(Project).filter_by(id=project.id).delete()
     db_session.query(UploadedDoc).filter_by(id=doc_id).delete()
     db_session.commit()
+
+
+async def test_scrub_never_touches_a_document_from_a_different_project(fx, db_session):
+    # IDOR regression: source_doc_id is caller-supplied and otherwise
+    # unvalidated, and _owner_or_hr only requires the caller to own THE
+    # PROJECT THE NOTE IS FOR -- an ordinary (non-HR) project owner, not
+    # just HR. Without the project_id filter on the scrub query, that
+    # owner could pass an arbitrary/enumerated source_doc_id belonging to
+    # a DIFFERENT project -- including one they have no visibility into at
+    # all, like fx.confidential here -- and irreversibly wipe its extracted
+    # text. The note write itself succeeding (this caller genuinely owns
+    # fx.project) must not let the scrub reach outside that project.
+    from datetime import datetime
+
+    other_project_doc = UploadedDoc(
+        filename="confidential-prd.docx", content_type="application/octet-stream", byte_size=10,
+        extracted_text="Confidential engagement details.", uploaded_by=HR.id, uploaded_at=datetime.now(),
+        project_id=fx.confidential.id,
+    )
+    db_session.add(other_project_doc)
+    db_session.commit()
+    doc_id = other_project_doc.id
+
+    caller = AuthenticatedUser(id=fx.owner.id, role="employee", name=fx.owner.full_name)
+    result = add_requirement_notes(db_session, caller, fx.project.id, [
+        RequirementNoteIn(note="x", source_doc_id=doc_id),
+    ])
+    assert result is not None  # the note itself is legitimate -- caller owns fx.project
+
+    db_session.refresh(other_project_doc)
+    assert other_project_doc.extracted_text == "Confidential engagement details."
+    assert other_project_doc.content_scrubbed_at is None
+
+    db_session.query(UploadedDoc).filter_by(id=doc_id).delete()
+    db_session.commit()

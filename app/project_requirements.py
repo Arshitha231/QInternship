@@ -97,8 +97,14 @@ def add_requirement_notes(
             source_doc_ids.add(note.source_doc_id)
 
     if source_doc_ids:
+        # Scoped to THIS project -- source_doc_id is caller-supplied and
+        # otherwise unvalidated (an ordinary project owner, not just HR,
+        # reaches this path via _owner_or_hr above), so without this filter
+        # an owner of project A could pass any enumerated uploaded_docs id
+        # and irreversibly scrub a PRD document belonging to an unrelated,
+        # even confidential, project B they have no visibility into at all.
         docs = db.query(UploadedDoc).filter(
-            UploadedDoc.id.in_(source_doc_ids), UploadedDoc.project_id.isnot(None)).all()
+            UploadedDoc.id.in_(source_doc_ids), UploadedDoc.project_id == project_id).all()
         for doc in docs:
             doc.extracted_text = ""
             doc.content_scrubbed_at = datetime.now()
