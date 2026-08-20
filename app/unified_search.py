@@ -367,8 +367,12 @@ def _build_assisted(
         # truncated chain from reporting a budget event instead of an
         # answer -- the person cards still render either way, but without
         # this the overview text would have said nothing about them.
-        base = phrase_answer(text, tool_name, raw["arguments"] or {}, result) or _phrase(
-            tool_name, raw["arguments"] or {}, result)
+        base = (
+            _phrase(tool_name, raw["arguments"] or {}, result)
+            if _model_cannot_phrase(tool_name, result)
+            else phrase_answer(text, tool_name, raw["arguments"] or {}, result)
+            or _phrase(tool_name, raw["arguments"] or {}, result)
+        )
         answer_text = f"{base} {raw['message']}" if raw["message"] else base
     else:
         # raw["message"] here (disambiguation prompts, broadening
@@ -381,8 +385,12 @@ def _build_assisted(
         # doesn't pass grounding.
         answer_text = (
             raw["message"]
-            or phrase_answer(text, tool_name, raw["arguments"] or {}, result)
-            or _phrase(tool_name, raw["arguments"] or {}, result)
+            or (
+                _phrase(tool_name, raw["arguments"] or {}, result)
+                if _model_cannot_phrase(tool_name, result)
+                else phrase_answer(text, tool_name, raw["arguments"] or {}, result)
+                or _phrase(tool_name, raw["arguments"] or {}, result)
+            )
         )
     return {
         "mode": "assisted",
@@ -615,6 +623,43 @@ def _people_and_citations(
     return [], []
 
 
+def _model_cannot_phrase(tool_name: str, result: object) -> bool:
+    """Results whose meaning depends on something the model cannot see.
+
+    phrase_answer is normally preferred over the templates below: it reads
+    better, and it is safe because it only ever sees an already
+    permission-filtered result. Two cases break that, and both were found
+    by asking the deployed app real questions:
+
+      AMBIGUOUS / UNKNOWN NAME
+        _phrase_ambiguous_person exists to ask "which one did you mean?"
+        and to name the candidates by title and team, because for the
+        duplicated full names in this directory the name alone
+        disambiguates nothing. Asked "who does Giulia Iyer report to", the
+        model instead wrote "There are two people named Giulia Iyer in the
+        data, and this result doesn't include their managers" -- true,
+        fluent, and useless: it names neither, and asks nothing the caller
+        can answer. The prompt IS the answer here; there is nothing for a
+        model to add to it.
+
+      AN EMPTY ORG CHAIN
+        Empty means "nobody there" OR "that direction is restricted for
+        your role", and the result alone cannot tell them apart -- the
+        template says both, deliberately. Asked as an ordinary employee
+        for a manager's direct reports, the model wrote "No direct reports
+        were found for Kenji Hernandez." He has eight; the same question
+        as HR returns all of them. That is not a phrasing preference, it
+        is the app stating something false about the organisation.
+
+    In both cases the template is not a degraded fallback, it is the more
+    accurate sentence, so it wins outright rather than being reached only
+    when the model is unavailable.
+    """
+    if isinstance(result, (AmbiguousPersonMatch, UnknownPerson)):
+        return True
+    return tool_name == "get_org_chain" and not result
+
+
 def _phrase_ambiguous_person(match: AmbiguousPersonMatch) -> str:
     """Names the candidates instead of picking one. Job title and team are
     what actually tell two people apart — for the duplicated full names in
@@ -811,7 +856,19 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         is_up = args.get("direction") == "up"
         label = "above them" if is_up else "below them"
         if not nodes:
-            return f"Nobody found {label} in the org chart (or that direction is restricted for your role)."
+            # Both halves stay in the sentence. Empty genuinely means one of
+            # two different things, and the caller is the only one who can
+            # tell which -- an employee asking for a manager's reports gets
+            # this, and "no direct reports" alone would be a false statement
+            # about the organisation (verified: the same question as HR
+            # returns eight people).
+            return (
+                f"No one is listed {label} — either there is nobody, "
+                "or that part of the reporting chain isn't visible to your role."
+                if not is_up else
+                "No one is listed above them — either they're at the top of "
+                "the chain, or it isn't visible to your role."
+            )
         # An "up" walk — whether 1 hop ("my manager") or N ("my manager's
         # manager") — is asking for one specific person at the far end of
         # the chain, not a headcount; nodes are depth-ordered ascending, so
