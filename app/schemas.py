@@ -1396,3 +1396,99 @@ class SuggestedSkill(BaseModel):
     skill: str
     capable_count: int
     reason: str
+
+
+# --- Workforce Intelligence reports (app/workforce_reports.py) ------------
+#
+# A natural-language question answered as a structured, evidence-backed
+# report. The model plans WHICH analyses to run and writes the prose; it
+# never queries anything and never decides who may see what. Retrieval goes
+# through app/analytics.py's resolve_scope, the same gate the dashboard
+# uses, so the facts the model is shown are already permission-filtered.
+#
+# Every claim-bearing field carries `evidence`. That is not decoration: it
+# is what makes a generated sentence checkable against the table it came
+# from, and what the UI turns into a click-through.
+
+AnalysisType = Literal["skill_gap", "skill_scarcity", "training", "project_coverage"]
+
+
+class ReportEvidence(BaseModel):
+    """One checkable fact behind a finding, with the ids needed to open it.
+
+    `label` is prose a reader can verify at a glance ("Terraform: 2 Expert,
+    8 Working, 14 Learning"). The ids are how the UI turns that into a
+    drill-down into the existing skill / project / roster views -- they are
+    deliberately NOT shown to the model (see the payload builder), so a
+    fabricated id is impossible rather than merely unlikely.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["skill", "project", "training", "department"]
+    label: str
+    skill_id: int | None = None
+    project_id: int | None = None
+    course_code: str | None = None
+    org_unit_id: int | None = None
+
+
+class ReportFinding(BaseModel):
+    """A single statement in the report, with what backs it.
+
+    `severity` is assigned by the deterministic analysis, never by the
+    model: how bad something is follows from the counts, and letting prose
+    decide it would make the badge disagree with the table.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    detail: str
+    severity: Literal["high", "medium", "low", "info"] = "info"
+    evidence: list[ReportEvidence] = Field(default_factory=list)
+
+
+class ReportSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    heading: str
+    findings: list[ReportFinding] = Field(default_factory=list)
+
+
+class WorkforceReport(BaseModel):
+    """The whole answer.
+
+    `analyses` records which analysis types actually ran, so a reader can
+    tell "the training section is empty because nothing is overdue" from
+    "the training section is empty because the question never asked for
+    it". `narrative_source` says whether the prose was model-written (and
+    therefore numeral-checked) or assembled deterministically.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    query: str
+    scope: DashboardScope
+    analyses: list[AnalysisType]
+    #: Analysis types the query asked for that this build cannot serve.
+    #: Reported rather than silently dropped.
+    unsupported: list[str] = Field(default_factory=list)
+    executive_summary: str
+    narrative_source: Literal["model", "derived"]
+    strengths: ReportSection
+    skill_gaps: ReportSection
+    risks: ReportSection
+    training_insights: ReportSection
+    project_insights: ReportSection
+    recommendations: ReportSection
+    #: Everything the report drew on, deduplicated -- the reader's audit
+    #: trail, and the UI's index for click-through.
+    evidence: list[ReportEvidence] = Field(default_factory=list)
+
+
+class WorkforceReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=500)

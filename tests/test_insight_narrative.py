@@ -1,5 +1,10 @@
 """Tests for app/insight_narrative.py — the dashboard's opening paragraph.
 
+The numeral-grounding helpers now live in app/grounding.py (shared with the
+workforce report generator, which needs the identical guarantee) and are
+imported under their old names here: what these tests pin is the RULE, and
+the rule did not move.
+
 The whole point of this module is a boundary: a model may re-order and
 connect findings that are already computed, and may not produce a number.
 So the tests that matter are the ones that try to get a fabricated number
@@ -17,10 +22,10 @@ from types import SimpleNamespace
 import pytest
 from openai import OpenAIError
 
-from app import insight_narrative
+from app.grounding import is_grounded as _numerals_are_grounded
+from app.grounding import numerals as _numerals
 from app.insight_narrative import (
-    MAX_SUMMARY_CHARS, _derived_summary, _fact_numerals, _facts_payload,
-    _numerals, _numerals_are_grounded, narrate,
+    MAX_SUMMARY_CHARS, _derived_summary, _fact_numerals, _facts_payload, narrate,
 )
 from app.schemas import DashboardScope, WorkforceInsight
 

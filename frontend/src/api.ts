@@ -6,7 +6,7 @@ import type {
   ReminderResult, SkillDetail, SkillRouteResult, SkillSupplyDemand, SuggestedOfficialLinkOut,
   SuggestedSkill, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
-  UploadedDocSummary, ViewMode,
+  UploadedDocSummary, ViewMode, WorkforceReport,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -976,4 +976,20 @@ export function getSkillSuggestions(
 ): Promise<SuggestedSkill[]> {
   return request<SuggestedSkill[]>(
     `/people/${personId}/skill-suggestions?view_mode=${viewMode}`, identity, { signal });
+}
+
+
+// --- Workforce Intelligence (app/workforce_reports.py) --------------------
+//
+// Scope is resolved server-side from the caller before the planner or the
+// model runs, so there is nothing to send here but the question.
+export function generateWorkforceReport(
+  identity: Identity, query: string, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<WorkforceReport> {
+  return request<WorkforceReport>(`/analytics/report?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+    signal,
+  });
 }
