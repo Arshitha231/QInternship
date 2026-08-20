@@ -142,9 +142,24 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
   // hub->members relationship is drawn as a single CSS trunk instead (see
   // .tree-tier-trunk and this file's header note).
   const openChildren = openId ? childrenCache[openId] : undefined;
+  // A person can be on this roster AND in the opened sub-team -- a manager's
+  // reports are usually their own teammates too. Both copies are real cards
+  // on screen, so both register a ref, and keying them by employee id alone
+  // meant the second registration silently replaced the first: the connector
+  // then measured whichever copy happened to render last and drew the line
+  // to the wrong one. Namespacing the sub-team copy keeps the two apart.
+  const subRef = (id: string) => `sub:${id}`;
   const groups: TreeGroup[] =
     openId && openChildren?.length
-      ? [{ parentId: openId, childIds: openChildren.map((c) => c.id) }]
+      ? [{
+          // "gutter", not the default direct drop: the sub-team band sits
+          // under the WHOLE roster while the member it belongs to stays in
+          // the grid above, so a straight drop runs through every card in
+          // between -- 42 crossings on an 18-person roster. See TreeGroup.
+          parentId: openId,
+          childIds: openChildren.map((c) => subRef(c.id)),
+          route: "gutter" as const,
+        }]
       : [];
 
   const zoomPan = useZoomPan();
@@ -152,11 +167,18 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
     groups,
     [hubId, teammates, focusId, openId, childrenCache],
   );
+  // Identity vs size, same split as DepartmentGraph. A different team or a
+  // different focus person resets scale and pan; opening a sub-team only
+  // rescues the view if the content has outgrown the frame, and never
+  // discards where the reader had panned to. Opening one used to trigger a
+  // full refit, which rescaled the whole roster you were reading.
   useFitOnChange(
     zoomPan.fit,
     zoomPan.frameRef,
     zoomPan.contentRef,
-    `${hubId ?? ""}:${focusId}:${teammates?.length ?? -1}:${openId ?? ""}:${openChildren?.length ?? -1}`,
+    `${hubId ?? ""}:${focusId}:${teammates?.length ?? -1}`,
+    zoomPan.fitIfNeeded,
+    `${openId ?? ""}:${openChildren?.length ?? -1}`,
   );
 
   if (error) {
@@ -270,7 +292,7 @@ export function TeamGraph({ identity, viewMode, focusId, focusPerson, onNavigate
                     key={c.id}
                     node={c}
                     onClick={() => handleNodeClick(c.id, c.full_name)}
-                    registerRef={registerNode(c.id)}
+                    registerRef={registerNode(subRef(c.id))}
                   />
                 ))
               ) : (
