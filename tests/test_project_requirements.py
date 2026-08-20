@@ -316,6 +316,35 @@ async def test_http_prd_upload_returns_a_preview_without_writing_anything(client
     assert db_session.query(ProjectSkillRequirement).filter_by(project_id=fx.project.id).count() == 0
 
 
+async def test_http_prd_upload_demotes_an_unrecognized_skill_to_a_note(client, fx, db_session):
+    # Live bug: extraction (mock or real) reads the document, not this
+    # system's skill vocabulary, and can propose a name -- "Communication"
+    # -- that PUT .../required-skills' own resolve_skill() has never heard
+    # of. Left in the "skills" list, confirming the untouched preview 422s
+    # whole-batch (UnknownSkill) with no indication of which row caused it.
+    # The route must filter it out of `skills` and fold it into `notes`
+    # instead, so the preview HR reviews is exactly what confirm accepts.
+    text = "Meridian Health -- Claims Platform Modernization\n\nThis engagement requires Communication.\n"
+    resp = await client.post(
+        f"/projects/{fx.project.id}/prd",
+        files={"file": ("prd.docx", _docx_bytes(text),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        headers=auth_headers("hr", "prd-uploader-2"),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert not any(s["skill"] == "Communication" for s in body["skills"])
+    assert any("Communication" in n["note"] for n in body["notes"])
+
+    # And the preview that's left really is confirmable -- no 422.
+    from app.project_skills import set_required_skills
+    from app.schemas import ProjectSkillRequirementIn
+
+    confirmable = [ProjectSkillRequirementIn(skill=s["skill"], minimum_level=s["minimum_level"]) for s in body["skills"]]
+    result = set_required_skills(db_session, HR, fx.project.id, confirmable)
+    assert result is not None
+
+
 async def test_http_prd_upload_forbidden_for_non_hr(client, fx, db_session):
     resp = await _upload_prd(client, fx.project.id, role="employee", user_id=fx.owner.id)
     assert resp.status_code == 403
