@@ -86,6 +86,53 @@ jobs:
               - 'requirements.txt'
 
   # ---------------------------------------------------------------------
+  # Frontend typecheck + build. Every push and PR, same as `test`.
+  #
+  # This exists because `tsc -b` used to run in exactly one place -- the
+  # deploy job's build step -- and deploy only runs on a push to main. A
+  # frontend type error was therefore invisible on every PR and only
+  # surfaced on the merge commit, with terraform already applied and the
+  # App Service mid-deploy. That is how PR #73's OpenTelemetry change
+  # merged green and then broke main's deploy on
+  # `Property 'addSpanProcessor' does not exist on type 'WebTracerProvider'`.
+  #
+  # It runs `npm run build` -- the EXACT command the deploy job runs, not a
+  # bare `tsc --noEmit` -- so a green run here means the deploy's build step
+  # will succeed. A cheaper typecheck-only variant would still have caught
+  # that particular error, and would miss anything that only fails at bundle
+  # time (an unresolved import, a bad asset reference), which is the other
+  # half of what breaks a deploy.
+  #
+  # Its own job rather than a step inside `test`: it needs Node, not Python,
+  # and as a separate job it runs in parallel instead of adding a minute to
+  # the critical path. Unconditional rather than paths-filtered, on the same
+  # reasoning the filter block above gives for failing open -- a filter that
+  # forgets a path produces a job that silently does not run, which looks
+  # exactly like a job that passed.
+  # ---------------------------------------------------------------------
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # VITE_API_BASE blank, matching the deploy job -- so this builds the
+      # same bundle deploy will, and a base-URL-dependent break shows up
+      # here rather than in production.
+      - name: Typecheck and build
+        working-directory: frontend
+        run: VITE_API_BASE= npm run build
+
+  # ---------------------------------------------------------------------
   # Golden evaluation set. Its own job, and deliberately NOT in anything
   # else's `needs`, so it runs in parallel with terraform/deploy instead of
   # in front of them.
@@ -213,7 +260,11 @@ jobs:
   # ---------------------------------------------------------------------
   deploy:
     runs-on: ubuntu-latest
-    needs: [test, terraform]
+    # `frontend` included so a build break stops the deploy BEFORE terraform
+    # has applied and the App Service has been touched -- rather than the
+    # deploy job rediscovering it in its own build step, which is what
+    # happened when this gate did not exist.
+    needs: [test, frontend, terraform]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v5
