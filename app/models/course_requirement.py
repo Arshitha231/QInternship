@@ -1,4 +1,6 @@
-from sqlalchemy import Enum, ForeignKey, String
+from datetime import date
+
+from sqlalchemy import Date, Enum, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -47,6 +49,32 @@ class CourseRequirement(Base):
     employment_type: Mapped[EmploymentType | None] = mapped_column(
         Enum(EmploymentType, native_enum=False, validate_strings=True), nullable=True
     )
+
+    # --- When it is expected BY -------------------------------------------
+    #
+    # Both nullable, and both NULL is the honest default: a requirement with
+    # no deadline is never overdue, and the dashboard says "no deadline set"
+    # rather than inventing one. Nothing in the training system reports a due
+    # date to us, so this is the company-side half of the deadline the same
+    # way the clauses above are the company-side half of "who".
+    #
+    # Two columns because compliance training genuinely comes in two shapes
+    # and collapsing them loses one:
+    #
+    #   due_date            a fixed org-wide deadline — "everyone completes
+    #                       the FY26 security refresh by 30 Sep". The same
+    #                       date for every person the requirement scopes to.
+    #   due_days_after_hire a rolling per-person deadline — "within 30 days
+    #                       of joining". Resolves against Employee.hire_date,
+    #                       so each person has their own.
+    #
+    # A row may set either, or both: with both, the EARLIER of the two wins
+    # (see app/certifications/requirements.py's course_due_dates), which is
+    # what "within 30 days of joining, and in any case before the FY close"
+    # means. Resolution lives there, not here — two requirement rows can name
+    # the same course, and only the resolver sees all of them at once.
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    due_days_after_hire: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Free text shown nowhere user-facing yet; exists so the reason a course
     # is expected survives the person who filed the row.

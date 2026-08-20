@@ -1,8 +1,11 @@
 import type {
-  AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut, ContinuityOverview,
-  DocSubjectMatchOut, EmployeeContinuityDetail, EngagementExposure, HrReviewQueueItem, Identity, NotificationOut,
-  OfficeOut, OrgChainNode, OrgUnitOut, PersonDetail, PersonSummary, ProposedChangeGroup, SuggestedOfficialLinkOut,
-  UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadedDocSummary, ViewMode,
+  AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut,
+  ContinuityOverview, DashboardOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
+  EngagementExposure, HrReviewQueueItem, Identity, InsightReport, NotificationOut, OfficeOut, OrgChainNode,
+  OrgUnitOption, OrgUnitOut, PersonDetail, PersonSummary, ProjectCoverage, ProposedChangeGroup,
+  ReminderResult, SkillDetail, SkillSupplyDemand, SuggestedOfficialLinkOut, TrainingAnalytics,
+  TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
+  UploadedDocSummary, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -845,4 +848,111 @@ export function autoAssignMentors(
 ): Promise<CommunityLinkOut[]> {
   return request<CommunityLinkOut[]>(
     `/community_links/auto_assign_mentors?view_mode=${viewMode}`, identity, { method: "POST" });
+}
+
+// --- Dashboards (app/analytics.py) ----------------------------------------
+//
+// Every call takes the same DashboardScopeParams. Sending them is not how
+// the scope is decided -- the server resolves it from the caller and pins a
+// non-HR caller to their own reporting line whatever these say (see
+// app/analytics.py's resolve_scope). They are a request, and the
+// DashboardScope on every response is the answer.
+
+export interface DashboardScopeParams {
+  orgUnitId?: number | null;
+  managerId?: string | null;
+}
+
+function scopeQuery(viewMode: ViewMode, scope: DashboardScopeParams = {}, extra: Record<string, string | number | undefined> = {}): string {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (scope.orgUnitId != null) params.set("org_unit_id", String(scope.orgUnitId));
+  if (scope.managerId) params.set("manager_id", scope.managerId);
+  for (const [k, v] of Object.entries(extra)) {
+    if (v !== undefined && v !== "" && v !== null) params.set(k, String(v));
+  }
+  return params.toString();
+}
+
+export function getOrgUnitOptions(
+  identity: Identity, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<OrgUnitOption[]> {
+  return request<OrgUnitOption[]>(`/analytics/org-units?view_mode=${viewMode}`, identity, { signal });
+}
+
+export function getDashboardOverview(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams, signal?: AbortSignal,
+): Promise<DashboardOverview> {
+  return request<DashboardOverview>(`/analytics/overview?${scopeQuery(viewMode, scope)}`, identity, { signal });
+}
+
+export function getSkillSupplyDemand(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams,
+  opts: { verdict?: string; limit?: number } = {}, signal?: AbortSignal,
+): Promise<SkillSupplyDemand[]> {
+  return request<SkillSupplyDemand[]>(
+    `/analytics/skills?${scopeQuery(viewMode, scope, opts)}`, identity, { signal });
+}
+
+// 404s for a skill nobody in scope holds and no project in scope needs --
+// resolved to null rather than thrown, same shape as getPerson, so the popup
+// can say "nothing here" instead of rendering an error.
+export async function getSkillDetail(
+  identity: Identity, viewMode: ViewMode, skillId: number, scope: DashboardScopeParams,
+  signal?: AbortSignal,
+): Promise<SkillDetail | null> {
+  try {
+    return await request<SkillDetail>(
+      `/analytics/skills/${skillId}?${scopeQuery(viewMode, scope)}`, identity, { signal });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+export function getTrainingAnalytics(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams,
+  opts: { course?: string; due_soon_days?: number } = {}, signal?: AbortSignal,
+): Promise<TrainingAnalytics> {
+  return request<TrainingAnalytics>(
+    `/analytics/training?${scopeQuery(viewMode, scope, opts)}`, identity, { signal });
+}
+
+export function getTrainingRoster(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams,
+  opts: { bucket?: string; course?: string; limit?: number } = {}, signal?: AbortSignal,
+): Promise<TrainingRoster> {
+  return request<TrainingRoster>(
+    `/analytics/training/roster?${scopeQuery(viewMode, scope, opts)}`, identity, { signal });
+}
+
+// The response reports what actually went out, which is not necessarily one
+// per id: completed courses are never reminded about, a same-day duplicate
+// is suppressed, and ids outside the caller's scope are dropped. Render
+// `sent`, never `requested`.
+export function sendCourseReminders(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams,
+  employeeIds: string[], courseCode?: string,
+): Promise<ReminderResult> {
+  return request<ReminderResult>(
+    `/analytics/training/reminders?${scopeQuery(viewMode, scope)}`, identity,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ employee_ids: employeeIds, course_code: courseCode ?? null }),
+    });
+}
+
+export function getProjectCoverage(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams, signal?: AbortSignal,
+): Promise<ProjectCoverage[]> {
+  return request<ProjectCoverage[]>(`/analytics/projects?${scopeQuery(viewMode, scope)}`, identity, { signal });
+}
+
+// Returns the findings AND the narrative over them in one call: the summary
+// is only meaningful against the exact list it was written over, and two
+// calls would let a re-render pair one scope's prose with another's cards.
+export function getWorkforceInsights(
+  identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams, signal?: AbortSignal,
+): Promise<InsightReport> {
+  return request<InsightReport>(`/analytics/insights?${scopeQuery(viewMode, scope)}`, identity, { signal });
 }

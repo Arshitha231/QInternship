@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { OrgChainNode } from "../../types";
+import { avatarStyle } from "../../avatarHue";
 
 // Shared between DepartmentGraph and TeamGraph: both render as a strict
 // hierarchical tree (a fixed node above, its children in a row below,
@@ -24,25 +25,37 @@ export function NodeBox({
   focus,
   onClick,
   registerRef,
+  // "on"/"off" drive the hover-path highlight (see DepartmentGraph);
+  // undefined means no highlight is active and every card renders normally.
+  state,
+  onHover,
 }: {
   node: OrgChainNode;
   focus?: boolean;
   onClick?: () => void;
   registerRef: (el: HTMLDivElement | null) => void;
+  state?: "on" | "off";
+  onHover?: (id: string | null) => void;
 }) {
   const status = node.availability_status;
   return (
     <div
       ref={registerRef}
-      className={`tree-node ${focus ? "tree-node-focus" : ""}`}
+      className={`tree-node ${focus ? "tree-node-focus" : ""} ${state ? `node-${state}` : ""}`}
       onClick={focus ? undefined : onClick}
       role={focus ? undefined : "button"}
       tabIndex={focus ? undefined : 0}
+      onMouseEnter={() => onHover?.(node.id)}
+      onMouseLeave={() => onHover?.(null)}
+      // Keyboard users get the same path highlight as the mouse, so the
+      // relationship cue isn't pointer-only.
+      onFocus={() => onHover?.(node.id)}
+      onBlur={() => onHover?.(null)}
       onKeyDown={(e) => {
         if (!focus && onClick && (e.key === "Enter" || e.key === " ")) onClick();
       }}
     >
-      <span className="avatar" aria-hidden="true">{initials(node.full_name)}</span>
+      <span className="avatar" style={avatarStyle(node.full_name)} aria-hidden="true">{initials(node.full_name)}</span>
       <p className="tree-node-name">{node.full_name}</p>
       <p className="tree-node-role">{node.job_title}</p>
       <p className="tree-node-status">
@@ -178,4 +191,27 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[], scale = 
   }, [...deps, scale]);
 
   return { wrapRef, registerNode, registerBranch, linePaths, svgSize };
+}
+
+// Card footprint including its gap, in layout px -- must match .tree-node's
+// width and .tree-tier-reports' gap in index.css.
+const CARD_PITCH = 154 + 18;
+// The widest a wrapped row of cards is allowed to get. Sized to a typical
+// frame's inner width (~1300px on a maximised laptop window), so a big row
+// wraps to roughly the frame's own proportions.
+const MAX_ROW_COLS = 7;
+
+// A max-width for a row of sibling cards, so a long row wraps into a block
+// instead of running off in one line.
+//
+// Widest-that-fits, NOT a target aspect ratio for the block on its own. The
+// ratio version looked right in isolation and fell apart once a view stacked
+// two of these (Team's roster plus an opened sub-team): each block was
+// individually well-proportioned, the stack of them was far taller than the
+// frame, and fit-to-view had to drop to 0.41 to show it -- unreadable. The
+// frame is wide and short, so what actually matters is spending its width
+// first and keeping every block as few rows tall as possible.
+export function wrapWidth(count: number): React.CSSProperties | undefined {
+  if (count <= MAX_ROW_COLS) return undefined;
+  return { maxWidth: MAX_ROW_COLS * CARD_PITCH };
 }

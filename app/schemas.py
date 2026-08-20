@@ -126,6 +126,19 @@ class PersonSummary(BaseModel):
     manager: PersonRef | None = None
     delegate: PersonRef | None = None
     direct_reports: list[PersonRef] | None = None
+    # Whether this person manages anyone — a bare boolean, never the
+    # identities, so it is safe on a bulk list where direct_reports is not.
+    # Set on EVERY row (unlike direct_reports, which is single-match only),
+    # because the org-tree UI needs it per card to decide whether to offer
+    # an expand control, and finding out the other way round would be one
+    # extra request per person on screen.
+    #
+    # Carries the same visibility gate as direct_reports and get_org_chain's
+    # "down" direction (app.policy.can_see_direct_reports): in employee view
+    # mode the key is absent, matching the fact that the downward chain it
+    # advertises would come back empty there anyway. Advertising an expand
+    # that expands to nothing is worse than not advertising it.
+    has_reports: bool | None = None
 
 
 class PersonDetail(BaseModel):
@@ -883,3 +896,400 @@ class EmployeeContinuityDetail(BaseModel):
     current_record: AuthorizationRecordOut | None
     history: list[AuthorizationRecordOut]
     engagements: list[EngagementExposure]
+
+
+# --- Dashboards (app/analytics.py) ----------------------------------------
+#
+# One set of shapes serving two dashboards. HR and a manager see the same
+# fields; what differs is the SCOPE they were computed over, which is why
+# every top-level response below carries a DashboardScope saying whose
+# numbers these are. A manager's payload and HR's are structurally
+# identical — the narrowing already happened server-side, in
+# app/analytics.py's resolve_scope, and is not something the client is
+# trusted to reproduce.
+#
+# Nothing here carries an INTERNAL_FIELDS value (salary, date of birth,
+# cost centre, hire date). Aggregates over compensation would be a new
+# disclosure with a new audience, and this feature does not ask for one.
+
+class DashboardScope(BaseModel):
+    """Whose data the response above it describes.
+
+    `substituted` is true when the caller asked for one scope and policy
+    gave them another — a manager sending an org_unit_id. Returned rather
+    than silently corrected so the header can say "showing your team"
+    instead of leaving a department selector pointing at data it didn't
+    produce.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["org", "org_unit", "team"]
+    label: str
+    headcount: int
+    org_unit_id: int | None = None
+    org_unit: str | None = None
+    manager_id: str | None = None
+    substituted: bool = False
+
+
+class OrgUnitOption(BaseModel):
+    """One entry in the department selector. `headcount` is SUBTREE
+    headcount — the number of people picking this option will actually
+    scope to, not the unit's own rows, which for a division is zero."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    unit_type: str
+    parent_id: int | None
+    headcount: int
+
+
+class TrainingBuckets(BaseModel):
+    """Course expectations, split four ways plus the rollup.
+
+    The four buckets are mutually exclusive and sum to `expected`, so they
+    render as one chart without double-counting; `incomplete` is the
+    convenience rollup of the three non-completed ones and deliberately
+    overlaps them. The unit counted is the (person, expected course) PAIR,
+    never the person — see TrainingAnalytics.employee_count.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected: int
+    completed: int
+    incomplete: int
+    overdue: int
+    due_soon: int
+    outstanding: int
+    compliance_pct: float
+
+
+class TrainingBreakdown(BaseModel):
+    """One row of a by-course or by-department split. `key` is the course
+    code or the org unit id — whatever the caller filters back on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    buckets: TrainingBuckets
+    employee_count: int
+
+
+class TrainingAnalytics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: DashboardScope
+    buckets: TrainingBuckets
+    #: Distinct people behind `buckets.expected`, which counts pairs.
+    employee_count: int
+    #: How many of those pairs had NO reported status row and were read as
+    #: not-started. Surfaced so the UI can qualify the figure rather than
+    #: presenting an inference from absence as a measurement.
+    no_record_count: int
+    #: Pairs whose requirement records no deadline at all. These can never
+    #: be overdue, and saying how many there are is what stops a healthy
+    #: overdue count from looking like good compliance.
+    no_deadline_count: int
+    due_soon_days: int
+    by_course: list[TrainingBreakdown]
+    by_unit: list[TrainingBreakdown]
+    #: Every course in scope, in stable name order — the filter's contents,
+    #: as opposed to by_course which is sorted worst-first for display.
+    courses: list[TrainingBreakdown]
+
+
+class TrainingPersonRow(BaseModel):
+    """One (person, course) pair in a drill-down list.
+
+    `display_status` is the two-value derivation, never the four-value
+    stored status: which of not_started / in_progress / failed somebody sits
+    in decides the wording of the reminder they get and is not
+    management-facing data. The profile makes the same collapse.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    course_code: str
+    course_name: str
+    display_status: Literal["completed", "not_completed"]
+    bucket: Literal["completed", "overdue", "due_soon", "outstanding"]
+    due_on: str | None = None
+    days_overdue: int | None = None
+    has_record: bool = True
+
+
+class TrainingRoster(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[TrainingPersonRow]
+    total: int
+    truncated: bool
+
+
+class ReminderResult(BaseModel):
+    """What actually went out, not what was asked for.
+
+    The four counts differ for real reasons and are all reported: ids
+    outside the caller's scope are dropped (`out_of_scope`), completed
+    courses are never reminded about, and a same-day duplicate is
+    suppressed (`skipped`). Reporting `requested` back as a success figure
+    would claim sends that did not happen.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested: int
+    eligible: int
+    sent: int
+    recipients_notified: int
+    out_of_scope: int
+    skipped: int
+    detail: str = ""
+
+
+class SkillSupplyDemand(BaseModel):
+    """One skill's supply (people in scope) against its demand (active
+    projects in scope depending on it).
+
+    `demand_basis` is never omitted. "declared" means a project recorded
+    this skill as a requirement; "inferred" means no requirements were
+    recorded for the project and the dependency was read off what its
+    current members happen to know, which overcounts. Same declared-vs-
+    inferred discipline as DeliveryDependency.source above, and for the same
+    reason: a staffing decision made on an inferred number should know it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: int
+    skill: str
+    category: str
+    expert_count: int
+    working_count: int
+    learning_count: int
+    #: Expert + Working — genuine capability, not just familiarity. The
+    #: figure every verdict below is computed from.
+    capable_count: int
+    holder_count: int
+    demand_project_count: int
+    demand_basis: Literal["declared", "inferred", "none"]
+    declared_project_count: int
+    supply_per_project: float | None
+    verdict: Literal["understaffed", "healthy", "overrepresented", "unused"]
+    single_point_of_failure: bool
+    coverage_pct: float
+    maturity_pct: float
+    maturity_label: str
+
+
+class SkillHolder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    level: Literal["Expert", "Working", "Learning"]
+
+
+class SkillProjectUse(BaseModel):
+    """One active project that depends on a skill. `capable_member_count`
+    is how many of its current members hold that skill at Working or above
+    — zero on a declared requirement is a staffing gap, not a rounding
+    error."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int
+    project_name: str
+    basis: Literal["declared", "inferred"]
+    member_count: int
+    capable_member_count: int
+
+
+class SkillDetail(BaseModel):
+    """Everything behind one slice of the team-skills chart — the popup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: DashboardScope
+    skill_id: int
+    skill: str
+    category: str
+    expert_count: int
+    working_count: int
+    learning_count: int
+    capable_count: int
+    holder_count: int
+    #: Share of the scope's headcount holding this skill at any level.
+    coverage_pct: float
+    #: Level-weighted depth among the holders, 0-100, with its band name.
+    #: Distinct from coverage: a skill three people hold at Expert is deep
+    #: and barely covered, and the two must not be read off one number.
+    maturity_pct: float
+    maturity_label: str
+    demand_project_count: int
+    supply_per_project: float | None
+    verdict: Literal["understaffed", "healthy", "overrepresented", "unused"]
+    risk: Literal["high", "medium", "low"]
+    #: The count that produced `risk`, in words. A severity without the
+    #: number behind it is not checkable.
+    risk_reason: str
+    holders: list[SkillHolder]
+    holders_truncated: bool
+    projects: list[SkillProjectUse]
+
+
+class ProjectCoverage(BaseModel):
+    """One active project, and whether its DECLARED required skills are met
+    by its current members.
+
+    `requirements_recorded=False` means nothing was declared and no verdict
+    is offered — `coverage_pct` is null and `risk` is "unknown". Inferring
+    a project's requirements from its members' skills and then checking
+    whether its members hold them is circular; it would report full
+    coverage everywhere and mean nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int
+    project_name: str
+    project_type: str
+    is_client_engagement: bool
+    member_count: int
+    in_scope_member_count: int
+    requirements_recorded: bool
+    required_skill_count: int
+    covered_skill_count: int
+    coverage_pct: float | None
+    gap_skills: list[str]
+    #: Covered, but by exactly one person — met today, fragile tomorrow.
+    single_cover_skills: list[str]
+    risk: Literal["high", "medium", "low", "unknown"]
+
+
+class WorkforceInsight(BaseModel):
+    """One derived signal. Rule-based and deterministic — see
+    app/analytics.py's `insights`, which explains why this section is not
+    handed to a model.
+
+    `evidence` carries the rows that triggered it so the claim in `title`
+    can be checked against the table it came from, and the id lists let the
+    UI turn an insight into a drill-down instead of a dead end.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "skill_shortage", "skill_concentration", "training_compliance",
+        "project_staffing_gap", "profile_coverage", "bench_capacity",
+    ]
+    severity: Literal["high", "medium", "low"]
+    title: str
+    detail: str
+    evidence: list[str] = Field(default_factory=list)
+    skill_ids: list[int] = Field(default_factory=list)
+    project_ids: list[int] = Field(default_factory=list)
+    recommendation: str = ""
+
+
+class InsightNarrative(BaseModel):
+    """The dashboard's opening paragraph — see app/insight_narrative.py.
+
+    `source` is not decoration. "model" means a language model ordered the
+    already-computed findings into prose and every numeral it wrote was
+    checked back against those findings; "derived" means a format string
+    assembled the same facts, which is what runs with no model configured,
+    on a failed call, and on a failed check. A demo screenshot should never
+    be able to pass one off as the other.
+
+    There is no third state: a summary is always returned, because the
+    template always succeeds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    source: Literal["model", "derived"]
+
+
+class InsightReport(BaseModel):
+    """GET /analytics/insights.
+
+    The narrative and the findings travel together rather than as two calls:
+    the summary is only meaningful against the exact list it was written
+    over, and fetching them separately would let a re-render pair one
+    scope's prose with another scope's cards.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: InsightNarrative
+    insights: list[WorkforceInsight]
+
+
+class DashboardOverview(BaseModel):
+    """The headline row plus the rollups the sections below expand on.
+
+    Every figure is recomputed from the same pass over the scope that the
+    detailed sections use, so a tile and the table under it cannot
+    disagree.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: DashboardScope
+    headcount: int
+    department_count: int
+    division_count: int
+    team_count: int
+    #: People in scope who have at least one direct report. Null on scopes
+    #: large enough that the per-person check isn't worth the query — an
+    #: absent figure, never a wrong one.
+    manager_count: int | None
+    active_project_count: int
+    client_engagement_count: int
+    #: Distinct skills actually held by someone in scope.
+    skill_count: int
+    expert_count: int
+    people_with_skills: int
+    skill_profile_coverage_pct: float
+    avg_skills_per_person: float
+    understaffed_skill_count: int
+    healthy_skill_count: int
+    overrepresented_skill_count: int
+    unused_skill_count: int
+    single_point_skill_count: int
+    training: TrainingBuckets
+    training_employee_count: int
+    due_soon_days: int
+
+
+class SendRemindersRequest(BaseModel):
+    """POST /analytics/training/reminders.
+
+    Ids, not a filter. The caller selects rows from a roster they have
+    already been shown, and sending the selection back is what makes the
+    reminder match what was on screen — a filter re-evaluated server-side
+    could quietly widen between the render and the click. Every id is still
+    checked against the caller's resolved scope, so the explicit list is a
+    narrowing, never an authorization.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_ids: list[str] = Field(min_length=1, max_length=500)
+    #: Restrict to one course. Omitted, every outstanding course for each
+    #: selected person is reminded — one notification per (person, course),
+    #: which is how their inbox already works.
+    course_code: str | None = None

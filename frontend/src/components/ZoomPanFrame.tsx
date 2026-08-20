@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
-import { Home, Minus, Plus } from "../icons";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Maximize, Minus, Plus } from "../icons";
 
 // Shared zoom/pan/home chrome for every graph view (Department, Team,
 // Skills, Community) -- one implementation so the four don't drift into
@@ -19,28 +19,86 @@ import { Home, Minus, Plus } from "../icons";
 // inside a render-prop closure would attach its hook state to this
 // component's fiber instead of theirs, which is exactly the render-prop-hook
 // anti-pattern the Rules of Hooks warn about.
+//
+// FIT-TO-VIEW. Every one of these graphs draws content whose size is decided
+// by the data, not by the frame: a 2-report tree is ~620px tall, a 15-person
+// team row is wider than it is tall, and a skills graph can be several
+// thousand pixels across. The frame is one fixed height. Before fit existed
+// the two simply disagreed and the frame won -- `overflow: hidden` quietly
+// ate whatever didn't fit, which in practice meant the team hub node and the
+// top of the manager card were clipped away and the graph looked like it had
+// been designed to sit behind its own box. So the frame now measures its
+// content (offsetWidth/offsetHeight -- LAYOUT properties, unaffected by the
+// paint-only transform this same component applies, so measuring while
+// scaled is safe) and picks the scale that makes the whole thing fit, once
+// on mount and again whenever `fitKey` changes. Nothing is ever clipped on
+// arrival; panning and zooming are for choice, not for rescue.
 
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 2;
+const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.2;
+// The floor for the +/- buttons only. Fit is allowed below this (a big
+// skills graph legitimately needs ~0.3 to fit at all), and when it lands
+// there it becomes the new floor -- see effectiveMin. Zooming out past the
+// point where the whole graph is already visible only shrinks it for no
+// gain, so the fit scale is the natural stopping point.
+const MIN_ZOOM = 0.4;
+// Breathing room between the content's bounding box and the frame's edge,
+// so a fitted graph doesn't sit flush against the border.
+const FIT_PADDING = 28;
 
 export function useZoomPan() {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // The scale at which the content exactly fits. Doubles as the zoom-out
+  // floor once it drops below MIN_ZOOM.
+  const [fitScale, setFitScale] = useState(1);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const dragState = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
-  function clampZoom(z: number): number {
-    return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
-  }
+  const effectiveMin = Math.min(MIN_ZOOM, fitScale);
+
+  const clampZoom = useCallback(
+    (z: number): number => Math.min(MAX_ZOOM, Math.max(effectiveMin, z)),
+    [effectiveMin],
+  );
+
+  // Measures content against frame and returns the scale that fits both
+  // axes, capped at 1 so a small graph (a two-person team) is shown at its
+  // designed size rather than blown up to fill the frame -- upscaling past
+  // 1:1 makes a sparse graph look like a zoom-in artifact, and the + button
+  // is right there for anyone who wants that.
+  const measureFit = useCallback((): number | null => {
+    const frame = frameRef.current;
+    const content = contentRef.current;
+    if (!frame || !content) return null;
+    const cw = content.offsetWidth;
+    const ch = content.offsetHeight;
+    if (cw === 0 || ch === 0) return null;
+    const availW = frame.clientWidth - FIT_PADDING * 2;
+    const availH = frame.clientHeight - FIT_PADDING * 2;
+    if (availW <= 0 || availH <= 0) return null;
+    return Math.min(1, availW / cw, availH / ch);
+  }, []);
+
+  // Reset to "whole graph visible, centered". Pan goes to zero rather than
+  // to a computed offset because the viewport is already flex-centered in
+  // the frame and scales about its own center (see .zoom-pan-frame /
+  // .zoom-pan-viewport in index.css) -- so at the fit scale, zero pan IS
+  // centered, on both axes, whether the content overflows or underfills.
+  const fit = useCallback(() => {
+    const next = measureFit();
+    if (next === null) return;
+    setFitScale(next);
+    setZoom(next);
+    setPan({ x: 0, y: 0 });
+  }, [measureFit]);
+
   function zoomIn() {
     setZoom((z) => clampZoom(z + ZOOM_STEP));
   }
   function zoomOut() {
     setZoom((z) => clampZoom(z - ZOOM_STEP));
-  }
-  function home() {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
   }
   // Trackpad pinch arrives as a wheel event with a smaller, continuous
   // delta rather than a button click's fixed step -- ZOOM_STEP/2 per notch
@@ -69,27 +127,77 @@ export function useZoomPan() {
     dragState.current = null;
   }
 
-  return { zoom, pan, zoomIn, zoomOut, home, onZoomDelta, onPointerDown, onPointerMove, onPointerUp };
+  return {
+    zoom, pan, fit, zoomIn, zoomOut, onZoomDelta,
+    onPointerDown, onPointerMove, onPointerUp,
+    frameRef, contentRef,
+  };
+}
+
+// Refits when the drawn content changes size, when the frame changes size,
+// and when `key` says this is different content now (a new focus person --
+// which should reset a pan even if the new tree happens to be the same
+// size as the old one).
+//
+// A ResizeObserver on the CONTENT is the primary trigger, not a timer or an
+// animation frame. Two reasons. It is the direct signal -- the thing that
+// actually invalidates a fit is the content's measured size, so observing
+// that is neither early nor late, and it covers every cause at once (data
+// arriving, a branch expanding, a font finishing loading). And it keeps
+// working in a background tab: requestAnimationFrame does not fire in one,
+// so an rAF-scheduled fit silently never runs and the graph is left at the
+// wrong scale until something else nudges it.
+//
+// No feedback loop, despite this observer's own callback setting the zoom
+// that scales the observed element: offsetWidth/offsetHeight and
+// ResizeObserver's box sizes are LAYOUT measurements, and `scale()` is a
+// paint-only transform. Scaling the content does not change what either one
+// reports, so fit -> resize -> fit cannot cycle.
+export function useFitOnChange(
+  fit: () => void,
+  frameRef: React.RefObject<HTMLDivElement | null>,
+  contentRef: React.RefObject<HTMLDivElement | null>,
+  key: unknown,
+) {
+  // Synchronous, in a layout effect, so the first paint after new data is
+  // already at the right scale rather than showing one clipped frame first.
+  // Safe to measure here: the tree graphs' connector <svg> is absolutely
+  // positioned and so contributes nothing to the content's layout size,
+  // which means their own layout effect can't change what this one measures.
+  useLayoutEffect(() => {
+    fit();
+  }, [fit, key]);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    const content = contentRef.current;
+    if (!frame || !content) return;
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(frame);
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [fit, frameRef, contentRef]);
 }
 
 // Props here deliberately match useZoomPan()'s return shape name-for-name
-// (zoom, pan, zoomIn, zoomOut, home, onZoomDelta, onPointerDown/Move/Up) so
-// every caller can just spread the hook's result straight in --
+// so every caller can just spread the hook's result straight in --
 // `<ZoomPanFrame height={480} {...zoomPan}>`.
 export function ZoomPanFrame({
-  height, zoom, pan, zoomIn, zoomOut, home, onZoomDelta,
-  onPointerDown, onPointerMove, onPointerUp, extra, children,
+  height, zoom, pan, fit, zoomIn, zoomOut, onZoomDelta,
+  onPointerDown, onPointerMove, onPointerUp, frameRef, contentRef, extra, children,
 }: {
-  height: number;
+  height: number | string;
   zoom: number;
   pan: { x: number; y: number };
+  fit: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
-  home: () => void;
   onZoomDelta: (direction: 1 | -1) => void;
   onPointerDown: (e: React.PointerEvent) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
+  frameRef: React.RefObject<HTMLDivElement | null>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
   // An additional control overlaid in the frame's top-right corner
   // (Community's Edit toggle; absent for the other three graphs).
   extra?: ReactNode;
@@ -115,6 +223,7 @@ export function ZoomPanFrame({
   const setFrameRef = useCallback((el: HTMLDivElement | null) => {
     wheelCleanup.current?.();
     wheelCleanup.current = null;
+    frameRef.current = el;
     if (!el) return;
     function onWheel(e: WheelEvent) {
       // Trackpad pinch is reported to the browser as a wheel event with
@@ -147,12 +256,13 @@ export function ZoomPanFrame({
           size it was before pan/zoom existed at all. */}
       <div className="zoom-pan-controls">
         <button className="zoom-pan-btn" onClick={zoomOut} aria-label="Zoom out"><Minus size={16} /></button>
-        <button className="zoom-pan-btn" onClick={home} aria-label="Re-center the view"><Home size={16} /></button>
+        <button className="zoom-pan-btn" onClick={fit} aria-label="Fit the whole graph in view"><Maximize size={16} /></button>
         <button className="zoom-pan-btn" onClick={zoomIn} aria-label="Zoom in"><Plus size={16} /></button>
       </div>
+      <span className="zoom-pan-level" aria-hidden="true">{Math.round(zoom * 100)}%</span>
       {extra && <div className="zoom-pan-extra">{extra}</div>}
       <div className="zoom-pan-viewport" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-        {children}
+        <div ref={contentRef} className="zoom-pan-content">{children}</div>
       </div>
     </div>
   );

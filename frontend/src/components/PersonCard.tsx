@@ -1,5 +1,6 @@
 import type { PersonSummary } from "../types";
 import { Building, MapPin } from "../icons";
+import { avatarStyle } from "../avatarHue";
 
 function initials(name: string): string {
   return name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
@@ -17,7 +18,7 @@ export function PersonCard({
   const status = person.availability_status;
   return (
     <button id={id} className={`result-card ${flash ? "flash" : ""}`} onClick={onClick}>
-      <span className="avatar" style={{ width: 42, height: 42, fontSize: 15 }} aria-hidden="true">
+      <span className="avatar" style={{ width: 42, height: 42, fontSize: "var(--fs-md)", ...avatarStyle(person.full_name) }} aria-hidden="true">
         {initials(person.full_name)}
       </span>
       <span style={{ minWidth: 0, flex: 1 }}>

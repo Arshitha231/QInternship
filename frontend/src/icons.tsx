@@ -110,3 +110,15 @@ export const Minus = ({ size = 16, className }: IconProps) => (
 export const Plus = ({ size = 16, className }: IconProps) => (
   <svg {...base(size)} className={className}><path d="M12 5v14M5 12h14" /></svg>
 );
+// Fit-to-view (four corner brackets pointing outward) -- the graph frames'
+// "show me the whole thing" control, distinct from Home's "go back to start".
+export const Maximize = ({ size = 16, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>
+);
+// Chevron pair used by the department tree's expand/collapse control.
+export const ChevronsDown = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m7 6 5 5 5-5M7 13l5 5 5-5" /></svg>
+);
+export const ChevronsUp = ({ size = 14, className }: IconProps) => (
+  <svg {...base(size)} className={className}><path d="m7 11 5-5 5 5M7 18l5-5 5 5" /></svg>
+);

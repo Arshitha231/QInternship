@@ -23,3 +23,7 @@ venv/
 .pytest_cache/
 .azure/
 .env.personal-chat.bak
+
+# Timestamped snapshots taken before schema/data migrations. Local only —
+# *.db above misses them because the suffix comes after the extension.
+directory.db.bak-*

@@ -497,6 +497,27 @@ def find_people(
             single = exact[0]
     fields_returned = set(SUMMARY_FIELDS)
 
+    # Who, among the people about to be returned, manages at least one
+    # active employee. One query for the whole page rather than an existence
+    # check per row -- the same trick, and the same reasoning, as
+    # org_chart.get_org_chain's managers_with_reports set.
+    #
+    # Gated exactly like direct_reports below: in employee view mode nobody
+    # gets this, because the downward chain it advertises is withheld there
+    # too. Only the boolean is ever exposed, never the reports themselves,
+    # so unlike direct_reports it is safe on every row of a bulk list.
+    managers_with_reports: set[str] = set()
+    if capped and can_see_direct_reports(caller.role, view_mode):
+        reports_stmt = select(Employee.manager_id).where(
+            Employee.manager_id.in_([e.id for e in capped]),
+            # `.is_(True)` renders as `IS 1` on SQL Server, which T-SQL
+            # rejects -- `== True` renders as `= 1` everywhere.
+            Employee.is_active == True,  # noqa: E712
+        ).distinct()
+        for f in decision.required_filters:
+            reports_stmt = apply_filter(db, reports_stmt, f)
+        managers_with_reports = set(db.execute(reports_stmt).scalars().all())
+
     results: list[PersonSummary] = []
     for e in capped:
         kwargs: dict = dict(
@@ -505,6 +526,9 @@ def find_people(
             office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
             availability_status=e.availability_status.value,
         )
+        if can_see_direct_reports(caller.role, view_mode):
+            kwargs["has_reports"] = e.id in managers_with_reports
+            fields_returned.add("has_reports")
         if e is single:
             # manager/delegate: policy-gated via enforce()+compile_query(),
             # not a raw db.get() -- ARCHITECTURE_2.md §15 item 6 / Phase 3

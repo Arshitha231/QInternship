@@ -76,8 +76,14 @@ export function CommunityPage({
 }: { identity: Identity; viewMode: ViewMode; onOpenProfile: (id: string, name: string) => void }) {
   return (
     <div className="review-page">
-      <section className="card">
-        <h2>Your community graph</h2>
+      {/* Collapsed by default. This was a full card of prose sitting above
+          the canvas, which pushed the graph itself below the fold on a
+          laptop -- on a page whose entire point is the graph. The one-line
+          summary is already in GraphPage's caption row; the detail is still
+          here for anyone who wants it, just not in front of the thing it
+          describes. */}
+      <details className="graph-explainer">
+        <summary>How these connections are worked out</summary>
         <p className="continuity-meta">
           Who to contact for what — only you can see this, whatever your role. The seven standard
           roles are worked out from the directory itself (your reporting line, your office, your
@@ -85,7 +91,7 @@ export function CommunityPage({
           fills a role, the graph points you at the nearest office that does. Use <strong>Edit</strong>
           {" "}to search the directory and add your own connections alongside them.
         </p>
-      </section>
+      </details>
 
       <CommunityGraphCanvas identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} />
 
