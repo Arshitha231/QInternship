@@ -16,6 +16,7 @@ from app.auth import AuthenticatedUser
 from app.chain_budgets import CEILING, DEFAULT_PLAN_CLASS, PLAN_CLASS_BUDGETS, ChainBudget
 from app.models import AuditLog, Employee, Office, OrgUnit
 from app.models.enums import AvailabilityStatus, EmploymentType
+from app.people import context_people_message, resolve_context_people
 from app.schemas import HistoryTurn
 from app.tool_calling import (
     MAX_ROUTING_RETRIES,
@@ -1024,6 +1025,83 @@ def test_every_tool_has_a_chain_few_shot_or_single_shot_reason_field():
     # anchored with an example.
     chained_tool_names = {step_name for _text, steps in tool_calling.CHAIN_FEW_SHOT_EXAMPLES for step_name, _args in steps}
     assert "get_people_with_projects" in chained_tool_names
+
+
+def test_compare_people_is_registered_in_tools():
+    names = {t["function"]["name"] for t in tool_calling.TOOLS}
+    assert "compare_people" in names
+
+
+def test_compare_people_dispatches_to_the_service_function(db_session):
+    tool_call = ResolvedToolCall(name="compare_people", arguments={"person_ids": ["report-1", "stranger-1"]})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_compare_people_resolves_self_at_dispatch(db_session):
+    caller = AuthenticatedUser(id="report-1", role="employee")
+    tool_call = ResolvedToolCall(name="compare_people", arguments={"person_ids": ["self", "stranger-1"]})
+    result = execute_tool_call(db_session, caller, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_compare_people_never_carries_a_rank_or_verdict_field():
+    # Structural guard for the design intent (SYSTEM_PROMPT/_PHRASING_
+    # SYSTEM_PROMPT): this tool hands back facts to phrase side by side,
+    # never a "best"/"rank"/"score" of its own -- if such a field ever gets
+    # added, that decision belongs in code review, not a silent schema
+    # change nobody notices.
+    from app.schemas import PersonComparison
+    forbidden = {"rank", "score", "best", "verdict", "recommendation"}
+    assert forbidden.isdisjoint(PersonComparison.model_fields.keys())
+
+
+def test_compare_people_has_both_a_single_shot_and_a_chain_example():
+    single_shot_tools = {tool for _text, tool, _args in tool_calling.FEW_SHOT_EXAMPLES}
+    assert "compare_people" in single_shot_tools
+    chained_tool_names = {
+        step_name for _text, steps in tool_calling.CHAIN_FEW_SHOT_EXAMPLES for step_name, _args in steps
+    }
+    assert "compare_people" in chained_tool_names
+
+
+# ---------------------------------------------------------------------------
+# resolve_context_people() / context_people_message() (app.people) -- the
+# "who is the best of these" fix: a follow-up question needs a real id for
+# whatever is currently on the caller's screen, re-verified server-side
+# rather than trusted from the client that sent it.
+# ---------------------------------------------------------------------------
+
+def test_resolve_context_people_empty_for_no_ids(db_session):
+    assert resolve_context_people(db_session, CALLER, []) == []
+
+
+def test_resolve_context_people_resolves_visible_ids(db_session):
+    resolved = resolve_context_people(db_session, CALLER, ["report-1", "stranger-1"])
+    assert set(resolved) == {("report-1", "Riley Report"), ("stranger-1", "Sam Stranger")}
+
+
+def test_resolve_context_people_drops_a_restricted_person_for_a_non_hr_caller(db_session):
+    # restricted-1 (Rory Restricted) is only visible to HR -- an employee
+    # caller's context must not get it echoed back.
+    non_hr = AuthenticatedUser(id="stranger-1", role="employee")
+    resolved = resolve_context_people(db_session, non_hr, ["report-1", "restricted-1"])
+    assert resolved == [("report-1", "Riley Report")]
+
+
+def test_resolve_context_people_drops_an_unknown_id(db_session):
+    assert resolve_context_people(db_session, CALLER, ["not-a-real-id"]) == []
+
+
+def test_context_people_message_none_for_empty_list():
+    assert context_people_message([]) is None
+
+
+def test_context_people_message_names_each_person_with_a_bracketed_id():
+    msg = context_people_message([("report-1", "Riley Report")])
+    assert msg is not None
+    assert msg["role"] == "system"
+    assert "Riley Report [report-1]" in msg["content"]
 
 
 def test_a_single_named_persons_project_question_has_its_own_chain_few_shot():

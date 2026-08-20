@@ -170,6 +170,31 @@ class PersonWithProjects(BaseModel):
     recent_projects: list[ProjectHistoryItem] | None = None
 
 
+class PersonComparison(BaseModel):
+    """compare_people results -- objective, already-visible attributes for a
+    specific, caller-identified set of people, side by side. Same shape and
+    provenance as PersonWithProjects (repeated get_person(id) calls, see
+    app.people.compare_people -- same enforce()/compute_visible_fields gate,
+    same per-person audit row), but no project history and no verdict field:
+    there is deliberately no "rank" or "score" here. The out-of-scope rule
+    against performance/ambition judgments ("who's the best candidate")
+    still holds -- this tool only ever hands back facts to phrase side by
+    side, never a winner. skills is None (not []) for a caller who can't
+    see it at all, the same absent-not-empty distinction PersonDetail
+    already carries.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str | None = None
+    org_unit: str | None = None
+    availability_status: str | None = None
+    tenure_band: str | None = None
+    skills: list[SkillOut] | None = None
+
+
 class PersonDetail(BaseModel):
     """get_person result. Only fields the caller is actually allowed to see
     are ever set on the instance; the route serializes with
@@ -446,6 +471,15 @@ class AskRequest(BaseModel):
     # regardless of which path supplied them or how long the list is.
     conversation_id: int | None = None
     history: list[HistoryTurn] = Field(default_factory=list)
+    # Ids of the people currently on the caller's screen (e.g. the search
+    # page's own result cards), sent only on the "search" surface so a
+    # follow-up like "who is the best of these" can resolve "these" to real
+    # ids instead of the model having no idea who is being asked about.
+    # Untrusted as data: the route re-resolves each id server-side
+    # (app.people.resolve_context_people) before it ever reaches the model,
+    # never taking the client's word for who a name/id belongs to. Ignored
+    # entirely by POST /prd/ask, which has no people tool to use it with.
+    context_person_ids: list[str] = Field(default_factory=list)
 
 
 class RecordCourseStatusRequest(BaseModel):

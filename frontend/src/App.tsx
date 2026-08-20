@@ -387,12 +387,16 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
                 question, so an old conversation never appears to answer
                 a different one. */}
             {!loading && !error && response !== null && (
-              <AskChat key={debouncedQuery} identity={identity} viewMode={viewMode} onSelect={(id, name) => {
-                setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
-                resetProfile(id, name);
-                setMode("profile");
-                setQuery("");
-              }} />
+              <AskChat
+                key={debouncedQuery} identity={identity} viewMode={viewMode}
+                contextPeople={response?.results ?? []}
+                onSelect={(id, name) => {
+                  setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
+                  resetProfile(id, name);
+                  setMode("profile");
+                  setQuery("");
+                }}
+              />
             )}
             </div>
           </>

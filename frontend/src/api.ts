@@ -508,13 +508,21 @@ export function unifiedSearch(
 // the same seven-function tool-calling layer /search's "ask a question"
 // examples already point at; this just keeps the conversation going instead
 // of discarding it once a response comes back.
+// contextPersonIds: ids of the people currently on the caller's screen
+// (the search page's own result cards) -- lets a follow-up like "who is
+// the best of these" resolve "these" to real ids. Re-verified server-side
+// (app.people.resolve_context_people) before it ever reaches the model, so
+// sending it is never a trust decision this client is making.
 export function askAssistant(
-  identity: Identity, message: string, viewMode: ViewMode, history: AskHistoryTurn[], signal?: AbortSignal,
+  identity: Identity, message: string, viewMode: ViewMode, history: AskHistoryTurn[],
+  contextPersonIds?: string[], signal?: AbortSignal,
 ): Promise<AskResponse> {
   return request<AskResponse>("/ask", identity, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, view_mode: viewMode, history }),
+    body: JSON.stringify({
+      message, view_mode: viewMode, history, context_person_ids: contextPersonIds ?? [],
+    }),
     signal,
   });
 }

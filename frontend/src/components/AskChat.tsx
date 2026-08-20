@@ -26,6 +26,12 @@ interface Props {
   identity: Identity;
   viewMode: ViewMode;
   onSelect: (id: string, name: string) => void;
+  // The result cards currently shown above this box -- their ids ride
+  // along on every follow-up (askAssistant's contextPersonIds) so "who is
+  // the best of these" has a "these" to resolve. Just ids: the server
+  // re-resolves each one itself (app.people.resolve_context_people) rather
+  // than trusting a name/id pair this client hands it.
+  contextPeople: PersonSummary[];
 }
 
 function isPersonSummary(value: unknown): value is PersonSummary {
@@ -35,7 +41,7 @@ function isPersonSummary(value: unknown): value is PersonSummary {
   );
 }
 
-export function AskChat({ identity, viewMode, onSelect }: Props) {
+export function AskChat({ identity, viewMode, onSelect, contextPeople }: Props) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [history, setHistory] = useState<AskHistoryTurn[]>([]);
   const [input, setInput] = useState("");
@@ -51,7 +57,7 @@ export function AskChat({ identity, viewMode, onSelect }: Props) {
     setError(null);
     setLoading(true);
     try {
-      const res = await askAssistant(identity, question, viewMode, history);
+      const res = await askAssistant(identity, question, viewMode, history, contextPeople.map((p) => p.id));
       const people = Array.isArray(res.result) ? res.result.filter(isPersonSummary) : [];
       const answer = res.message ?? (
         people.length > 0

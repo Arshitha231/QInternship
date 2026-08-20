@@ -164,6 +164,60 @@ async def test_http_ask_with_unknown_conversation_id_404s(client):
     assert resp.status_code == 404
 
 
+async def test_http_ask_threads_context_person_ids_into_extra_context_messages(client, monkeypatch):
+    # The "who is the best of these" fix: people currently on the caller's
+    # screen ride along as ids, get re-resolved server-side (never trusted
+    # from the client), and reach answer_service as an extra context
+    # message -- same wiring test_http_prd_ask_contextualizes_the_message_
+    # with_the_project_name (tests/test_prd_assistant.py) uses to prove its
+    # own fix, applied to this route's own mechanism instead.
+    seen = {}
+
+    def fake_answer_service(db, user, message, mode, history, *, extra_context_messages=None):
+        seen["message"] = message
+        seen["extra_context_messages"] = extra_context_messages
+        return {"message": "ok", "tool_call": None, "arguments": None, "result": None}
+
+    monkeypatch.setattr("app.main.answer_service", fake_answer_service)
+
+    resp = await client.post(
+        "/ask", json={"message": "who is the best of these?", "context_person_ids": ["report-1", "mgr-1"]},
+        headers=auth_headers("employee", "report-1"),
+    )
+    assert resp.status_code == 200
+    # The router's own fast path stays untouched -- the raw question, not a
+    # message mutated with the context prefix (that would risk pushing an
+    # ordinary search-surface question off the deterministic router).
+    assert seen["message"] == "who is the best of these?"
+
+    messages = seen["extra_context_messages"] or []
+    assert any(
+        "Riley Report [report-1]" in m["content"] and "Morgan Manager [mgr-1]" in m["content"]
+        for m in messages
+    )
+
+
+async def test_http_ask_drops_a_context_person_id_the_caller_cannot_see(client, monkeypatch):
+    seen = {}
+
+    def fake_answer_service(db, user, message, mode, history, *, extra_context_messages=None):
+        seen["extra_context_messages"] = extra_context_messages
+        return {"message": "ok", "tool_call": None, "arguments": None, "result": None}
+
+    monkeypatch.setattr("app.main.answer_service", fake_answer_service)
+
+    # restricted-1 (Rory Restricted) is only visible to HR -- an employee
+    # caller sending its id as context must not get it echoed back.
+    resp = await client.post(
+        "/ask", json={"message": "who is the best of these?", "context_person_ids": ["report-1", "restricted-1"]},
+        headers=auth_headers("employee", "report-1"),
+    )
+    assert resp.status_code == 200
+    content = "".join(m["content"] for m in (seen["extra_context_messages"] or []))
+    assert "Riley Report" in content
+    assert "Rory Restricted" not in content
+
+
 # ---------------------------------------------------------------------------
 # HTTP: GET /search (assisted mode gets a conversation_id, direct mode doesn't)
 # ---------------------------------------------------------------------------

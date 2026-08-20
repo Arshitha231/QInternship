@@ -217,6 +217,7 @@ _TOOL_REASONS = {
     "find_experts": "Matched the problem against what our projects actually did, "
                     "then found the people who worked on them.",
     "get_people_with_projects": "Looked up recent project history for that group of people.",
+    "compare_people": "Looked up objective attributes for that group of people, side by side.",
 }
 
 # Every tool must have one -- a tool added without a reason would otherwise

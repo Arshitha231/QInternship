@@ -46,7 +46,8 @@ from app.models import Employee
 from app.org_chart import get_org_chain, resolve_person
 from app.schemas import AmbiguousPersonMatch, PersonChoice, UnknownPerson
 from app.people import (
-    find_people, find_related_language_speakers, get_people_with_projects, get_person, search_people_by_plan,
+    compare_people, find_people, find_related_language_speakers, get_people_with_projects, get_person,
+    search_people_by_plan,
 )
 from app.permissions import ViewMode
 from app.project_requirements import get_project_requirements_by_name, list_project_requirements_summary
@@ -377,14 +378,48 @@ TOOLS = [
             "additionalProperties": False,
         },
     }},
+    {"type": "function", "function": {
+        "name": "compare_people",
+        "description": (
+            "Objective attributes -- skills, tenure band, availability, team -- for SEVERAL "
+            "already-identified people at once, side by side. Use this for a request to compare "
+            "or rank specific people who are already identified, by name or by a "
+            "\"(Currently showing: ...)\" context prefix on the message -- \"who is the best of "
+            "these\", \"which of them knows Kubernetes\", \"how do Priya and Diego compare\" -- "
+            "even when it's phrased as a judgment (\"best\"), because the answer is built from "
+            "this tool's facts, never a verdict this tool or you decide: nothing here ever ranks "
+            "the people or names a winner, it only returns what's true about each of them for the "
+            "answer to lay side by side. This is different from a performance/ambition question "
+            "with no identified people to compare (\"who's the best performer on the team\", "
+            "\"who's most promotable\") -- that stays out of scope, unchanged."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Ids of the people to compare -- from a prior step's own result or from "
+                        "a \"(Currently showing: ...)\" context prefix's bracketed ids, never "
+                        "invented and never guessed from a name alone. \"self\" is accepted for "
+                        "the caller's own id."
+                    ),
+                },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["person_ids"],
+            "additionalProperties": False,
+        },
+    }},
 ]
 
 SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadrant Technologies.
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
 get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people, \
-find_experts, get_people_with_projects. Together they cover people, teams, skills, and \
-projects — nothing else.
+find_experts, get_people_with_projects, compare_people. Together they cover people, teams, \
+skills, and projects — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
 request — multiple values for the same field ("Bangalore or Singapore"), a field \
@@ -443,10 +478,26 @@ name — it always needs this second call. Never loop get_person once per person
 step budget cannot support more than a couple of individual lookups, and \
 get_people_with_projects exists so it doesn't have to.
 
+A request to compare or rank two or more ALREADY-IDENTIFIED people — named directly ("how do \
+Priya and Diego compare on skills"), or referred to as "these"/"them"/"the ones above" — is \
+compare_people, given their ids. This applies even when the request is phrased as a judgment \
+("who is the best of these", "which of them is strongest for this") — that phrasing is answered \
+with compare_people's objective facts (skills, tenure, availability, team) laid side by side, \
+never a rank or a winner you name yourself; the difference from the out-of-scope performance \
+rule below is that here the CALLER has already picked the people to look at, so there is real \
+data to compare rather than a bare opinion being asked for. A message naming people currently \
+on the caller's screen, each with their real id in brackets (e.g. "Sophie Kang [e1a2...], Lucas \
+OBrien [e1a2...]"), may appear immediately before the question — a context message, never part \
+of the caller's own words. "These"/"them" in the question that follows one means exactly those \
+ids, read from that context, never invented or guessed from a name alone. Without either that \
+context or named people to anchor "these" to, there is nothing to compare — fall through to the \
+out-of-scope reply below instead of guessing who might be meant.
+
 If a request cannot be answered with exactly one of these functions — including requests \
-for compensation, home address or other personal contact details, performance or ambition \
-judgments ("who's the best candidate"), or anything unrelated to the directory — do not call \
-a function. Reply with exactly this text and nothing else:
+for compensation, home address or other personal contact details, or an unbounded performance \
+or ambition judgment with no identified people to compare ("who's the best performer on the \
+team", "who's most promotable"), or anything unrelated to the directory — do not call a \
+function. Reply with exactly this text and nothing else:
 "{OUT_OF_SCOPE_MESSAGE}"
 
 Never answer from your own knowledge. Never invent a person, id, project, or number. A \
@@ -572,8 +623,17 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
       "order_by": "hire_date", "order_dir": "asc"}),
     ("who joined most recently", "search_people",
      {"filters": [], "order_by": "hire_date", "order_dir": "desc"}),
+    # compare_people: ids already in hand (from the context prefix), so no
+    # second step is needed here the way named-people comparisons below
+    # require. Phrased as "the best" but answered with objective facts,
+    # never a rank the model or this call decides itself.
+    ("(Currently showing: Sophie Kang [e1a2b3c4-0007], Lucas OBrien [e1a2b3c4-0008], "
+     "Orla Davis [e1a2b3c4-0009].) who is the best of these?", "compare_people",
+     {"person_ids": ["e1a2b3c4-0007", "e1a2b3c4-0008", "e1a2b3c4-0009"]}),
     # Out-of-scope / off-topic — no tool call, exact fallback wording.
     ("what's the weather like in Seattle today", None, None),
+    # No identified people to compare -- an unbounded performance opinion
+    # about the whole team, not what compare_people above covers.
     ("can you tell me who's the worst performer on the team", None, None),
     # Prompt injection attempts — the constrained function set is the
     # defence: none of these can map to a valid call, so none produce one.
@@ -632,6 +692,17 @@ CHAIN_FEW_SHOT_EXAMPLES: list[ChainFewShot] = [
     ("what is Priya Sharma working on right now", [
         ("find_people", {"name": "Priya Sharma", "needs_followup": True}),
         ("get_people_with_projects", {"person_ids": ["e1a2b3c4-0006"]}),
+    ]),
+    # Comparing two NAMED people (not already on-screen) still needs a
+    # first step to resolve both names to real ids -- full_name's own "in"
+    # op (REGISTRY) does both in one search_people call rather than two
+    # separate find_people lookups the 3-call budget would rather not spend.
+    ("how do Priya Sharma and Diego Hernandez compare on skills and availability", [
+        ("search_people", {
+            "filters": [{"field": "full_name", "op": "in", "value": ["Priya Sharma", "Diego Hernandez"]}],
+            "needs_followup": True,
+        }),
+        ("compare_people", {"person_ids": ["e1a2b3c4-0010", "e1a2b3c4-0011"]}),
     ]),
 ]
 
@@ -1936,6 +2007,10 @@ def execute_tool_call(
         # a prior chain step doesn't need to know their own id to say so.
         person_ids = [caller.id if pid == "self" else pid for pid in args.get("person_ids", [])]
         return get_people_with_projects(db, caller, person_ids, view_mode=view_mode)
+    if name == "compare_people":
+        # Same "self" resolution as get_people_with_projects above.
+        person_ids = [caller.id if pid == "self" else pid for pid in args.get("person_ids", [])]
+        return compare_people(db, caller, person_ids, view_mode=view_mode)
     if name == "get_project_requirements":
         # HR-only, checked inside get_project_requirements_by_name itself
         # (fail-fast, before any query runs) -- not re-checked here, same
@@ -2459,6 +2534,7 @@ def execute_chain(
 def answer(
     db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work",
     history: list[HistoryTurn] | None = None, *, profile: AssistantProfile = SEARCH_PROFILE,
+    extra_context_messages: list[dict] | None = None,
 ) -> dict:
     """The full turn: resolve intent (the deterministic router, or the
     model) -> execute, with retry on a failed call -> respond. The chosen
@@ -2489,8 +2565,20 @@ def answer(
     differ by -- both routes call this exact function, passing only a
     different profile, rather than each re-implementing the resolve ->
     execute -> phrase pipeline for their own surface.
+
+    `extra_context_messages` (default None, purely additive -- every
+    existing call site keeps compiling and behaving unchanged) is where
+    app.people.context_people_message's ids-for-the-caller's-on-screen-
+    people message rides in: appended after `history` and before the
+    current question, the same position a real prior turn would occupy, so
+    it reaches _real_resolve exactly like history_messages already does.
+    Never folded into `message` itself -- resolve_intent()'s deterministic
+    router sees only the raw message, and this must not push every
+    search-surface question off that fast path.
     """
     history_messages = _history_messages(db, caller, history, view_mode) if history else None
+    if extra_context_messages:
+        history_messages = (history_messages or []) + extra_context_messages
     turn = resolve_intent(message, db, history_messages, profile=profile)
 
     if turn.tool_call is None:

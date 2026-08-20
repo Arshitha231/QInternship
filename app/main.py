@@ -72,6 +72,7 @@ from app.own_skills import SkillAlreadyHeld, SkillCategoryMismatch, SkillNotHeld
 from app.own_skills import add_own_skill as add_own_skill_service
 from app.own_skills import remove_own_skill as remove_own_skill_service
 from app.own_skills import update_own_skill as update_own_skill_service
+from app.people import context_people_message, resolve_context_people
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
@@ -2268,7 +2269,15 @@ def ask(
     AskRequest's own docstring for the two ways a turn gets its PRIOR
     context (server-side store vs. body.history), a decision this route
     makes, not answer_service() itself (its signature is unchanged, still
-    taking a plain history list either way)."""
+    taking a plain history list either way).
+
+    And carries the people currently on the caller's screen, if
+    body.context_person_ids names any — re-resolved server-side
+    (app.people.resolve_context_people) rather than trusted from the
+    client, then handed to the model as their real ids (app.people.
+    context_people_message) so a follow-up like "who is the best of
+    these" can resolve "these" to something concrete instead of the
+    model having no idea who is being asked about."""
     mode = resolve_view_mode(user.role, body.view_mode)
     try:
         conversation = open_or_continue(db, user, "search", body.conversation_id)
@@ -2276,7 +2285,11 @@ def ask(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     history = load_history(db, conversation) if body.conversation_id is not None else body.history
-    result = answer_service(db, user, body.message, mode, history)
+    context_people = context_people_message(resolve_context_people(db, user, body.context_person_ids, mode))
+    result = answer_service(
+        db, user, body.message, mode, history,
+        extra_context_messages=[context_people] if context_people else None,
+    )
 
     append_turn(
         db, conversation, message=body.message,
