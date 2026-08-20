@@ -1398,60 +1398,18 @@ body.help-inspecting, body.help-inspecting * { cursor: help !important; }
   right: 16px;
 }
 
-.login-stack {
+.login-card {
   /* margin:auto rather than the container's align-items:center -- centred
      flex children that outgrow the viewport have their overflowing top
-     clipped and unreachable by scrolling, and this stack is taller than a
+     clipped and unreachable by scrolling, and this card is taller than a
      short laptop window once the demo accounts are listed. */
   margin: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   width: 100%;
   max-width: 440px;
-}
-
-.login-card {
-  width: 100%;
   background: var(--white);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 32px;
-}
-
-/* Hero graphic: components/LoginHeart.tsx. Built from layered SVG groups
-   rather than a flat image, each carrying its own translate multiplier off
-   the --px/--py pointer position that component sets inline -- farther
-   layers (the glow, the grooved sphere) move least, nearer ones (the shine)
-   move most, which is what makes it read as depth rather than one card
-   tilting. The idle float keeps it alive between cursor moves. */
-.login-heart {
-  width: 190px;
-  height: 190px;
-  margin-bottom: -10px;
-  animation: login-heart-float 7s var(--ease-out) infinite;
-}
-.login-heart-svg { width: 100%; height: 100%; overflow: visible; }
-
-.heart-layer { transition: transform 240ms var(--ease-out); }
-.heart-layer-glow   { transform: translate3d(calc(var(--px) * 3px),  calc(var(--py) * 3px), 0); }
-.heart-layer-sphere { transform: translate3d(calc(var(--px) * 6px),  calc(var(--py) * 5px), 0) rotate(calc(var(--px) * 1deg)); }
-.heart-layer-swirl  { transform: translate3d(calc(var(--px) * 12px), calc(var(--py) * 10px), 0) rotate(calc(var(--px) * -2deg)); }
-.heart-layer-ribbon { transform: translate3d(calc(var(--px) * 17px), calc(var(--py) * 14px), 0); }
-.heart-layer-shine  { transform: translate3d(calc(var(--px) * 24px), calc(var(--py) * 20px), 0); }
-
-@keyframes login-heart-float {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-8px); }
-}
-
-@media (max-width: 480px) {
-  .login-heart { width: 140px; height: 140px; margin-bottom: -4px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .login-heart { animation: none; }
-  .heart-layer { transition: none; transform: none; }
 }
 
 .login-brand { margin-bottom: 4px; }
