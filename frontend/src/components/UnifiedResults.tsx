@@ -76,7 +76,7 @@ export function UnifiedResults({
     );
   }
 
-  const { mode, results, overview } = response;
+  const { mode, results, overview, note } = response;
 
   // Truly nothing happened -- only possible in direct mode. Assisted mode
   // always has something to show (the overview's answer), even when
@@ -86,6 +86,7 @@ export function UnifiedResults({
       <div className="state-block">
         <SearchIcon size={28} />
         <strong>No results</strong>
+        {note && <p className="overview-note">{note}</p>}
         <p>
           Nobody matched — or matches exist but aren't visible to your role. The directory shows both cases
           identically on purpose, so a permission boundary is never revealed by what's absent.
@@ -103,6 +104,11 @@ export function UnifiedResults({
   return (
     <>
       {mode === "assisted" && overview && <AIOverview overview={overview} onJumpToCard={onJumpToCard} />}
+      {/* Plain text, not AIOverview -- this note (e.g. the skill-miss
+          broadening explanation) comes from a direct-mode call that never
+          touched the model, so it must never get the Sparkles/"AI
+          Overview"/reasoning-trace treatment above. */}
+      {mode === "direct" && note && <p className="overview-note">{note}</p>}
 
       {results.length > 0 ? (
         <>

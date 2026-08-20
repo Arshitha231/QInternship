@@ -372,11 +372,35 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
+class HistoryTurn(BaseModel):
+    """One prior turn of a follow-up conversation, as returned by a
+    previous /ask call -- a PLAN, never a result, matching the same rule
+    saved sessions use (Conversational Assistant plan §2, "store the
+    questions, not the answers"). `tool_call`/`arguments` are replayed
+    through the ordinary enforce()-gated dispatcher fresh on every new
+    turn (see tool_calling._history_messages) rather than trusted as
+    given, so a value the client could tamper with never reaches the
+    model's context unverified. `assistant_text` is carried as-is only
+    for a turn that had no tool call (a clarifying question, an
+    out-of-scope reply) -- connective language with no factual claim
+    about a person, so nothing there needs re-checking."""
+
+    message: str
+    tool_call: str | None = None
+    arguments: dict | None = None
+    assistant_text: str | None = None
+
+
 class AskRequest(BaseModel):
     message: str
     # "work" | "employee". Resolved server-side by resolve_view_mode, so an
     # employee-role caller sending "work" is still answered in employee mode.
     view_mode: str | None = None
+    # Held client-side for the length of the browser session, not
+    # persisted server-side -- follow-up chat (phase 1), not saved
+    # sessions (phase 2). Bounded to the last few turns by
+    # tool_calling.MAX_HISTORY_TURNS regardless of how long the list is.
+    history: list[HistoryTurn] = Field(default_factory=list)
 
 
 class RecordCourseStatusRequest(BaseModel):
@@ -668,6 +692,15 @@ class DeliveryDependency(BaseModel):
     employee: PersonRef
     project_backup_count: int  # others already on this engagement with the same dependency
     org_backup_count: int      # others anywhere else in the org, excluding project members
+    # Which pool this dependency's redundancy actually comes from --
+    # orthogonal to `exposure` on the containing EngagementExposure, which
+    # can land on the same severity band ("low") for two situations this
+    # field tells apart: "project" (project_backup_count > 0, someone is
+    # already here) reads very differently to HR than "org"
+    # (project_backup_count == 0 but org_backup_count > 0, nobody here
+    # today and a redeployment hasn't happened yet). "none" means neither
+    # -- this is exactly the "high" severity case.
+    redundancy_source: Literal["project", "org", "none"]
     # "declared": a real recorded fact -- either a ProjectSkillRequirement
     # row (app/project_skills.py) the employee meets, or the project_role
     # dependency (employee_projects.role is always ground truth).
@@ -741,6 +774,25 @@ class AuthorizationRecordOut(BaseModel):
     verification_status: str
     is_current: bool
     verified_at: datetime | None
+    hr_review_acknowledged_at: datetime | None
+    hr_review_acknowledged_by: str | None
+
+
+class SubmitAuthorizationRecordRequest(BaseModel):
+    """Body of POST /continuity/employees/{id}/authorization-records. Enters
+    a new record as pending_verification — it never becomes current on its
+    own; see POST .../confirm."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    authorization_type: Literal[
+        "citizen", "permanent_resident", "cpt", "opt", "stem_opt", "h1b", "l1", "other",
+    ]
+    effective_from: date
+    effective_until: date | None = None
+    next_hr_review_date: date | None = None
+    source_document_type: str | None = None
+    internal_notes: str | None = None
 
 
 class HrReviewQueueItem(BaseModel):

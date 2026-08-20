@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, get_args
@@ -37,6 +38,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
+from app.chain_budgets import DEFAULT_PLAN_CLASS, ChainBudget, budget_for
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
 from app.models import Employee
@@ -48,6 +50,7 @@ from app.project_search import find_experts
 from app.query_compiler import ORDERABLE_FIELDS
 from app.query_plan import Filter, Op, PeopleQuery
 from app.registry import REGISTRY
+from app.schemas import HistoryTurn
 from app.vocabulary import snap_tool_arguments
 
 load_dotenv()
@@ -544,7 +547,7 @@ def _tool_call_message(tool_name: str, arguments: dict) -> dict:
     }
 
 
-def build_messages(user_message: str) -> list[dict]:
+def build_messages(user_message: str, history_messages: list[dict] | None = None) -> list[dict]:
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for example_text, tool_name, arguments in FEW_SHOT_EXAMPLES:
         messages.append({"role": "user", "content": example_text})
@@ -568,6 +571,12 @@ def build_messages(user_message: str) -> list[dict]:
                 "role": "tool", "tool_call_id": f"example_{tool_name}",
                 "content": "(illustrative example — not a real result)",
             })
+    # Real prior turns of THIS conversation, if any -- placed after the
+    # few-shots and before the current question, so the model reads them
+    # as what actually happened rather than another illustrative example.
+    # Built by _history_messages(), never by the caller directly.
+    if history_messages:
+        messages.extend(history_messages)
     messages.append({"role": "user", "content": user_message})
     return messages
 
@@ -1080,12 +1089,19 @@ def _is_content_filter_block(exc: OpenAIError) -> bool:
     return isinstance(body, dict) and body.get("code") == "content_filter"
 
 
-def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> AssistantTurn | None:
+def _real_resolve(
+    message: str, extra_messages: list[dict] | None = None, history_messages: list[dict] | None = None,
+) -> AssistantTurn | None:
     """Called by resolve_intent() after the deterministic router has
     already returned None for this exact message — so on failure here
     there's nothing left worth re-trying deterministically; this just
     reports "no answer" (None) and lets resolve_intent()'s own last-resort
     fallback take it from there, once, in one place.
+
+    `history_messages`, when given, are real prior turns of this same
+    conversation (see _history_messages) -- spliced in by build_messages()
+    BEFORE the current user message, so the model reads them as
+    conversation-so-far rather than as a reaction to the new question.
 
     `extra_messages`, when given, are appended after the normal system
     prompt + few-shots + user message — used by two different callers,
@@ -1104,7 +1120,7 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
     """
     try:
         client = _get_openai_client()
-        messages = build_messages(message)
+        messages = build_messages(message, history_messages)
         if extra_messages:
             messages.extend(extra_messages)
         response = client.chat.completions.create(
@@ -1178,6 +1194,79 @@ def _real_resolve(message: str, extra_messages: list[dict] | None = None) -> Ass
     return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
 
 
+_PHRASING_SYSTEM_PROMPT = (
+    "You write a short, natural-language answer to the caller's question, given a "
+    "JSON object that is the caller's ENTIRE and ONLY source of truth. It has "
+    "already been filtered to exactly what this caller is permitted to see. State "
+    "only facts literally present in it -- never a name, number, or relationship "
+    "the JSON doesn't contain, and never anything from your own knowledge.\n\n"
+    "If `result` is a list with more than one entry: name up to 5 of them, each "
+    "with a short clause explaining why it's relevant -- drawn only from fields "
+    "already present on that entry (role, team, location, availability, skill "
+    "level, or whatever else is there). Never rank them or call one 'the best' "
+    "unless the data itself ranks them -- if every entry matches the same filter "
+    "equally, say what each one has in common with the request, not that one "
+    "beats another. If more than 5 entries exist, say how many more there are. "
+    "Write it as flowing prose in one paragraph -- no bullets, no numbered list, "
+    "no line breaks.\n\n"
+    "Otherwise -- a single result, or a `result` that isn't a list of candidates "
+    "-- answer directly in one or two sentences.\n\n"
+    "If `result` is null, an empty list, or otherwise shows nothing matched, say "
+    "that plainly. No preamble, no mention that you are an AI, no restating the "
+    "question, no disclaimers."
+)
+
+
+def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -> str | None:
+    """A second, narrowly-scoped model call that phrases the final answer
+    sentence from a result execute_tool_call() already produced -- i.e.
+    already run through is_record_visible for this caller, same as every
+    card and citation built from it.
+
+    This is NOT the same trust boundary _real_resolve() polices when it
+    discards the model's own free text (see that function's docstring): that
+    prose had no source behind it, so passing it through would let the model
+    answer from its own knowledge or replay a few-shot's conclusion as fact.
+    Here the model sees nothing BUT this caller's already-permission-filtered
+    result -- it is grounding a sentence in data the caller could already
+    read off the result cards, not asserting anything of its own.
+
+    None, never an exception, whenever there's nothing to ask -- no real
+    model configured, or the call itself fails -- so the caller (_build_
+    assisted) falls back to the deterministic _phrase() template. Same
+    degrade-don't-error shape _real_resolve() already uses for the routing
+    call, applied to the phrasing call.
+    """
+    if _mode() != "real":
+        return None
+    # Same serialization execute_chain() already uses to hand a step's
+    # result back to the model (_serialize_step_result) -- one code path
+    # for "already-permission-filtered result -> JSON the model can read",
+    # covered by that function's own leak test, rather than a second one
+    # that could drift out of sync with it.
+    payload = (
+        f'{{"tool": {json.dumps(tool_name)}, "arguments": {json.dumps(arguments, default=str)}, '
+        f'"result": {_serialize_step_result(result)}}}'
+    )
+    try:
+        client = _get_openai_client()
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": _PHRASING_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Question: {question}\n\nJSON:\n{payload}"},
+            ],
+            # Same reasoning as the routing call's own reasoning_effort choice
+            # (see _real_resolve) -- phrasing one sentence off data that's
+            # already computed is not a deliberation-worthy task either.
+            reasoning_effort="minimal",
+        )
+    except OpenAIError:
+        return None
+    text = (response.choices[0].message.content or "").strip()
+    return text or None
+
+
 def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
     """Distinguishes the new plan-shaped tool from the original fixed-
     parameter ones, purely by name -- both come out of the same
@@ -1211,7 +1300,9 @@ def names_a_real_person(db: Session, turn: AssistantTurn | None) -> bool:
     return not resolve_person(db, person).is_unknown
 
 
-def resolve_intent(message: str, db: Session | None = None) -> AssistantTurn:
+def resolve_intent(
+    message: str, db: Session | None = None, history_messages: list[dict] | None = None,
+) -> AssistantTurn:
     """Deterministic router first, always — tried whether AI_MODE is real
     or mock, per ARCHITECTURE_2.md §6's "promote it to primary": an exact
     pattern match is strictly better (10ms, free, deterministic) than a
@@ -1231,6 +1322,13 @@ def resolve_intent(message: str, db: Session | None = None) -> AssistantTurn:
     about it. Lets the assistant-level audit row (execute_with_fallback's
     _write_audit) answer "how did this get routed" without touching any of
     the service functions downstream of it.
+
+    history_messages (follow-up chat) is deliberately NOT given to the
+    deterministic router: it's a pure pattern match on this one message,
+    unambiguous by construction, so a message that needs conversation
+    context to interpret ("which of those are in Bangalore?") simply
+    won't match one of its patterns and falls through to the real model
+    below, the one path that can actually use the context.
     """
     deterministic = _deterministic_resolve(message)
     # `db` is optional only so existing callers and tests that never needed
@@ -1241,7 +1339,7 @@ def resolve_intent(message: str, db: Session | None = None) -> AssistantTurn:
             deterministic.tool_call.routed_via = "deterministic"
         return deterministic
     if _mode() == "real":
-        real = _real_resolve(message)
+        real = _real_resolve(message, history_messages=history_messages)
         if real is not None:
             if real.tool_call is not None:
                 real.tool_call.routed_via = _llm_routed_via(real.tool_call)
@@ -1590,6 +1688,49 @@ def execute_with_retry(
 
 
 # ---------------------------------------------------------------------------
+# Follow-up chat (Conversational Assistant plan, phase 1): the conversation
+# now outlives one request, so a later turn needs to see earlier ones. Only
+# the PLAN of each prior turn (tool name + arguments) is ever accepted from
+# the client -- never its result -- and _history_messages() re-executes
+# each one fresh through execute_tool_call(), the exact same enforce()-
+# gated dispatcher a brand-new call goes through. Nothing about a caller's
+# access can be stale by the time it reaches the model: a field revoked
+# between turn one and turn two is simply absent when turn two replays
+# turn one for context, the same as it would be on a fresh request.
+# ---------------------------------------------------------------------------
+
+MAX_HISTORY_TURNS = 3
+
+
+def _history_messages(
+    db: Session, caller: AuthenticatedUser, history: list[HistoryTurn], view_mode: ViewMode,
+) -> list[dict]:
+    """Rebuilds conversation-so-far as real chat messages, from the last
+    MAX_HISTORY_TURNS entries of `history` -- oldest first, so the model
+    reads them in the order they happened. A turn whose tool call no
+    longer executes (a stale argument, a since-renamed field) is dropped
+    silently rather than surfaced as an error: the CURRENT question still
+    deserves an answer, degraded by one turn of missing context rather
+    than failed outright -- the same direction every other degradation in
+    this system takes."""
+    messages: list[dict] = []
+    for i, turn in enumerate(history[-MAX_HISTORY_TURNS:]):
+        messages.append({"role": "user", "content": turn.message})
+        if turn.tool_call is None:
+            messages.append({"role": "assistant", "content": turn.assistant_text or ""})
+            continue
+        replay = ResolvedToolCall(
+            name=turn.tool_call, arguments=turn.arguments or {}, tool_call_id=f"history_{i}")
+        try:
+            result = execute_tool_call(db, caller, replay, view_mode)
+        except (TypeError, ValueError, KeyError):
+            messages.pop()  # drop the lone "user" turn just appended -- no assistant half to pair it with
+            continue
+        messages.extend(_chain_step_messages(replay, result))
+    return messages
+
+
+# ---------------------------------------------------------------------------
 # Bounded multi-step chain: a request where one call's output determines
 # the next call's input ("who on Priya's team knows Terraform and is free
 # next month?") is unanswerable in one call, no matter how the arguments
@@ -1598,9 +1739,57 @@ def execute_with_retry(
 # entered when the MODEL's own first call sets needs_followup; an ordinary
 # single-call request never reaches any of this and costs exactly what it
 # costs today (see answer()'s branch point below).
+#
+# Bounded along three independent axes (app/chain_budgets.py), not just a
+# step count -- a loop can be cheap in steps and expensive in exposure (a
+# handful of broad queries returns more than twenty narrow ones), so steps
+# alone was the wrong single axis. Whichever of steps / distinct records /
+# wall-clock is exhausted first ends the chain.
 # ---------------------------------------------------------------------------
 
-MAX_CHAIN_STEPS = 3
+
+def _extract_record_ids(result: Any) -> list[str]:
+    """Every step's contribution to the chain's running distinct-record
+    count -- IDs only, extracted the same permissive way regardless of
+    which of the seven tools produced the result, never re-deriving what
+    counts as a record from the tool name. `id` covers six of the seven
+    result shapes (PersonSummary, PersonDetail, OrgChainNode,
+    MentorCandidate, ProblemExpert); find_project_owner's ProjectOwnerResult
+    uses `owner_id` instead, so that's checked too. A result with neither
+    (skill_gap/skill_scarcity's aggregate stats, or None) contributes
+    nothing, which is correct: this axis measures how many distinct
+    people/records a chain has surfaced, not how many tool calls it made.
+    """
+    items = result if isinstance(result, list) else [result]
+    ids = []
+    for item in items:
+        item_id = getattr(item, "id", None) or getattr(item, "owner_id", None)
+        if item_id is not None:
+            ids.append(item_id)
+    return ids
+
+
+def _exhausted_axis(
+    step: int, distinct_records: int, elapsed_ms: int, budget: ChainBudget,
+) -> str | None:
+    """Which axis of `budget`, if any, this chain has exhausted -- checked
+    in the same fixed order every time so which reason is reported is
+    deterministic when more than one axis happens to trip on the same
+    step, not whichever the caller happened to check first."""
+    if step >= budget.steps:
+        return "steps"
+    if distinct_records >= budget.max_records:
+        return "records"
+    if elapsed_ms >= budget.max_wall_clock_ms:
+        return "wall_clock"
+    return None
+
+
+_TRUNCATION_NOTES = {
+    "steps": "Stopped after running out of reasoning steps — this may be incomplete.",
+    "records": "Stopped after reaching its results budget — this may be incomplete.",
+    "wall_clock": "Stopped after running out of time — this may be incomplete.",
+}
 
 
 def _execute_chain_step(
@@ -1617,9 +1806,9 @@ def _execute_chain_step(
     broadening/audit logic -- documented and tested as a deliberate
     tradeoff (test_execute_with_retry_succeeds_after_one_correction pins
     the double execution explicitly). A chain step that may run up to
-    MAX_CHAIN_STEPS times has no equivalent case for paying that cost
-    every time, so this returns the result the successful call already
-    produced instead of re-running it.
+    the plan class's budgeted step count has no equivalent case for
+    paying that cost every time, so this returns the result the
+    successful call already produced instead of re-running it.
 
     Returns None if every retry is exhausted without a successful
     execution -- the caller (execute_chain) treats that as this step's
@@ -1681,23 +1870,37 @@ def _chain_step_messages(tool_call: ResolvedToolCall, result: Any) -> list[dict]
 
 def execute_chain(
     db: Session, caller: AuthenticatedUser, first_call: ResolvedToolCall, message: str,
-    view_mode: ViewMode = "work",
+    view_mode: ViewMode = "work", history_messages: list[dict] | None = None,
+    plan_class: str = DEFAULT_PLAN_CLASS,
 ) -> dict:
-    """Bounded multi-step tool-calling, up to MAX_CHAIN_STEPS calls. Every
-    step dispatches through the exact same execute_tool_call() a
-    single-call request already uses -- same caller, same view_mode, same
-    enforce()/compile_query() gate at every step. This is orchestration
-    around the existing dispatcher, never a second one: nothing here
-    decides permissions differently because it's step two.
+    """Bounded multi-step tool-calling, under `plan_class`'s declared
+    budget (app/chain_budgets.py) -- steps, distinct records returned, and
+    wall-clock, exhausted independently; whichever trips first ends the
+    chain. Every step dispatches through the exact same execute_tool_call()
+    a single-call request already uses -- same caller, same view_mode,
+    same enforce()/compile_query() gate at every step. This is
+    orchestration around the existing dispatcher, never a second one:
+    nothing here decides permissions differently because it's step two.
 
-    Response shape is identical to a single-call answer's --
-    {message, tool_call, arguments, result}, populated from the FINAL step
-    only, as if that step (with its already-resolved arguments) had been
-    the only call made. Full step-by-step traceability lives in the audit
-    log via chain_id/chain_step (one assistant-level row per step, plus
-    each step's own unchanged service-level row), not in this response --
-    deliberately, to avoid a breaking change to a contract callers already
-    consume.
+    Response shape is a single-call answer's -- {message, tool_call,
+    arguments, result} from the FINAL step only, as if that step (with
+    its already-resolved arguments) had been the only call made -- plus
+    two additive keys: `steps`, the ordered list of {tool, arguments,
+    latency_ms} for every step actually executed, PLAN (+ real measured
+    timing) only, never a step's result -- safe to hand back to the
+    caller (unlike a mid-chain result, which stays server-side), since a
+    tool name and its arguments carry nothing an ordinary caller couldn't
+    already see was asked, the same plan-not-result boundary saved
+    sessions and follow-up-chat history both hold to; and `truncated`,
+    None when the chain ended because the model itself was done, or the
+    name of whichever budget axis ended it otherwise ("steps" / "records"
+    / "wall_clock") -- a truncated answer says so (folded into `message`
+    too, via _TRUNCATION_NOTES) rather than silently returning a partial
+    result indistinguishable from a complete one. `steps` exists so a UI
+    can render "resolved in N steps" instead of a chain looking identical
+    to a single call -- full detail still lives in the audit log via
+    chain_id/chain_step (one row per step) for anything needing more than
+    the trace.
 
     SECURITY NOTE (composition), checked against app/policy.py directly,
     not assumed: enforce() is a pure function of (plan, caller, view_mode)
@@ -1708,7 +1911,8 @@ def execute_chain(
     step feeds back to the model is the already-caller-filtered response
     object that step produced (_serialize_step_result), so the model's
     cumulative context across the whole chain never exceeds the union of
-    what MAX_CHAIN_STEPS individually-permitted answers would have shown.
+    what the plan class's budgeted step count worth of individually-
+    permitted answers would have shown.
     That bound does NOT eliminate ARCHITECTURE_2.md §16's own named
     "cross-query inference" limitation -- "a user can ask several
     individually-permitted questions and assemble something restricted
@@ -1718,9 +1922,12 @@ def execute_chain(
     letting this function imply it closes a gap the rest of the system
     already says it doesn't.
     """
+    budget = budget_for(plan_class)
     chain_id = uuid.uuid4().hex
+    chain_started = time.monotonic()
     attempt = first_call
     extra_messages: list[dict] = []
+    seen_record_ids: set[str] = set()
     # One entry per executed step, for callers that render a trace. Additive
     # to the response contract -- /ask consumers that only read
     # message/tool_call/arguments/result are unaffected -- and it is what
@@ -1730,16 +1937,19 @@ def execute_chain(
     steps_taken: list[dict] = []
     step = 0
 
-    def _record(call: ResolvedToolCall, result: Any) -> None:
+    def _record(call: ResolvedToolCall, result: Any, latency_ms: int) -> None:
         steps_taken.append({
             "tool": call.name,
             "arguments": call.arguments,
             "result_count": len(result) if isinstance(result, list) else (0 if result is None else 1),
+            "latency_ms": latency_ms,
         })
 
     while True:
         step += 1
+        step_started = time.monotonic()
         outcome = _execute_chain_step(db, caller, attempt, message, view_mode)
+        step_latency_ms = int((time.monotonic() - step_started) * 1000)
         if outcome is None:
             _write_audit(
                 db, caller, f"{message} -> {attempt.name} (execution failed, chain step {step})", 0,
@@ -1747,15 +1957,24 @@ def execute_chain(
             return {
                 "message": "I found a matching action but couldn't complete it — try rephrasing.",
                 "tool_call": attempt.name, "arguments": attempt.arguments, "result": None,
-                "steps": steps_taken,
+                "steps": steps_taken, "truncated": None,
             }
 
         result, attempt = outcome
-        wants_more = attempt.needs_followup and step < MAX_CHAIN_STEPS
+        seen_record_ids.update(_extract_record_ids(result))
+
+        # Budget only matters if the model actually wants another step --
+        # a chain that finishes on its own within budget is not truncated
+        # just because step happens to equal the ceiling.
+        exhausted = None
+        if attempt.needs_followup:
+            elapsed_ms = int((time.monotonic() - chain_started) * 1000)
+            exhausted = _exhausted_axis(step, len(seen_record_ids), elapsed_ms, budget)
+        wants_more = attempt.needs_followup and exhausted is None
 
         if wants_more:
             extra_messages.extend(_chain_step_messages(attempt, result))
-            next_turn = _real_resolve(message, extra_messages=extra_messages)
+            next_turn = _real_resolve(message, extra_messages=extra_messages, history_messages=history_messages)
             if next_turn is not None and next_turn.tool_call is not None:
                 next_turn.tool_call.routed_via = _llm_routed_via(next_turn.tool_call)
                 # A real next step -- THIS step was intermediate, not
@@ -1765,7 +1984,7 @@ def execute_chain(
                 _write_audit(
                     db, caller, f"{message} -> {attempt.name}({attempt.arguments})",
                     1 if result else 0, attempt.routed_via, chain_id, step)
-                _record(attempt, result)
+                _record(attempt, result, step_latency_ms)
                 attempt = next_turn.tool_call
                 continue
             # Model is done (plain text, no function call) or degraded
@@ -1773,7 +1992,7 @@ def execute_chain(
             # and finalize THIS step instead, without having double-
             # audited it above.
 
-        _record(attempt, result)
+        _record(attempt, result, step_latency_ms)
         final = _finish_with_broadening(db, caller, attempt, result, message, chain_id, step)
         # Broadening can replace the final result (a skill/language miss
         # answered with related people) -- recount from what is actually
@@ -1782,11 +2001,20 @@ def execute_chain(
         broadened = final.get("result")
         steps_taken[-1]["result_count"] = (
             len(broadened) if isinstance(broadened, list) else (0 if broadened is None else 1))
-        return {**final, "steps": steps_taken}
+        final["steps"] = steps_taken
+        final["truncated"] = exhausted
+        if exhausted is not None:
+            # A truncated answer says so -- folded into the same message
+            # field the presentation layer already renders, not a flag
+            # only an API consumer that thought to check it would notice.
+            note = _TRUNCATION_NOTES[exhausted]
+            final["message"] = f"{final['message']} {note}" if final["message"] else note
+        return final
 
 
 def answer(
-    db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work"
+    db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work",
+    history: list[HistoryTurn] | None = None,
 ) -> dict:
     """The full turn: resolve intent (the deterministic router, or the
     model) -> execute, with retry on a failed call -> respond. The chosen
@@ -1803,14 +2031,24 @@ def answer(
     keep their current cost": nothing here re-prompts speculatively after
     an ordinary successful call, only when the model itself already asked
     for more in its first response.
+
+    `history`, when given, is this browser session's prior turns (plans
+    only -- see HistoryTurn/_history_messages). Rebuilt into real chat
+    messages ONCE per call here, through the same enforce()-gated
+    dispatcher a fresh request uses, and handed to both the first
+    resolution and (if this turn also chains) every subsequent step, so
+    conversation context survives a chain exactly as it survives a single
+    call -- identity and authorization are still read fresh every time,
+    nothing here is carried past what caller and db already are.
     """
-    turn = resolve_intent(message, db)
+    history_messages = _history_messages(db, caller, history, view_mode) if history else None
+    turn = resolve_intent(message, db, history_messages)
 
     if turn.tool_call is None:
         _write_audit(db, caller, message, 0)
         return {"message": turn.message or OUT_OF_SCOPE_MESSAGE, "tool_call": None, "arguments": None, "result": None}
 
     if turn.tool_call.needs_followup:
-        return execute_chain(db, caller, turn.tool_call, message, view_mode)
+        return execute_chain(db, caller, turn.tool_call, message, view_mode, history_messages)
 
     return execute_with_retry(db, caller, turn.tool_call, message, view_mode)

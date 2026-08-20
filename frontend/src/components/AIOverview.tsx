@@ -39,7 +39,6 @@ export function AIOverview({
   onJumpToCard: (id: string) => void;
 }) {
   const [showReasoning, setShowReasoning] = useState(false);
-  const uniqueCitations = [...new Map(overview.citations.map((c) => [c.id, c])).values()];
 
   return (
     <div className="ai-overview">
@@ -50,17 +49,14 @@ export function AIOverview({
 
       <p className="ai-overview-answer">{renderAnswerWithCitations(overview.answer, overview.citations, onJumpToCard)}</p>
 
-      {uniqueCitations.length > 1 && (
-        <ul className="ai-overview-list">
-          {uniqueCitations.map((c) => (
-            <li key={c.id}>
-              <button type="button" className="citation-link" onClick={() => onJumpToCard(c.id)}>
-                {c.full_name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* No standalone name list here on purpose -- citations are always
+          the same people already rendered as full cards below (they come
+          from the same _people_and_citations() call), so repeating them
+          as a bare-name list only made the overview longer without
+          adding anything a card doesn't already show. Names mentioned in
+          the prose above are still clickable (renderAnswerWithCitations);
+          browsing the rest is the card grid below, or a follow-up
+          question in the chat. */}
 
       {overview.trace.length > 0 && (
         <>

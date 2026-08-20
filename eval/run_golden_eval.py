@@ -41,11 +41,11 @@ from openai import OpenAIError  # noqa: E402
 import app.search_client as sc  # noqa: E402
 import independent_truth  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
+from app.chain_budgets import DEFAULT_PLAN_CLASS, budget_for  # noqa: E402
 from app.directory_tools import skill_gap, skill_scarcity  # noqa: E402
 from app.tool_calling import (  # noqa: E402
     CHAT_ENDPOINT,
     CHAT_KEY,
-    MAX_CHAIN_STEPS,
     OUT_OF_SCOPE_MESSAGE,
     ResolvedToolCall,
     AssistantTurn,
@@ -68,6 +68,11 @@ RESULTS_PATH = Path(__file__).resolve().parent / "results.json"
 SEARCH_DISABLED_REASON: str | None = None
 CALL_DELAY_SECONDS = 8.0  # pacing between real LLM calls, see module docstring
 MAX_RETRIES = 5
+# The default plan class's declared step budget (app/chain_budgets.py) --
+# read from the same registry production reads from, not a second
+# hardcoded 3, so this harness measures the real chain's actual bound
+# even if that bound is later changed there.
+CHAIN_STEP_BUDGET = budget_for(DEFAULT_PLAN_CLASS).steps
 
 
 def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None) -> AssistantTurn:
@@ -102,7 +107,19 @@ def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None
             choice = response.choices[0].message
             if choice.tool_calls:
                 call = choice.tool_calls[0]
-                arguments = json.loads(call.function.arguments)
+                # Same degrade app.tool_calling._real_resolve holds to on a
+                # malformed/truncated function-call payload -- observed live
+                # here (a real "Unterminated string" from the model on a
+                # chain step), and this file had no equivalent guard: an
+                # uncaught JSONDecodeError killed the whole 57-question run
+                # instead of scoring the one question a miss and continuing,
+                # same principle as every other degrade in this eval (retry
+                # storms and content-filter blocks are already handled, not
+                # left to crash the process).
+                try:
+                    arguments = json.loads(call.function.arguments)
+                except json.JSONDecodeError:
+                    return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
                 # Same lift app.tool_calling._real_resolve performs -- see
                 # that function's own comment. Needed here too so
                 # run_chain_strict below can tell whether the model asked
@@ -128,7 +145,8 @@ def resolve_intent_strict(message: str, extra_messages: list[dict] | None = None
 
 def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> dict:
     """Mirrors app.tool_calling.execute_chain's loop shape -- same
-    MAX_CHAIN_STEPS bound, same _chain_step_messages function production
+    CHAIN_STEP_BUDGET bound (the default plan class's declared step
+    budget), same _chain_step_messages function production
     uses, so this measures the real chain behavior,
     not a re-derived approximation of it. Differs only where this whole
     file already differs from production: resolve_intent_strict's own
@@ -147,7 +165,7 @@ def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> 
     result = None
     exec_error = None
 
-    for step in range(1, MAX_CHAIN_STEPS + 1):
+    for step in range(1, CHAIN_STEP_BUDGET + 1):
         try:
             result = execute_tool_call(db, caller, attempt)
         except (TypeError, ValueError, KeyError) as exc:
@@ -155,7 +173,7 @@ def run_chain_strict(db, caller, first_call: ResolvedToolCall, message: str) -> 
             return {"tool_call": attempt.name, "arguments": attempt.arguments,
                     "result": None, "steps": step, "exec_error": exec_error}
 
-        if not (attempt.needs_followup and step < MAX_CHAIN_STEPS):
+        if not (attempt.needs_followup and step < CHAIN_STEP_BUDGET):
             break
 
         extra_messages.extend(_chain_step_messages(attempt, result))

@@ -3,17 +3,18 @@ most and get their own tests rather than being implied by the others —
 zero-token for direct mode, and citations never exceeding what the caller
 is actually permitted to see.
 """
-from app.schemas import ProblemExpert
+from app.schemas import OfficeOut, PersonSummary, ProblemExpert
 from app.tool_calling import AssistantTurn, ResolvedToolCall
-from app.unified_search import _TOOL_REASONS, _humanize_args, _phrase_experts
+from app.unified_search import _TOOL_REASONS, _humanize_args, _phrase_experts, _phrase_people_matches
 from tests.conftest import auth_headers
 
 
 # ---------------------------------------------------------------------------
 # Direct mode: the "zero-token" property is provable, not just assumed —
-# resolve_intent (the only thing in this codebase that ever calls the chat
-# model) is patched to raise if it's invoked at all. A direct-mode request
-# succeeding proves it was never called.
+# resolve_intent (the router; the other chat-model caller, phrase_answer, is
+# only ever reached from _build_assisted, which direct mode never calls) is
+# patched to raise if it's invoked at all. A direct-mode request succeeding
+# proves it was never called.
 # ---------------------------------------------------------------------------
 
 async def test_direct_mode_never_calls_the_model(client, monkeypatch):
@@ -53,6 +54,48 @@ async def test_question_shaped_query_is_classified_assisted(client):
     )
     assert resp.status_code == 200
     assert resp.json()["mode"] == "assisted"
+
+
+async def test_needs_followup_query_produces_a_multi_step_trace(client, monkeypatch):
+    """A question the model's own first call flags needs_followup on (e.g.
+    "who on Priya's team knows Terraform and is free next month?" -- no
+    single tool call expresses that) must route through execute_chain, not
+    execute_with_retry -- and the overview's trace, which until now only
+    ever held one entry, must show every step the chain actually ran, not
+    just the final one."""
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="get_org_chain", arguments={"person": "Priya"}, needs_followup=True)),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_with_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("a chained call must not fall through to the single-call path")),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": "2 people match.", "tool_call": "find_people", "arguments": {"name": "Y"}, "result": [],
+            "steps": [
+                {"tool": "get_org_chain", "arguments": {"person": "Priya"}, "latency_ms": 5},
+                {"tool": "find_people", "arguments": {"name": "Y"}, "latency_ms": 8},
+            ],
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who on Priya's team knows Terraform and is free next month?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert [s["tool"] for s in trace] == ["get_org_chain", "find_people"]
+    assert all("reason" in s and isinstance(s["latency_ms"], int) for s in trace)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +166,34 @@ async def test_self_referential_manager_query_uses_get_org_chain_not_get_person(
     assert "report-1" not in result_ids  # never highlights the caller
     assert "mgr-1" in result_ids  # highlights the manager instead
     assert "Morgan Manager" in body["overview"]["answer"]
+
+
+# ---------------------------------------------------------------------------
+# The overview's answer prefers a real model's phrasing of the already-
+# filtered result over the deterministic _phrase() template, when one is
+# configured and returns something — and still falls back to the template
+# otherwise. Every other test in this file exercises the fallback
+# implicitly (mock mode, same as production with no CHAT_ENDPOINT/CHAT_KEY
+# set); these two make both halves of that fallback explicit.
+# ---------------------------------------------------------------------------
+
+async def test_overview_answer_prefers_the_real_models_phrasing(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.unified_search.phrase_answer",
+        lambda question, tool_name, arguments, result: "A model-phrased sentence about Morgan Manager.",
+    )
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "report-1"))
+    assert resp.status_code == 200
+    assert resp.json()["overview"]["answer"] == "A model-phrased sentence about Morgan Manager."
+
+
+async def test_overview_answer_falls_back_to_the_template_when_the_model_has_nothing(client, monkeypatch):
+    monkeypatch.setattr("app.unified_search.phrase_answer", lambda *a, **kw: None)
+    resp = await client.get("/search", params={"q": "who is my manager?"}, headers=auth_headers("employee", "report-1"))
+    assert resp.status_code == 200
+    # Same assertion the un-monkeypatched version of this query makes above
+    # -- proves the template path alone still answers it correctly.
+    assert "Morgan Manager" in resp.json()["overview"]["answer"]
 
 
 async def test_self_referential_direct_reports_query_uses_get_org_chain_self(client):
@@ -238,11 +309,13 @@ async def test_named_third_party_possessive_manager_query_returns_the_manager(cl
 # ---------------------------------------------------------------------------
 # Skill-miss escalation: a filter-style skill query that misses exactly
 # still stays honest and zero-chat-model-cost — it broadens via
-# find_people's own semantic search, not a second AI system, and is
-# labeled assisted so the UI shows it was broadened.
+# find_people's own semantic search, not a second AI system. mode stays
+# "direct" (no overview/trace) because no model call happened; the
+# broadening explanation surfaces as a plain `note` instead, so the
+# frontend never shows AI framing for something the AI had no part in.
 # ---------------------------------------------------------------------------
 
-async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkeypatch):
+async def test_skill_miss_broadens_without_the_model_or_ai_framing(client, monkeypatch):
     monkeypatch.setattr(
         "app.tool_calling._get_openai_client",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("chat model must not be called for a skill miss")),
@@ -252,8 +325,9 @@ async def test_skill_miss_escalates_to_assisted_without_the_model(client, monkey
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mode"] == "assisted"
-    assert body["overview"]["trace"][0]["tool"] == "find_people"
+    assert body["mode"] == "direct"
+    assert body.get("overview") is None
+    assert body["note"]
 
 
 async def test_unique_field_miss_stays_direct_with_no_escalation(client):
@@ -457,7 +531,7 @@ async def test_coordination_across_values_takes_the_assisted_path(client, monkey
     # search_people had no rendering branch at all -- every structured plan
     # came back with zero cards regardless of how many people it matched.
     assert len(body["results"]) > 0
-    assert "Found" in body["overview"]["answer"]
+    assert "match" in body["overview"]["answer"]
     assert body["overview"]["answer"] != "Done."
 
 
@@ -542,6 +616,65 @@ def test_trace_reasons_are_written_for_people_not_lifted_from_tool_schemas():
 
 
 # ---------------------------------------------------------------------------
+# _phrase_people_matches(): find_people/search_people with more than one
+# result. The old phrasing dumped up to 5 bare names plus a count -- a wall
+# of text with nothing to distinguish one match from another, and a citation
+# list underneath repeating the same names again. This names a handful with
+# real context instead, and defers the rest to the card grid or a follow-up.
+#
+# This is the FALLBACK for when phrase_answer() (app.tool_calling) has no
+# real model to ask or its call fails -- mock mode, and any real-mode
+# degradation, both still need an answer. It shows the same count (5)
+# phrase_answer's own system prompt asks the model for, so a request
+# doesn't visibly change shape depending on which of the two wrote it.
+# ---------------------------------------------------------------------------
+
+def _person(name, *, job_title="Engineer", city="Seattle", availability="available"):
+    return PersonSummary(
+        id=name, full_name=name, job_title=job_title, org_unit="Platform",
+        office=OfficeOut(id=1, name=f"{city} Office", city=city, country="United States") if city else None,
+        availability_status=availability,
+    )
+
+
+def test_shows_only_the_top_few_not_every_match():
+    people = [_person(f"Person {i}") for i in range(12)]
+    answer = _phrase_people_matches(people)
+    assert answer.count("Person") == 5  # 5 named, not all 12 -- same count phrase_answer's prompt asks for
+    assert "12 people match" in answer
+    assert "7 more match too" in answer
+
+
+def test_no_remainder_note_when_everyone_is_already_shown():
+    people = [_person("A"), _person("B")]
+    answer = _phrase_people_matches(people)
+    assert "more match" not in answer
+
+
+def test_each_shown_person_carries_real_context_not_a_bare_name():
+    answer = _phrase_people_matches([_person("Priya Sharma", job_title="Data Scientist", city="Austin")])
+    assert "Priya Sharma (Data Scientist, Austin · available)" in answer
+
+
+def test_unavailable_person_is_not_marked_available():
+    answer = _phrase_people_matches([_person("Dev Menon", availability="away")])
+    assert "· available" not in answer
+    assert "Dev Menon (Engineer, Seattle)" in answer
+
+
+def test_a_person_with_no_office_still_gets_a_readable_descriptor():
+    answer = _phrase_people_matches([_person("No Office", city=None)])
+    assert "No Office (Engineer · available)" in answer
+
+
+def test_never_claims_a_best_match_only_a_count():
+    # There is no ranking among equally-filter-matching people -- this must
+    # never imply one exists.
+    answer = _phrase_people_matches([_person(f"P{i}") for i in range(5)])
+    assert "best" not in answer.lower()
+
+
+# ---------------------------------------------------------------------------
 # The bounded chain, reachable from /search. It was built, tested and eval'd
 # and then only ever callable from POST /ask, which the frontend never calls.
 # ---------------------------------------------------------------------------
@@ -557,7 +690,7 @@ async def test_a_chained_answer_shows_every_step_it_took(client, monkeypatch):
             needs_followup=True,
         ))
 
-    def _fake_next(message, extra_messages=None):
+    def _fake_next(message, extra_messages=None, history_messages=None):
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 
@@ -584,7 +717,7 @@ async def test_a_single_call_request_still_takes_exactly_one_call(client, monkey
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": "Riley Report"}))
 
-    def _must_not_run(message, extra_messages=None):
+    def _must_not_run(message, extra_messages=None, history_messages=None):
         calls.append(message)
         raise AssertionError("a single-call request must not re-prompt the model")
 

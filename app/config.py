@@ -116,6 +116,23 @@ def continuity_thresholds_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "continuity_thresholds.yml"
 
 
+def max_upload_bytes() -> int:
+    """Ceiling on /docs/upload's file size, in bytes.
+
+    Enforced by reading in chunks and aborting once the running total passes
+    this, not by trusting the client's Content-Length header (a request can
+    lie about that) or by calling file.read() unbounded first (that loads
+    the whole thing into memory before any check runs at all — the read IS
+    the risk for a crafted/oversized docx or pdf). 10 MB is comfortably
+    larger than any real status document this feature parses.
+    """
+    raw = os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 10 * 1024 * 1024
+
+
 # --- Training API connection settings -------------------------------------
 # Shape only. Nothing reads these unless enable_training_api_sync() is true.
 

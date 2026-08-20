@@ -81,3 +81,74 @@ def test_thresholds_resolve_independently_of_cwd(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("CONTINUITY_THRESHOLDS_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
     assert continuity_thresholds_path().is_file()
+
+
+# ---------------------------------------------------------------------------
+# App settings: the same drift, one layer up.
+#
+# The zip list decides which FILES reach wwwroot; these two lists decide which
+# ENV VARS the app boots with, and they have the same hand-maintained-in-two-
+# places problem with a nastier failure mode. terraform/main.tf's app_settings
+# block nulls out anything not declared in it (its own comment says so, from a
+# `terraform plan` that showed exactly that), and `terraform apply` runs on the
+# same push as the deploy job, just before it. So a setting added to only ONE
+# of the two lists is not half-configured, it is configured and then wiped --
+# and which one wins depends on job order rather than on anything written down.
+#
+# This is not hypothetical. ALLOW_DEV_AUTH being absent from BOTH lists is what
+# took the site down: app/auth.py's assert_dev_auth_is_intentional() started
+# refusing to boot without it, and the container crash-looped with a platform
+# 503 in front of it until the setting was declared in both places.
+# ---------------------------------------------------------------------------
+
+TERRAFORM_MAIN = REPO_ROOT / "terraform" / "main.tf"
+
+# Set by the platform, not by us -- Kudu/Oryx read these, and they have no
+# business being in Terraform's app_settings.
+CI_ONLY_SETTINGS = {"SCM_DO_BUILD_DURING_DEPLOYMENT"}
+
+
+def _ci_appsettings_keys() -> set[str]:
+    """Keys from the deploy job's `az webapp config appsettings set`."""
+    text = WORKFLOW.read_text()
+    match = re.search(r"az webapp config appsettings set(.*?)(?:\n\s*\n)", text, re.S)
+    assert match, "could not find the appsettings step in ci-cd.yml"
+    return set(re.findall(r"^\s*([A-Z][A-Z0-9_]*)=", match.group(1).replace("\\\n", "\n"), re.M))
+
+
+def _terraform_appsettings_keys() -> set[str]:
+    """Keys from terraform/main.tf's app_settings block. Comment lines are
+    skipped so the prose above a setting can mention other keys freely."""
+    text = TERRAFORM_MAIN.read_text()
+    match = re.search(r"app_settings\s*=\s*\{(.*?)\n    \}", text, re.S)
+    assert match, "could not find the app_settings block in terraform/main.tf"
+    body = "\n".join(
+        line for line in match.group(1).splitlines() if not line.lstrip().startswith("#")
+    )
+    return set(re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*=", body, re.M))
+
+
+def test_ci_and_terraform_declare_the_same_app_settings() -> None:
+    ci = _ci_appsettings_keys() - CI_ONLY_SETTINGS
+    tf = _terraform_appsettings_keys() - CI_ONLY_SETTINGS
+    assert ci == tf, (
+        "ci-cd.yml and terraform/main.tf disagree about app settings, so "
+        "`terraform apply` will null out whatever only CI sets.\n"
+        f"  only in ci-cd.yml:      {sorted(ci - tf)}\n"
+        f"  only in terraform:      {sorted(tf - ci)}"
+    )
+
+
+def test_the_deploy_says_which_auth_mode_it_means() -> None:
+    """app/auth.py refuses to start when auth_mode() reaches "dev" by
+    omission. Whichever answer the deploy gives -- dev auth declared, or real
+    Entra credentials -- it has to give one, in Terraform, or the container
+    crash-loops behind a 503 with nothing in the HTTP response to say why."""
+    tf = _terraform_appsettings_keys()
+    declared = "ALLOW_DEV_AUTH" in tf or "AUTH_MODE" in tf
+    entra = {"ENTRA_TENANT_ID", "ENTRA_CLIENT_ID"} <= tf
+    assert declared or entra, (
+        "terraform/main.tf's app_settings sets neither ALLOW_DEV_AUTH/AUTH_MODE "
+        "nor the ENTRA_* pair, so app/auth.py's assert_dev_auth_is_intentional() "
+        "will kill the container on startup. See its docstring."
+    )

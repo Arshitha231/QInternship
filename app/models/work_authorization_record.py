@@ -62,6 +62,17 @@ class WorkAuthorizationRecord(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     verified_by: Mapped[str | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
 
+    # Records that HR has acknowledged the upcoming-review *reminder* for —
+    # deliberately not the same thing as having performed the review itself.
+    # Doing the actual review means superseding this row with a newly
+    # verified one (a new authorization_type/next_hr_review_date), which
+    # resets these for free since acknowledgment lives on this row, not a
+    # separate table. This pair only silences app/notifications.py's sweep;
+    # it never affects GET /continuity/review-queue, which keeps listing the
+    # record for as long as it's actually due.
+    hr_review_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hr_review_acknowledged_by: Mapped[str | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Self-referential: points at the record this one replaces, so HR can
     # walk the history (current -> supersedes -> supersedes -> ...) instead

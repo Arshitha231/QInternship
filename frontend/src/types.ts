@@ -92,7 +92,8 @@ export interface NotificationOut {
     | "employee_course_reminder"
     | "manager_course_report"
     | "birthday_reminder"
-    | "work_anniversary_reminder";
+    | "work_anniversary_reminder"
+    | "hr_review_reminder";
   subject_person: PersonRef;
   course_name: string;
   display_status: string;
@@ -181,7 +182,10 @@ export interface OrgChainNode {
 // Mirrors app/unified_search.py's response shape exactly (GET /search).
 // The frontend never classifies a query itself — `mode` is the backend's
 // deterministic decision, `overview` is only ever present when
-// mode === "assisted".
+// mode === "assisted". `note`, conversely, is direct-mode-only: plain text
+// for a case like the skill-miss broadening fallback, which has something
+// to explain but made no model call, so it must never be rendered as an
+// AIOverview (no Sparkles/"AI Overview" framing, no reasoning trace).
 export interface TraceStep {
   tool: string;
   reason: string;
@@ -199,6 +203,7 @@ export interface UnifiedSearchResponse {
   mode: "direct" | "assisted";
   results: PersonSummary[];
   overview?: AIOverview;
+  note?: string;
 }
 
 export type Role = "employee" | "manager" | "hr" | "it";
@@ -233,6 +238,12 @@ export interface DeliveryDependency {
   employee: PersonRef;
   project_backup_count: number;
   org_backup_count: number;
+  // Which pool this dependency's redundancy comes from -- orthogonal to
+  // the containing engagement's exposure severity, which can land on
+  // "low" for both "project" and "org". "project": someone is already on
+  // this engagement. "org": nobody here today, org_backup_count > 0
+  // elsewhere. "none": neither.
+  redundancy_source: "project" | "org" | "none";
   // "declared": a real recorded fact -- either a required-skill entry
   // (GET/PUT /projects/{id}/required-skills) this person meets, or the
   // project_role dependency (always a recorded fact). "inferred": no
@@ -277,6 +288,11 @@ export interface AuthorizationRecordOut {
   verification_status: string;
   is_current: boolean;
   verified_at: string | null;
+  // Silences the upcoming-review reminder sweep for this due date only —
+  // does not mean the review itself is done. See POST
+  // /continuity/review-queue/{id}/acknowledge.
+  hr_review_acknowledged_at: string | null;
+  hr_review_acknowledged_by: string | null;
 }
 
 export interface EmployeeContinuityDetail {
@@ -435,6 +451,47 @@ export interface SuggestedOfficialLinkOut {
   created_at: string;
   reviewed_by: string | null;
   reviewed_at: string | null;
+}
+
+// Follow-up chat (POST /ask — app.schemas.HistoryTurn/AskRequest). A turn
+// held client-side for the length of this browser session, never persisted
+// server-side. tool_call/arguments are a PLAN, not a result — the server
+// re-executes them fresh, through the ordinary enforce()-gated dispatcher,
+// on every new turn (see app/tool_calling.py's _history_messages). Only
+// assistant_text is ever carried as-given, and only for a turn that had no
+// tool call (a clarifying question, an out-of-scope reply) — connective
+// language with no factual claim about a person.
+export interface AskHistoryTurn {
+  message: string;
+  tool_call?: string | null;
+  arguments?: Record<string, unknown> | null;
+  assistant_text?: string | null;
+}
+
+// One step of a multi-step chain, PLAN + real measured timing (tool,
+// arguments, latency_ms) — never a step's result. See app/tool_calling.py
+// execute_chain's `steps` key.
+export interface AskStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  latency_ms: number;
+}
+
+// null when a chain finished on its own within budget (or wasn't a chain
+// at all); otherwise which axis of the plan class's budget ended it —
+// "steps" | "records" | "wall_clock" (app/chain_budgets.py). The note
+// this implies is already folded into `message` server-side, so no UI
+// needs to read this field to show the user it's incomplete — it's here
+// for anything that wants to distinguish the reason programmatically.
+export type ChainTruncationReason = "steps" | "records" | "wall_clock" | null;
+
+export interface AskResponse {
+  message: string | null;
+  tool_call: string | null;
+  arguments: Record<string, unknown> | null;
+  result: unknown;
+  steps?: AskStep[];
+  truncated?: ChainTruncationReason;
 }
 
 // --- Dashboards (app/analytics.py) ----------------------------------------
