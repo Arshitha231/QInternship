@@ -3,9 +3,11 @@ most and get their own tests rather than being implied by the others —
 zero-token for direct mode, and citations never exceeding what the caller
 is actually permitted to see.
 """
-from app.schemas import OfficeOut, PersonSummary, ProblemExpert
+from app.schemas import OfficeOut, PersonSummary, PersonWithProjects, ProblemExpert
 from app.tool_calling import AssistantTurn, ResolvedToolCall
-from app.unified_search import _TOOL_REASONS, _humanize_args, _phrase_experts, _phrase_people_matches
+from app.unified_search import (
+    _TOOL_REASONS, _humanize_args, _people_and_citations, _phrase, _phrase_experts, _phrase_people_matches,
+)
 from tests.conftest import auth_headers
 
 
@@ -96,6 +98,81 @@ async def test_needs_followup_query_produces_a_multi_step_trace(client, monkeypa
     trace = body["overview"]["trace"]
     assert [s["tool"] for s in trace] == ["get_org_chain", "find_people"]
     assert all("reason" in s and isinstance(s["latency_ms"], int) for s in trace)
+
+
+async def test_compound_people_and_projects_query_chains_into_the_new_tool(client, monkeypatch):
+    """"5 Terraform people and their recent projects" -- find_people alone
+    never returns project data, so this must route through the same
+    execute_chain path a needs_followup call already uses, ending on
+    get_people_with_projects, not stop after the first step."""
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"skill": "Terraform"}, needs_followup=True)),
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": None, "tool_call": "get_people_with_projects",
+            "arguments": {"person_ids": ["stranger-1"]},
+            "result": [],
+            "steps": [
+                {"tool": "find_people", "arguments": {"skill": "Terraform"}, "latency_ms": 5},
+                {"tool": "get_people_with_projects", "arguments": {"person_ids": ["stranger-1"]}, "latency_ms": 8},
+            ],
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who has Terraform skills and what are their recent projects?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert [s["tool"] for s in trace] == ["find_people", "get_people_with_projects"]
+
+
+async def test_a_truncated_chain_still_describes_what_it_found(client, monkeypatch):
+    """execute_chain's own truncation note ("Stopped after running out of
+    reasoning steps...") describes the budget event, not the caller's
+    question -- confirmed live to otherwise completely replace the
+    overview's answer, leaving the person who actually matched unnamed
+    even though their card still renders below. The note must SUPPLEMENT
+    a real answer, never stand in for one."""
+    from app.schemas import PersonSummary
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": "Riley"}, needs_followup=True)),
+    )
+    person = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": "Stopped after running out of reasoning steps — this may be incomplete.",
+            "tool_call": "find_people", "arguments": {"name": "Riley"}, "result": [person],
+            "steps": [{"tool": "find_people", "arguments": {"name": "Riley"}, "latency_ms": 5}],
+            "truncated": "steps",
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who on Riley's team knows Terraform and is free next month?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    answer = resp.json()["overview"]["answer"]
+    assert "Riley Report" in answer  # the actual finding, not just the budget note
+    assert "Stopped after running out of reasoning steps" in answer  # the note, appended not substituted
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +749,47 @@ def test_never_claims_a_best_match_only_a_count():
     # never imply one exists.
     answer = _phrase_people_matches([_person(f"P{i}") for i in range(5)])
     assert "best" not in answer.lower()
+
+
+# ---------------------------------------------------------------------------
+# get_people_with_projects wiring: _people_and_citations builds ordinary
+# cards from PersonWithProjects (same shape every other tool's cards use --
+# recent_projects lives in the phrased answer, not a new card field), and
+# _phrase()'s deterministic fallback reuses _phrase_people_matches rather
+# than falling through to the generic "Done." every unrecognized tool gets.
+# ---------------------------------------------------------------------------
+
+def _person_with_projects(name, *, projects=None):
+    return PersonWithProjects(
+        id=name, full_name=name, job_title="Engineer", org_unit="Platform",
+        availability_status="available", recent_projects=projects,
+    )
+
+
+def test_people_and_citations_builds_ordinary_cards_from_the_new_tool():
+    people = [_person_with_projects("Riley Report"), _person_with_projects("Sam Stranger")]
+    results, citations = _people_and_citations(None, None, "get_people_with_projects", people)
+    assert [r.full_name for r in results] == ["Riley Report", "Sam Stranger"]
+    assert [c.full_name for c in citations] == ["Riley Report", "Sam Stranger"]
+    assert all(isinstance(r, PersonSummary) for r in results)  # cards are the ordinary shape, not a new one
+
+
+def test_people_and_citations_handles_an_empty_result():
+    results, citations = _people_and_citations(None, None, "get_people_with_projects", [])
+    assert results == [] and citations == []
+
+
+def test_phrase_fallback_for_the_new_tool_names_people_not_just_done():
+    people = [_person_with_projects("Riley Report")]
+    answer = _phrase("get_people_with_projects", {}, people)
+    assert answer != "Done."
+    assert "Riley Report" in answer
+
+
+def test_phrase_fallback_for_the_new_tool_handles_nobody_found():
+    answer = _phrase("get_people_with_projects", {}, [])
+    assert "Done." != answer
+    assert "could be found" in answer or "No" in answer
 
 
 # ---------------------------------------------------------------------------

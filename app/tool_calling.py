@@ -44,7 +44,9 @@ from app.models import AuditLog
 from app.models import Employee
 from app.org_chart import get_org_chain, resolve_person
 from app.schemas import AmbiguousPersonMatch, PersonChoice, UnknownPerson
-from app.people import find_people, find_related_language_speakers, get_person, search_people_by_plan
+from app.people import (
+    find_people, find_related_language_speakers, get_people_with_projects, get_person, search_people_by_plan,
+)
 from app.permissions import ViewMode
 from app.project_search import find_experts
 from app.query_compiler import ORDERABLE_FIELDS
@@ -344,13 +346,43 @@ TOOLS = [
             "additionalProperties": False,
         },
     }},
+    {"type": "function", "function": {
+        "name": "get_people_with_projects",
+        "description": (
+            "Recent project history for SEVERAL people at once, given their ids -- the second "
+            "step of a two-step plan for a compound request like \"N people with skill X and "
+            "their recent projects\": step one finds the people (find_people/search_people, "
+            "needs_followup=true), step two passes their ids here. find_people/search_people "
+            "never return project history themselves, and get_person only ever looks up one "
+            "person -- use this instead of looping get_person once per person, which the "
+            "chain's own step budget cannot support for more than a couple of people."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Ids of the people to fetch recent project history for -- from a prior "
+                        "step's own result, never invented. \"self\" is accepted for the caller's "
+                        "own id."
+                    ),
+                },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["person_ids"],
+            "additionalProperties": False,
+        },
+    }},
 ]
 
 SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadrant Technologies.
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
 get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people, \
-find_experts. Together they cover people, teams, skills, and projects — nothing else.
+find_experts, get_people_with_projects. Together they cover people, teams, skills, and \
+projects — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
 request — multiple values for the same field ("Bangalore or Singapore"), a field \
@@ -394,6 +426,14 @@ arguments — you do not need to guess ahead of time what the result will contai
 most 3 calls total, so plan within that: if a request would genuinely need more, do the best \
 you can with what 3 calls can establish rather than declaring you need a 4th. Do not set \
 needs_followup just to double-check a result or to fetch something the caller didn't ask for.
+
+A request for SEVERAL people AND a per-person detail find_people/search_people cannot return \
+— "5 people who know Terraform and their recent projects", "everyone on the Payments team and \
+what they're working on" — is exactly this two-step shape: find_people or search_people first \
+(needs_followup true) to get the people, then get_people_with_projects with their ids (read \
+from that result — never invented) to get each one's recent project history in the same call. \
+Never loop get_person once per person for this: the step budget cannot support more than a \
+couple of individual lookups, and get_people_with_projects exists so it doesn't have to.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -566,6 +606,16 @@ CHAIN_FEW_SHOT_EXAMPLES: list[ChainFewShot] = [
     ("who does the owner of the Billing API report to", [
         ("find_project_owner", {"name": "Billing API", "needs_followup": True}),
         ("find_people", {"name": "Diego Hernandez"}),
+    ]),
+    # get_people_with_projects's ids below are what find_people's own
+    # result would actually hand back (PersonSummary.id, real values on
+    # each candidate) -- never invented, same discipline every other
+    # step-2 argument in this list already holds to.
+    ("who are 5 people with Terraform skills and what are their recent projects", [
+        ("find_people", {"skill": "Terraform", "needs_followup": True}),
+        ("get_people_with_projects", {
+            "person_ids": ["e1a2b3c4-0001", "e1a2b3c4-0002", "e1a2b3c4-0003", "e1a2b3c4-0004", "e1a2b3c4-0005"],
+        }),
     ]),
 ]
 
@@ -1227,6 +1277,160 @@ def _real_resolve(
     return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
 
 
+# Self-authored free text an employee controls (bio via app.people's
+# update_own_bio, project_history[].contribution via the same self-service
+# path) -- excluded from what phrase_answer ever hands the model, not
+# merely asked not to be trusted. This is this system's one instance of
+# "containment of untrusted input": prompting cannot substitute, because
+# injection is adversarial by construction, and a self-authored bio is
+# exactly the kind of input a prompt instruction cannot be trusted to
+# resist -- unlike every other model call in this module, phrase_answer's
+# job is specifically to read someone else's data and turn it into prose a
+# DIFFERENT caller reads as fact.
+_UNTRUSTED_FREE_TEXT_KEYS = {"bio", "contribution"}
+
+
+def _redact_for_phrasing(value: Any) -> Any:
+    """Recursively strips _UNTRUSTED_FREE_TEXT_KEYS from an already-
+    JSON-shaped (dict/list) structure. Applied once, to the same payload
+    both serialized into the model's prompt and used afterward to
+    validate its output (_phrasing_is_grounded) -- so the check and the
+    input it's checking against can never quietly drift out of sync."""
+    if isinstance(value, dict):
+        return {k: _redact_for_phrasing(v) for k, v in value.items() if k not in _UNTRUSTED_FREE_TEXT_KEYS}
+    if isinstance(value, list):
+        return [_redact_for_phrasing(v) for v in value]
+    return value
+
+
+def _to_json_shape(result: Any) -> Any:
+    """BaseModel/list-of-BaseModel -> plain dict/list/scalar, the same
+    shape _serialize_step_result dumps -- factored out so phrase_answer
+    can redact and validate against the identical structure it serializes
+    into the prompt, rather than two representations that could diverge."""
+    if result is None:
+        return None
+    if isinstance(result, list):
+        return [item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in result]
+    if isinstance(result, BaseModel):
+        return result.model_dump(mode="json")
+    return result
+
+
+_AVAILABILITY_WORDS = ("available", "away", "restricted")
+# 2-3 consecutive Capitalized words -- a plain, deliberately permissive
+# proxy for "a proper-noun-shaped phrase," not a real name parser. False
+# positives are caught and allowed by the safe-phrases check below (a
+# capitalized job title or team name matches too); false negatives (an
+# invented single-word name) are the cost of staying this simple.
+_NAME_SPAN = re.compile(r"\b[A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+){1,2}\b")
+
+
+def _collect_strings(value: Any, into: set[str]) -> None:
+    if isinstance(value, str):
+        into.add(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _collect_strings(v, into)
+    elif isinstance(value, list):
+        for v in value:
+            _collect_strings(v, into)
+
+
+def _phrasing_is_grounded(text: str, sanitized_result: Any, arguments: dict | None = None) -> bool:
+    """A deterministic sanity check on phrase_answer's output, run against
+    the SAME redacted JSON shape actually sent to the model -- not the
+    full per-clause "Bound" tier a structured record+field reference would
+    give (the model would need to emit machine-checkable citations, not
+    prose; a larger change than this). Two checks, each aimed at a failure
+    mode already named as plausible rather than a general fabrication
+    detector:
+
+    - A stated availability ("available"/"away"/"restricted") the result
+      doesn't contain ANYWHERE, checked only when the result actually
+      carries availability_status data at all (find_mentor's
+      MentorCandidate has no such field, and "available to mentor you" is
+      ordinary language there, not a field assertion). The Conversational
+      Assistant plan's own worked example -- "a real person given the
+      wrong availability... the error that actually produces a bad
+      staffing decision" -- is exactly what this catches where the field
+      exists.
+    - A capitalized name-shaped phrase that names neither a real person in
+      the result nor is built entirely out of words that appear somewhere
+      in it. Checked word-by-word, not phrase-by-phrase: "Terraform
+      Expert" combines a real skill and a real level that only ever
+      appear in SEPARATE fields (skill="Terraform", level="Expert") --
+      exact-phrase matching rejected that live, a real, faithful
+      description, because the words were never adjacent in the source
+      data even though both are genuinely there. Checking word-by-word
+      instead of quote-by-quote is what lets a model paraphrase real data
+      without being treated as if it invented something.
+
+    Necessarily incomplete, the same limit named there for entity-only
+    checking, now wider still from the word-level relaxation: a real
+    person given a wrong but still-real attribute (someone else's office
+    or job title), or even a fabricated name built entirely out of real
+    words pulled from different people ("Aoife" plus "Iyer," say, when
+    the real pairings are "Aoife OBrien" and "Camille Iyer"), would still
+    pass. Closing either needs the model to emit structured references,
+    not free text -- out of scope here. What this still reliably catches
+    is the cheaper, more common failure this project has actually
+    observed: a wholesale invented name or a stated availability that
+    doesn't exist anywhere in the data at all.
+
+    `arguments` (the tool's own call arguments, e.g. skill="Site
+    Reliability Engineering") counts as safe vocabulary too, not just
+    `result` -- the model is shown both (see phrase_answer's payload) and
+    restating what the caller searched for is expected, not a
+    fabrication. Observed live: a skill name that appears in `arguments`
+    but not verbatim in any result's job_title ("Site Reliability
+    Engineering" the skill vs. "Site Reliability Engineer" the job title)
+    was rejected as if invented, silently dropping a real answer.
+    """
+    items = sanitized_result if isinstance(sanitized_result, list) else (
+        [sanitized_result] if sanitized_result is not None else [])
+    real_names: set[str] = set()
+    real_availabilities: set[str] = set()
+    safe_phrases: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("full_name") or item.get("owner_name")
+        if name:
+            real_names.add(name)
+        availability = item.get("availability_status")
+        if availability:
+            real_availabilities.add(availability)
+        _collect_strings(item, safe_phrases)
+    if arguments:
+        _collect_strings(arguments, safe_phrases)
+
+    safe_words: set[str] = set()
+    for phrase in safe_phrases:
+        safe_words.update(re.findall(r"[A-Za-z']+", phrase))
+
+    # Only enforced when this tool's results actually carry availability
+    # data at all -- find_mentor's MentorCandidate has no
+    # availability_status field, so real_availabilities is empty for it,
+    # and "available" there is ordinary language ("available to mentor
+    # you"), not an assertion about the field this check exists to
+    # police. Observed live: rejecting it that way silently dropped a
+    # real, faithful answer for every mentor question.
+    lowered = text.lower()
+    if real_availabilities:
+        for word in _AVAILABILITY_WORDS:
+            if re.search(rf"\b{word}\b", lowered) and word not in real_availabilities:
+                return False
+
+    for span in _NAME_SPAN.findall(text):
+        if span in real_names:
+            continue
+        if all(word in safe_words for word in span.split()):
+            continue
+        return False
+    return True
+
+
 _PHRASING_SYSTEM_PROMPT = (
     "You write a short, natural-language answer to the caller's question, given a "
     "JSON object that is the caller's ENTIRE and ONLY source of truth. It has "
@@ -1275,24 +1479,29 @@ def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -
     answer from its own knowledge or replay a few-shot's conclusion as fact.
     Here the model sees nothing BUT this caller's already-permission-filtered
     result -- it is grounding a sentence in data the caller could already
-    read off the result cards, not asserting anything of its own.
+    read off the result cards, not asserting anything of its own. Two more
+    guards apply on top of that, though, because "already-permission-
+    filtered" bounds WHO the data is about, not whether every field on it is
+    safe to feed to a model at all, or whether the model's own prose is
+    actually faithful to it: _redact_for_phrasing strips self-authored free
+    text (bio, project contribution) before the model ever sees it, and
+    _phrasing_is_grounded checks the output afterward against that same
+    redacted data.
 
     None, never an exception, whenever there's nothing to ask -- no real
-    model configured, or the call itself fails -- so the caller (_build_
-    assisted) falls back to the deterministic _phrase() template. Same
-    degrade-don't-error shape _real_resolve() already uses for the routing
-    call, applied to the phrasing call.
+    model configured, the call itself fails, or the output doesn't pass
+    grounding -- so the caller (_build_assisted) falls back to the
+    deterministic _phrase() template, which cannot fabricate a name or
+    attribute because it is built directly from the same data structurally.
+    Same degrade-don't-error shape _real_resolve() already uses for the
+    routing call, applied to the phrasing call.
     """
     if _mode() != "real":
         return None
-    # Same serialization execute_chain() already uses to hand a step's
-    # result back to the model (_serialize_step_result) -- one code path
-    # for "already-permission-filtered result -> JSON the model can read",
-    # covered by that function's own leak test, rather than a second one
-    # that could drift out of sync with it.
+    sanitized = _redact_for_phrasing(_to_json_shape(result))
     payload = (
         f'{{"tool": {json.dumps(tool_name)}, "arguments": {json.dumps(arguments, default=str)}, '
-        f'"result": {_serialize_step_result(result)}}}'
+        f'"result": {json.dumps(sanitized)}}}'
     )
     try:
         client = _get_openai_client()
@@ -1310,7 +1519,11 @@ def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -
     except OpenAIError:
         return None
     text = (response.choices[0].message.content or "").strip()
-    return text or None
+    if not text:
+        return None
+    if not _phrasing_is_grounded(text, sanitized, arguments):
+        return None
+    return text
 
 
 def _llm_routed_via(tool_call: ResolvedToolCall) -> str:
@@ -1551,6 +1764,12 @@ def execute_tool_call(
             limit=args.get("limit"),
         )
         return search_people_by_plan(db, caller, plan, view_mode)
+    if name == "get_people_with_projects":
+        # Same "self" resolution get_person's own branch does above, applied
+        # per-id -- a caller asking about themselves alongside real ids from
+        # a prior chain step doesn't need to know their own id to say so.
+        person_ids = [caller.id if pid == "self" else pid for pid in args.get("person_ids", [])]
+        return get_people_with_projects(db, caller, person_ids, view_mode=view_mode)
     raise ValueError(f"model requested an unknown tool: {name!r}")
 
 
