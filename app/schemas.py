@@ -1764,3 +1764,32 @@ class TeamFindRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1, max_length=500)
+
+
+class MeCapabilities(BaseModel):
+    """What the signed-in caller may actually do, decided server-side.
+
+    Exists because the client cannot work this out for itself. The obvious
+    two attempts both fail:
+
+      * the role claim alone — a "manager" with nobody reporting to them
+        has no team to build from, and app/analytics.py's resolve_scope
+        403s them;
+      * PersonSummary.has_reports — deliberately ABSENT in employee view
+        mode (see tests/test_has_reports.py), which is the only mode a
+        manager ever gets, so the flag is missing for exactly the people
+        it would be needed for.
+
+    So the answer is computed here by the same resolve_scope the endpoints
+    themselves use, rather than approximated twice in two places. This
+    decides what to SHOW; every endpoint still enforces independently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: POST /team/build and the analytics dashboards — HR in work mode, or
+    #: anyone with at least one active person reporting to them.
+    can_build_team: bool
+    #: POST /team/find — everyone. Team discovery runs behind the
+    #: employee-discovery rule, not resolve_scope, on purpose.
+    can_find_team: bool

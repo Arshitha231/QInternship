@@ -16,6 +16,7 @@ from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
 from app import config
 from app.analytics import DashboardForbidden
+from app.analytics import resolve_scope
 from app.analytics import insights as insights_service
 from app.analytics import org_unit_options as org_unit_options_service
 from app.analytics import overview as dashboard_overview_service
@@ -126,6 +127,7 @@ from app.schemas import (
     TrainingRoster,
     WorkforceInsight,
     WorkforceReport,
+    MeCapabilities,
     TeamBuildRequest,
     TeamFindRequest,
     TeamProposal,
@@ -234,6 +236,32 @@ def health() -> dict:
 @app.get("/auth/whoami", response_model=AuthenticatedUser)
 def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
     return user
+
+
+@app.get("/me/capabilities", response_model=MeCapabilities)
+def my_capabilities(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MeCapabilities:
+    """Which of the team features this caller can actually use.
+
+    Answered by running the real gate — app/analytics.py's resolve_scope,
+    the same function POST /team/build runs — rather than by re-deriving
+    the rule client-side, where it would be a second copy free to drift
+    from the first.
+
+    Purely advisory. Every endpoint enforces for itself, so a wrong answer
+    here can hide a feature that would have worked, never open one that
+    should be shut.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        resolve_scope(db, user, mode)
+        can_build = True
+    except DashboardForbidden:
+        can_build = False
+    return MeCapabilities(can_build_team=can_build, can_find_team=True)
 from pydantic import BaseModel
 
 class LoginRequest(BaseModel):

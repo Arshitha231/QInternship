@@ -877,3 +877,60 @@ async def test_route_round_trips_its_own_schema(client, fx):
                              json={"brief": f"Team needing {NAME} Alpha and {NAME} Beta"})
     assert resp.status_code == 200
     assert TeamProposal.model_validate(resp.json()) is not None
+
+
+# ---------------------------------------------------------------------------
+# GET /me/capabilities — what the UI is told to offer.
+#
+# Exists because the client cannot work this out itself, and the two things
+# it might try both fail: the role claim alone lets a "manager" with no
+# reports through, and PersonSummary.has_reports is absent in employee view
+# mode (tests/test_has_reports.py), which is the only mode a manager gets.
+# ---------------------------------------------------------------------------
+
+async def test_capabilities_grants_a_manager_with_reports(client, fx):
+    resp = await client.get("/me/capabilities", headers=auth_headers("manager", fx.boss.id))
+    assert resp.status_code == 200
+    assert resp.json()["can_build_team"] is True
+
+
+async def test_capabilities_refuses_a_manager_claim_with_no_reports(client, fx):
+    """The case a role-based client check gets wrong. fx.c manages nobody."""
+    resp = await client.get("/me/capabilities", headers=auth_headers("manager", fx.c.id))
+    assert resp.json()["can_build_team"] is False
+
+
+async def test_capabilities_refuses_an_ordinary_employee(client, fx):
+    resp = await client.get("/me/capabilities", headers=auth_headers("employee", fx.outsider.id))
+    assert resp.json()["can_build_team"] is False
+
+
+async def test_capabilities_grants_hr_in_work_mode_only(client, fx):
+    work = await client.get("/me/capabilities?view_mode=work", headers=auth_headers("hr"))
+    emp = await client.get("/me/capabilities?view_mode=employee", headers=auth_headers("hr"))
+    assert work.json()["can_build_team"] is True
+    assert emp.json()["can_build_team"] is False
+
+
+async def test_team_finding_is_offered_to_everyone(client, fx):
+    """The deliberate asymmetry: team DISCOVERY runs behind the
+    employee-discovery rule, not resolve_scope."""
+    resp = await client.get("/me/capabilities", headers=auth_headers("employee", fx.outsider.id))
+    assert resp.json()["can_find_team"] is True
+
+
+@pytest.mark.parametrize("role,who,expected", [
+    ("employee", "outsider", False),
+    ("manager", "c", False),
+    ("manager", "boss", True),
+])
+async def test_capabilities_agrees_with_what_the_endpoint_actually_does(
+        client, fx, role, who, expected):
+    """The point of the endpoint is that it cannot disagree with the gate.
+    Asserted by calling both rather than by reading the code."""
+    person = getattr(fx, who)
+    caps = await client.get("/me/capabilities", headers=auth_headers(role, person.id))
+    build = await client.post("/team/build", headers=auth_headers(role, person.id),
+                              json={"brief": f"Team needing {NAME} Alpha and {NAME} Beta"})
+    assert caps.json()["can_build_team"] is expected
+    assert (build.status_code == 200) is expected

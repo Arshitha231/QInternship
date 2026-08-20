@@ -958,3 +958,14 @@ export interface TeamRecommendationResult {
   // sort first, the other type still appears below.
   preferred_unit_type: string | null;
 }
+
+/** What the signed-in caller may actually do (GET /me/capabilities).
+ *
+ *  Server-computed, because neither thing the client could check is
+ *  reliable: the role claim alone lets a "manager" with no reports through,
+ *  and PersonSummary.has_reports is absent in employee view mode — the only
+ *  mode a manager ever gets. Advisory; every endpoint still enforces. */
+export interface MeCapabilities {
+  can_build_team: boolean;
+  can_find_team: boolean;
+}

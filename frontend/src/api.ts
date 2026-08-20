@@ -7,6 +7,7 @@ import type {
   SuggestedSkill, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
   UploadedDocSummary, ViewMode, WorkforceReport,
+  MeCapabilities,
   TeamPlanInput,
   TeamProposal,
   TeamRecommendationResult,
@@ -1045,4 +1046,13 @@ export function findTeams(
     body: JSON.stringify({ query }),
     signal,
   });
+}
+
+// Which team features to OFFER this caller. Answered by the same
+// resolve_scope the endpoints run, rather than re-derived here where it
+// would be a second copy of the rule, free to drift from the first.
+export function getMyCapabilities(
+  identity: Identity, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<MeCapabilities> {
+  return request<MeCapabilities>(`/me/capabilities?view_mode=${viewMode}`, identity, { signal });
 }

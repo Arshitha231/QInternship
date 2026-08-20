@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getPerson } from "../api";
+import { getMyCapabilities, getPerson } from "../api";
 import type { FocusHistory } from "../hooks";
 import type { Identity, PersonDetail, ViewMode } from "../types";
 import { DepartmentGraph } from "./graphs/DepartmentGraph";
@@ -63,6 +63,34 @@ export function GraphPage({
   // see useTeamBuilderState.
   const teamState = useTeamBuilderState();
   const finderState = useTeamFinderState();
+  // Whether to OFFER Build Team. null while unknown.
+  //
+  // Asked of the server rather than derived from identity.role, which is
+  // what the Dashboard tab does and what this cannot: a "manager" claim
+  // with nobody reporting to them has no team to build from, and the role
+  // alone cannot tell. PersonSummary.has_reports would answer it but is
+  // deliberately absent in employee view mode -- the only mode a manager
+  // ever gets -- so it is missing for exactly the callers being gated.
+  const [canBuildTeam, setCanBuildTeam] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    setCanBuildTeam(null);
+    getMyCapabilities(identity, viewMode, controller.signal)
+      .then((c) => { if (!cancelled) setCanBuildTeam(c.can_build_team); })
+      // A failed probe hides the tab rather than showing it. The endpoint
+      // 403s anyway, so guessing "yes" only buys an error message later.
+      .catch(() => { if (!cancelled) setCanBuildTeam(false); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [identity, viewMode]);
+
+  // Losing access mid-session (HR switching out of work mode) must not
+  // leave Build Team on screen. Snapping back to the hierarchy is the one
+  // view every caller can always see.
+  useEffect(() => {
+    if (canBuildTeam === false && mode === "build") setMode("hierarchy");
+  }, [canBuildTeam, mode]);
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
   useEffect(() => {
@@ -117,15 +145,20 @@ export function GraphPage({
           >
             Current Hierarchy
           </button>
-          <button
-            role="tab"
-            data-help="graph-build-team"
-            aria-selected={mode === "build"}
-            className={`tab tab-ai ${mode === "build" ? "active" : ""}`}
-            onClick={() => setMode("build")}
-          >
-            Build Team <Sparkles size={13} />
-          </button>
+          {/* Hidden until the server confirms, not shown-then-removed: a
+              control that appears and vanishes reads as a bug, and offering
+              a feature that answers 403 is worse than not offering it. */}
+          {canBuildTeam && (
+            <button
+              role="tab"
+              data-help="graph-build-team"
+              aria-selected={mode === "build"}
+              className={`tab tab-ai ${mode === "build" ? "active" : ""}`}
+              onClick={() => setMode("build")}
+            >
+              Build Team <Sparkles size={13} />
+            </button>
+          )}
           <button
             role="tab"
             data-help="graph-find-team"
@@ -140,7 +173,7 @@ export function GraphPage({
         <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
       </div>
 
-      {mode === "build" ? (
+      {mode === "build" && canBuildTeam ? (
         <TeamBuilder identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} state={teamState} />
       ) : mode === "find" ? (
         <TeamFinder
