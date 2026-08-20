@@ -32,6 +32,8 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.assistant_conversations import append_turn, open_or_continue
+from app.assistant_context import facts_context_message, requirements_gap_suggestion
 from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
@@ -216,6 +218,7 @@ _TOOL_REASONS = {
     "find_experts": "Matched the problem against what our projects actually did, "
                     "then found the people who worked on them.",
     "get_people_with_projects": "Looked up recent project history for that group of people.",
+    "compare_people": "Looked up objective attributes for that group of people, side by side.",
 }
 
 # Every tool must have one -- a tool added without a reason would otherwise
@@ -226,15 +229,15 @@ assert set(_TOOL_REASONS) == {t["function"]["name"] for t in TOOLS}, (
 )
 
 
-def unified_search(
+def _unified_search_core(
     db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
-    view_mode: ViewMode = "work",
+    view_mode: ViewMode = "work", conversation_id: int | None = None,
 ) -> dict:
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
     if text and _wants_assistant(db, text):
-        return _assisted(db, caller, text, clean_filters, view_mode)
+        return _assisted(db, caller, text, clean_filters, view_mode, conversation_id)
 
     # The Filters panel is free-text inputs, not dropdowns fed by the real
     # vocabulary, so "bangalore" and "cloud operations team" arrive exactly
@@ -308,17 +311,53 @@ def unified_search(
     return {"mode": "direct", "results": results}
 
 
+def unified_search(
+    db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
+    view_mode: ViewMode = "work", conversation_id: int | None = None,
+) -> dict:
+    """Wraps _unified_search_core to attach a deterministic follow-up
+    suggestion -- never by editing the core's own branch logic, so an
+    assisted vs. direct decision never has to know suggestions exist.
+    Assisted-mode only: direct mode has no answer prose to attach one
+    alongside, and the suggestion itself (informed by the PRD surface's
+    confirmed requirements) is the kind of thing worth surfacing next to
+    an actual answer, not a bare card grid."""
+    result = _unified_search_core(db, caller, q=q, filters=filters, view_mode=view_mode, conversation_id=conversation_id)
+    if result["mode"] == "assisted":
+        result["suggestion"] = requirements_gap_suggestion(db, caller, view_mode, q or "")
+    return result
+
+
 def _assisted(
     db: Session, caller: AuthenticatedUser, text: str,
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
+    conversation_id: int | None = None,
 ) -> dict:
+    # Every assisted-mode answer opens/continues a "search" surface
+    # conversation and records this turn to it -- direct mode (no model
+    # call) never reaches this function at all, so it never touches
+    # conversation persistence. conversation_id validation (must already
+    # be this caller's own) raises ConversationNotFound, left to propagate
+    # to the route -- same 404-not-403 shape POST /ask uses.
+    conversation = open_or_continue(db, caller, "search", conversation_id)
+
+    # Facts from the caller's most recent PRD conversation, if any (app.
+    # assistant_context) -- appended as an extra message, never folded
+    # into `text` itself, so resolve_intent()'s deterministic router
+    # (which sees only the raw text, never history_messages) is unaffected.
+    context = facts_context_message(db, caller, view_mode, surface="search")
+    history_messages = [context] if context else None
+
     started = time.monotonic()
-    turn = resolve_intent(text, db)
+    turn = resolve_intent(text, db, history_messages)
     if turn.tool_call is None:
+        answer_text = turn.message or OUT_OF_SCOPE_MESSAGE
+        append_turn(db, conversation, message=text, tool_call=None, arguments=None, assistant_text=answer_text)
         return {
             "mode": "assisted",
             "results": [],
-            "overview": {"answer": turn.message or OUT_OF_SCOPE_MESSAGE, "citations": [], "trace": []},
+            "overview": {"answer": answer_text, "citations": [], "trace": []},
+            "conversation_id": conversation.id,
         }
     # UI filter chips share a vocabulary with find_people's own arguments —
     # without this they narrowed the direct path (above) but were silently
@@ -341,12 +380,23 @@ def _assisted(
     # overview's existing trace list, which until now only ever held one
     # entry because this path never chained.
     if turn.tool_call.needs_followup:
-        raw = execute_chain(db, caller, turn.tool_call, text, view_mode)
+        raw = execute_chain(db, caller, turn.tool_call, text, view_mode, history_messages)
     else:
         raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
-    return _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
+    result = _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
+    # assistant_text stays None here even though raw["message"]/the
+    # overview answer may be set -- HistoryTurn's own discipline (see its
+    # docstring) is that a turn WITH a tool call never stores its own
+    # answer text, only the plan, same rule POST /ask's turn-recording
+    # already follows.
+    append_turn(
+        db, conversation, message=text, tool_call=raw.get("tool_call"),
+        arguments=raw.get("arguments"), assistant_text=None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
 
 
 def _build_assisted(

@@ -33,7 +33,15 @@ class ProjectSkillRequirement(Base):
         Enum(SkillLevel, native_enum=False, validate_strings=True), nullable=False, default=SkillLevel.working
     )
 
+    # Which PRD upload declared this requirement, if any -- nullable, since
+    # set_required_skills' own direct-write path (PUT .../required-skills)
+    # has no document behind it. Never read by app/continuity.py's
+    # declared-vs-inferred distinction, which is decided by row presence
+    # alone, not by any column on the row.
+    source_doc_id: Mapped[int | None] = mapped_column(ForeignKey("uploaded_docs.id"), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
 
     project = relationship("Project")
     skill = relationship("Skill")
+    source_doc = relationship("UploadedDoc")

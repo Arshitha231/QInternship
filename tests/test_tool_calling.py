@@ -16,6 +16,7 @@ from app.auth import AuthenticatedUser
 from app.chain_budgets import CEILING, DEFAULT_PLAN_CLASS, PLAN_CLASS_BUDGETS, ChainBudget
 from app.models import AuditLog, Employee, Office, OrgUnit
 from app.models.enums import AvailabilityStatus, EmploymentType
+from app.people import context_people_message, resolve_context_people
 from app.schemas import HistoryTurn
 from app.tool_calling import (
     MAX_ROUTING_RETRIES,
@@ -147,7 +148,7 @@ def test_resolve_intent_calls_real_model_only_when_deterministic_has_no_match(mo
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     calls = []
 
-    def fake_real_resolve(message, history_messages=None):
+    def fake_real_resolve(message, history_messages=None, profile=None):
         calls.append(message)
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"query": message}))
 
@@ -166,7 +167,7 @@ def test_resolve_intent_falls_back_to_free_text_search_when_real_model_degrades(
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(
         tool_calling, "_real_resolve",
-        lambda message, history_messages=None: None)  # simulates OpenAIError degrade
+        lambda message, history_messages=None, profile=None: None)  # simulates OpenAIError degrade
 
     turn = resolve_intent("Taylor Cloud")
     assert turn.tool_call == ResolvedToolCall(
@@ -198,7 +199,7 @@ def test_resolve_intent_confident_match_identical_regardless_of_mode(monkeypatch
 
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, history_messages=None: (_ for _ in ()).throw(
+                        lambda message, history_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not be called")))
     real_mode_turn = resolve_intent("who is my manager?")
 
@@ -229,7 +230,7 @@ def test_retry_after_execution_failure_stamps_routed_via(monkeypatch):
     # as a real _real_resolve() call never would -- to confirm
     # _retry_after_execution_failure() is what stamps it, classified the
     # same way a first attempt would be.
-    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "_real_resolve", lambda message, extra_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})))
     failed_call = ResolvedToolCall(name="find_people", arguments={"name": "Wrong Name"})
     corrected = _retry_after_execution_failure("who is Wrong Name", failed_call, "no such person")
@@ -248,7 +249,7 @@ def test_execute_with_retry_never_retries_in_mock_mode(db_session, monkeypatch):
     monkeypatch.setattr(tool_calling, "execute_tool_call",
                         lambda db, caller, tool_call, view_mode="work": (_ for _ in ()).throw(ValueError("bad arguments")))
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, extra_messages=None: (_ for _ in ()).throw(
+                        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not retry in mock mode")))
 
     tool_call = ResolvedToolCall(name="find_people", arguments={"name": "X"})
@@ -261,7 +262,7 @@ def test_execute_with_retry_does_not_retry_on_first_success(db_session, monkeypa
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     monkeypatch.setattr(tool_calling, "execute_tool_call", lambda db, caller, tool_call, view_mode="work": "OK")
     monkeypatch.setattr(tool_calling, "_real_resolve",
-                        lambda message, extra_messages=None: (_ for _ in ()).throw(
+                        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
                             AssertionError("must not retry when the first attempt succeeds")))
 
     tool_call = ResolvedToolCall(name="find_people", arguments={"name": "Right Name"})
@@ -281,7 +282,7 @@ def test_execute_with_retry_succeeds_after_one_correction(db_session, monkeypatc
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", flaky_execute)
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         assert extra_messages is not None  # this IS the retry call, not the initial resolve
         assert "Wrong Name" in extra_messages[0]["content"]  # the failure is actually described
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Right Name"}))
@@ -307,7 +308,7 @@ def test_execute_with_retry_gives_up_after_max_retries(db_session, monkeypatch):
 
     retry_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         retry_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"Attempt {retry_count['n']}"}))
@@ -328,7 +329,7 @@ def test_execute_with_retry_stops_immediately_if_the_model_offers_no_correction(
 
     calls = {"n": 0}
 
-    def no_correction(message, extra_messages=None):
+    def no_correction(message, extra_messages=None, profile=None):
         calls["n"] += 1
         return None  # model itself degraded on the retry attempt
 
@@ -516,7 +517,7 @@ def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session,
     # call, no special-casing needed in execute_tool_call itself.
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         assert extra_messages is not None  # this IS the retry call
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="search_people",
@@ -551,7 +552,7 @@ def test_execute_with_retry_on_invariant_6_denial_does_not_leak_the_field(db_ses
     monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
     prompts_seen = []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         if extra_messages:
             prompts_seen.append(extra_messages[0]["content"])
         return None  # give up after the first retry prompt -- we only need to inspect it
@@ -638,7 +639,7 @@ def test_deterministic_match_never_triggers_execute_chain(db_session, monkeypatc
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("a deterministic match must never chain")))
     monkeypatch.setattr(
         tool_calling, "_real_resolve",
-        lambda message, extra_messages=None: (_ for _ in ()).throw(
+        lambda message, extra_messages=None, profile=None: (_ for _ in ()).throw(
             AssertionError("a confident deterministic match must never call the real model")))
 
     result = answer(db_session, CALLER, "who is my manager?")
@@ -654,7 +655,7 @@ def test_execute_chain_stops_at_the_hard_cap_even_if_the_model_keeps_asking(db_s
         execute_count["n"] += 1
         return []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         resolve_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"name": f"step {resolve_count['n']}"}, needs_followup=True))
@@ -700,7 +701,7 @@ def test_execute_chain_stops_on_the_records_budget_before_the_step_cap(db_sessio
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         return AssistantTurn(tool_call=ResolvedToolCall(
             name="find_people", arguments={"offset": call_count["n"] * 3}, needs_followup=True))
@@ -728,7 +729,7 @@ def test_execute_chain_stops_on_the_wall_clock_budget(db_session, monkeypatch):
         time.sleep(0.05)  # 50ms -- comfortably over the 20ms test budget
         return []
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "next"}))
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
@@ -750,7 +751,7 @@ def test_execute_chain_not_truncated_when_the_model_finishes_within_budget(db_se
     def fake_execute(db, caller, tool_call, view_mode="work"):
         return ["done"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         return AssistantTurn(message="Nobody matches.")  # plain text -- model is done, no more calls
 
     monkeypatch.setattr(tool_calling, "execute_tool_call", fake_execute)
@@ -816,7 +817,7 @@ def test_execute_chain_stops_when_the_model_says_it_is_done(db_session, monkeypa
     def fake_execute(db, caller, tool_call, view_mode="work"):
         return ["team resolved"] if tool_call.name == "get_org_chain" else ["filtered result"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         # The model has what it needs after step 1 -- answers in plain
         # text, no further function call.
         return AssistantTurn(message="Nobody on that team matches.")
@@ -842,7 +843,7 @@ def test_chain_failure_returns_the_generic_message_not_an_earlier_steps_result(d
             raise ValueError("bad filter, always fails")
         return ["step one result"]
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         if not extra_messages:
             return None
         first = extra_messages[0]
@@ -874,7 +875,7 @@ def test_chain_writes_one_audit_row_per_step_sharing_one_chain_id(db_session, mo
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             # Asked after step 1 -- offer a genuine second step.
@@ -1026,6 +1027,83 @@ def test_every_tool_has_a_chain_few_shot_or_single_shot_reason_field():
     assert "get_people_with_projects" in chained_tool_names
 
 
+def test_compare_people_is_registered_in_tools():
+    names = {t["function"]["name"] for t in tool_calling.TOOLS}
+    assert "compare_people" in names
+
+
+def test_compare_people_dispatches_to_the_service_function(db_session):
+    tool_call = ResolvedToolCall(name="compare_people", arguments={"person_ids": ["report-1", "stranger-1"]})
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_compare_people_resolves_self_at_dispatch(db_session):
+    caller = AuthenticatedUser(id="report-1", role="employee")
+    tool_call = ResolvedToolCall(name="compare_people", arguments={"person_ids": ["self", "stranger-1"]})
+    result = execute_tool_call(db_session, caller, tool_call)
+    assert [p.id for p in result] == ["report-1", "stranger-1"]
+
+
+def test_compare_people_never_carries_a_rank_or_verdict_field():
+    # Structural guard for the design intent (SYSTEM_PROMPT/_PHRASING_
+    # SYSTEM_PROMPT): this tool hands back facts to phrase side by side,
+    # never a "best"/"rank"/"score" of its own -- if such a field ever gets
+    # added, that decision belongs in code review, not a silent schema
+    # change nobody notices.
+    from app.schemas import PersonComparison
+    forbidden = {"rank", "score", "best", "verdict", "recommendation"}
+    assert forbidden.isdisjoint(PersonComparison.model_fields.keys())
+
+
+def test_compare_people_has_both_a_single_shot_and_a_chain_example():
+    single_shot_tools = {tool for _text, tool, _args in tool_calling.FEW_SHOT_EXAMPLES}
+    assert "compare_people" in single_shot_tools
+    chained_tool_names = {
+        step_name for _text, steps in tool_calling.CHAIN_FEW_SHOT_EXAMPLES for step_name, _args in steps
+    }
+    assert "compare_people" in chained_tool_names
+
+
+# ---------------------------------------------------------------------------
+# resolve_context_people() / context_people_message() (app.people) -- the
+# "who is the best of these" fix: a follow-up question needs a real id for
+# whatever is currently on the caller's screen, re-verified server-side
+# rather than trusted from the client that sent it.
+# ---------------------------------------------------------------------------
+
+def test_resolve_context_people_empty_for_no_ids(db_session):
+    assert resolve_context_people(db_session, CALLER, []) == []
+
+
+def test_resolve_context_people_resolves_visible_ids(db_session):
+    resolved = resolve_context_people(db_session, CALLER, ["report-1", "stranger-1"])
+    assert set(resolved) == {("report-1", "Riley Report"), ("stranger-1", "Sam Stranger")}
+
+
+def test_resolve_context_people_drops_a_restricted_person_for_a_non_hr_caller(db_session):
+    # restricted-1 (Rory Restricted) is only visible to HR -- an employee
+    # caller's context must not get it echoed back.
+    non_hr = AuthenticatedUser(id="stranger-1", role="employee")
+    resolved = resolve_context_people(db_session, non_hr, ["report-1", "restricted-1"])
+    assert resolved == [("report-1", "Riley Report")]
+
+
+def test_resolve_context_people_drops_an_unknown_id(db_session):
+    assert resolve_context_people(db_session, CALLER, ["not-a-real-id"]) == []
+
+
+def test_context_people_message_none_for_empty_list():
+    assert context_people_message([]) is None
+
+
+def test_context_people_message_names_each_person_with_a_bracketed_id():
+    msg = context_people_message([("report-1", "Riley Report")])
+    assert msg is not None
+    assert msg["role"] == "system"
+    assert "Riley Report [report-1]" in msg["content"]
+
+
 def test_a_single_named_persons_project_question_has_its_own_chain_few_shot():
     # find_people's own result never carries project data regardless of
     # how confidently the name resolves -- "what is X working on" needs
@@ -1154,7 +1232,7 @@ def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeyp
 
     captured = {}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         captured["history_messages"] = history_messages
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
 
@@ -1185,11 +1263,11 @@ def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeyp
 # ---------------------------------------------------------------------------
 
 def test_answer_phrases_a_successful_call(db_session, monkeypatch):
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": None, "tool_call": "search_people", "arguments": {"order_by": "hire_date"}, "result": ["ok"],
         })
     monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: "Jordan Diaz has the most tenure.")
@@ -1202,11 +1280,11 @@ def test_answer_leaves_message_none_when_phrase_answer_has_nothing(db_session, m
     # No real model configured, or its output failed grounding -- either
     # way phrase_answer degrades to None, and the frontend's own generic
     # fallback ("N people match.") covers it exactly as it always has.
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": None, "tool_call": "search_people", "arguments": {}, "result": ["ok"],
         })
     monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: None)
@@ -1219,11 +1297,11 @@ def test_answer_does_not_override_a_procedural_message_with_phrasing(db_session,
     # raw["message"] here is a specific procedural message (disambiguation
     # prompt, broadening explanation) the model has no way to reconstruct
     # from the result alone -- kept verbatim, same as _build_assisted().
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="find_people", arguments={"name": "X"})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
-        lambda db, caller, tool_call, message, view_mode="work": {
+        lambda db, caller, tool_call, message, view_mode="work", profile=None: {
             "message": "Did you mean Xavier or Ximena?", "tool_call": "find_people", "arguments": {}, "result": [],
         })
     monkeypatch.setattr(
@@ -1238,11 +1316,11 @@ def test_answer_phrases_before_the_truncation_note_not_instead_of_it(db_session,
     # Mirrors _build_assisted's truncated branch exactly: the budget note
     # describes the CHAIN running out of steps, not who was found, so it
     # can only ever supplement a real answer -- phrase first, append after.
-    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None, profile=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}, needs_followup=True)))
     monkeypatch.setattr(
         tool_calling, "execute_chain",
-        lambda db, caller, tool_call, message, view_mode="work", history_messages=None: {
+        lambda db, caller, tool_call, message, view_mode="work", history_messages=None, profile=None: {
             "message": "Stopped after running out of reasoning steps.", "tool_call": "search_people",
             "arguments": {}, "result": ["ok"], "truncated": "steps",
         })
@@ -1258,7 +1336,7 @@ def test_execute_chain_threads_history_into_its_own_followup_resolution(db_sessi
 
     captured = {}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         captured["history_messages"] = history_messages
         return AssistantTurn(message="done")
 
@@ -1279,7 +1357,7 @@ def test_execute_chain_step_trace_carries_plan_only_never_a_result(db_session, m
 
     call_count = {"n": 0}
 
-    def fake_real_resolve(message, extra_messages=None, history_messages=None):
+    def fake_real_resolve(message, extra_messages=None, history_messages=None, profile=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return AssistantTurn(tool_call=ResolvedToolCall(name="find_people", arguments={"name": "Y"}))
@@ -1584,6 +1662,44 @@ def test_phrase_answer_falls_back_when_the_model_names_someone_not_in_the_result
 
     text = tool_calling.phrase_answer("who knows Terraform", "find_people", {"skill": "Terraform"}, [summary])
     assert text is None  # ungrounded -- caller (_build_assisted) falls back to _phrase()
+
+
+# ---------------------------------------------------------------------------
+# _has_encoding_corruption() -- observed live in browser click-through: a
+# multi-candidate find_mentor answer came back from the real model with a
+# literal U+FFFD replacement character (and, over the wire as JSON, an
+# unpaired UTF-16 surrogate) where the model had used an em dash between a
+# name and its description. Not a plausible thing for the model to have
+# generated on purpose, and it broke JSON encoding down the line -- treated
+# the same as a failed grounding check.
+# ---------------------------------------------------------------------------
+
+def test_has_encoding_corruption_detects_replacement_character():
+    assert tool_calling._has_encoding_corruption("Sarah White � Cloud Operations Team Manager")
+
+
+def test_has_encoding_corruption_detects_unpaired_surrogate():
+    assert tool_calling._has_encoding_corruption("available\udc9d, at Expert level")
+
+
+def test_has_encoding_corruption_false_for_ordinary_text_with_a_real_em_dash():
+    assert not tool_calling._has_encoding_corruption("Sarah White — Cloud Operations Team Manager")
+
+
+def test_phrase_answer_falls_back_when_the_model_output_is_corrupted(monkeypatch):
+    from app.schemas import PersonSummary
+
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    summary = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    monkeypatch.setattr(
+        tool_calling, "_get_openai_client",
+        lambda: _content_client("Riley Report � Software Engineer, knows Terraform."))
+
+    text = tool_calling.phrase_answer("who knows Terraform", "find_people", {"skill": "Terraform"}, [summary])
+    assert text is None  # corrupted -- caller falls back to _phrase(), never rendered as-is
 
 
 def test_phrasing_prompt_asks_for_up_to_5_named_with_a_reason_each():

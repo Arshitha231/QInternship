@@ -273,13 +273,19 @@ def _parse_pdf(data: bytes) -> str:
 
 
 def store_document(
-    db: Session, caller: AuthenticatedUser, filename: str, content_type: str | None, data: bytes
+    db: Session, caller: AuthenticatedUser, filename: str, content_type: str | None, data: bytes,
+    project_id: int | None = None,
 ) -> UploadedDoc:
+    """`project_id` is additive, default None -- every existing caller
+    (POST /docs/upload) keeps behaving byte-identically. Only the PRD
+    upload path (POST /projects/{id}/prd, app/prd_extraction.py) sets it,
+    since only a PRD upload is about exactly one project."""
     text = parse_document(filename, content_type, data)
     doc = UploadedDoc(
         filename=filename, content_type=(content_type or "application/octet-stream"),
         byte_size=len(data), extracted_text=text,
         uploaded_by=caller.id, uploaded_at=datetime.now(),
+        project_id=project_id,
     )
     db.add(doc)
     db.commit()

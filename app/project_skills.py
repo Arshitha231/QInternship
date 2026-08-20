@@ -41,12 +41,17 @@ class UnknownSkill(Exception):
         super().__init__(f"Unrecognized skill: {name}")
 
 
-def _visible_project(
+def visible_project(
     db: Session, caller: AuthenticatedUser, project_id: int, view_mode: ViewMode = "work",
 ) -> Project | None:
     """None whether the project doesn't exist or is confidential and the
     caller isn't a member/hr — same "restricted looks like absent" shape
     used throughout this app, not a distinguishable 403/404 split.
+
+    Exported (no leading underscore): app/project_requirements.py reuses
+    this exact confidentiality check rather than duplicating it, since the
+    logic is a genuine module boundary (project visibility), not something
+    private to this file's own skill-requirement concern.
 
     HR's blanket exemption for confidential projects is a role privilege, so
     it collapses in employee mode like every other one (effective_role) — it
@@ -70,7 +75,7 @@ def _visible_project(
 def get_required_skills(
     db: Session, caller: AuthenticatedUser, project_id: int, view_mode: ViewMode = "work",
 ) -> list[ProjectSkillRequirementOut] | None:
-    if _visible_project(db, caller, project_id, view_mode) is None:
+    if visible_project(db, caller, project_id, view_mode) is None:
         return None
     rows = (
         db.query(ProjectSkillRequirement, Skill)
@@ -92,7 +97,7 @@ def set_required_skills(
     caller (confidential, non-member); raises ProjectNotWritable if it's
     visible but the caller isn't its owner or hr; raises UnknownSkill on
     the first name that doesn't resolve, before writing anything."""
-    project = _visible_project(db, caller, project_id, view_mode)
+    project = visible_project(db, caller, project_id, view_mode)
     if project is None:
         return None
     # Ownership is identity, not role, so it survives employee mode; HR's

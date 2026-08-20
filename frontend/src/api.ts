@@ -1,11 +1,12 @@
 import type {
-  AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut,
-  ContinuityOverview, DashboardOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
+  AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut,
+  ContinuityOverview, ConversationOut, DashboardOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
   EngagementExposure, HrReviewQueueItem, Identity, InsightReport, NotificationOut, OfficeOut, OrgChainNode,
-  OrgUnitOption, OrgUnitOut, PersonDetail, PersonSummary, ProjectCoverage, ProposedChangeGroup,
-  ReminderResult, SkillDetail, SkillRouteResult, SkillSupplyDemand, SuggestedOfficialLinkOut,
-  SuggestedSkill, TrainingAnalytics,
-  TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
+  OrgUnitOption, OrgUnitOut, PersonDetail, PersonSummary, ProjectCoverage, ProjectListItem,
+  ProjectSkillRequirementIn, ProjectSkillRequirementOut, ProposedChangeGroup,
+  ReminderResult, RequirementNoteIn, RequirementNoteOut, SkillDetail, SkillRouteResult, SkillSupplyDemand,
+  SuggestedOfficialLinkOut, SuggestedSkill, TrainingAnalytics,
+  TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadPrdResult,
   UploadedDocSummary, ViewMode, WorkforceReport,
   MeCapabilities,
   TeamPlanInput,
@@ -495,32 +496,70 @@ export interface UnifiedSearchFilters {
 }
 
 export function unifiedSearch(
-  identity: Identity, filters: UnifiedSearchFilters, viewMode: ViewMode, signal?: AbortSignal,
+  identity: Identity, filters: UnifiedSearchFilters, viewMode: ViewMode,
+  conversationId?: number | null, signal?: AbortSignal,
 ): Promise<UnifiedSearchResponse> {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== "" && v !== null) params.set(k, String(v));
   }
   params.set("view_mode", viewMode);
+  if (conversationId != null) params.set("conversation_id", String(conversationId));
   const qs = params.toString();
   return request<UnifiedSearchResponse>(`/search${qs ? `?${qs}` : ""}`, identity, { signal });
 }
 
-// --- Follow-up chat (POST /ask). `history` is this browser session's prior
-// turns, held in memory only (see AskHistoryTurn) — nothing here persists a
-// conversation server-side. Every call, first turn or fifth, goes through
-// the same seven-function tool-calling layer /search's "ask a question"
-// examples already point at; this just keeps the conversation going instead
-// of discarding it once a response comes back.
+// --- Follow-up chat (POST /ask). The conversation itself is persisted
+// server-side (AssistantConversation/AssistantTurn) — this just carries the
+// id of the caller's "search" thread so the next turn continues it instead
+// of the server having no context to reprompt with. Pass null/undefined to
+// open a fresh conversation (its id comes back on the response).
+// contextPersonIds: ids of the people currently on the caller's screen
+// (the search page's own result cards) -- lets a follow-up like "who is
+// the best of these" resolve "these" to real ids. Re-verified server-side
+// (app.people.resolve_context_people) before it ever reaches the model, so
+// sending it is never a trust decision this client is making.
 export function askAssistant(
-  identity: Identity, message: string, viewMode: ViewMode, history: AskHistoryTurn[], signal?: AbortSignal,
+  identity: Identity, message: string, viewMode: ViewMode,
+  conversationId?: number | null, contextPersonIds?: string[], signal?: AbortSignal,
 ): Promise<AskResponse> {
   return request<AskResponse>("/ask", identity, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, view_mode: viewMode, history }),
+    body: JSON.stringify({
+      message, view_mode: viewMode, conversation_id: conversationId ?? null,
+      context_person_ids: contextPersonIds ?? [],
+    }),
     signal,
   });
+}
+
+// --- The PRD assistant (POST /prd/ask) — same shape as askAssistant, but
+// always project-scoped: projectId is required to open a fresh conversation
+// (ignored, like the server does, once conversationId continues one).
+export function prdAsk(
+  identity: Identity, message: string, viewMode: ViewMode,
+  projectId: number | null, conversationId?: number | null, signal?: AbortSignal,
+): Promise<AskResponse> {
+  const qs = projectId != null ? `?project_id=${projectId}` : "";
+  return request<AskResponse>(`/prd/ask${qs}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, view_mode: viewMode, conversation_id: conversationId ?? null }),
+    signal,
+  });
+}
+
+// GET /conversations/{surface} — the caller's most recent conversation on
+// that surface, with its turns, so a page reload (or a fresh AskChat/
+// PRDChat mount) rehydrates. projectId is required for "prd", ignored for
+// "search".
+export function getConversation(
+  identity: Identity, surface: "search" | "prd", viewMode: ViewMode, projectId?: number | null,
+): Promise<ConversationOut> {
+  const params = new URLSearchParams({ view_mode: viewMode });
+  if (surface === "prd" && projectId != null) params.set("project_id", String(projectId));
+  return request<ConversationOut>(`/conversations/${surface}?${params.toString()}`, identity);
 }
 
 // --- Staffing Continuity Intelligence — HR in WORK mode only. Every call
@@ -765,6 +804,67 @@ export const bulkAcceptProposedChanges = (identity: Identity, viewMode: ViewMode
 
 export const bulkRejectProposedChanges = (identity: Identity, viewMode: ViewMode, selector: BulkSelector) =>
   bulkProposedChangeAction(identity, "bulk_reject", viewMode, selector);
+
+// --- PRD chatbot: requirements (app/project_requirements.py, app/main.py) —
+// HR-only, work mode only, same non-visibility guarantee as the doc-upload
+// cluster above. GET .../required-skills is the one exception: it stays
+// open to anyone who can see the project at all (structured org facts, not
+// document prose) — see app/main.py's route docstring for why that
+// asymmetry with notes is deliberate.
+
+export function listProjects(identity: Identity, viewMode: ViewMode): Promise<ProjectListItem[]> {
+  return request(`/projects?view_mode=${viewMode}`, identity);
+}
+
+export function getRequiredSkills(identity: Identity, projectId: number): Promise<ProjectSkillRequirementOut[]> {
+  return request(`/projects/${projectId}/required-skills`, identity);
+}
+
+export function setRequiredSkills(
+  identity: Identity, projectId: number, skills: ProjectSkillRequirementIn[],
+): Promise<ProjectSkillRequirementOut[]> {
+  return request(`/projects/${projectId}/required-skills`, identity, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(skills),
+  });
+}
+
+export function listRequirementNotes(
+  identity: Identity, projectId: number, viewMode: ViewMode,
+): Promise<RequirementNoteOut[]> {
+  return request(`/projects/${projectId}/requirement-notes?view_mode=${viewMode}`, identity);
+}
+
+export function addRequirementNotes(
+  identity: Identity, projectId: number, notes: RequirementNoteIn[], viewMode: ViewMode,
+): Promise<RequirementNoteOut[]> {
+  return request(`/projects/${projectId}/requirement-notes?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(notes),
+  });
+}
+
+// Bespoke fetch, same reason as uploadDoc above: a multipart upload must
+// not set Content-Type itself. Returns a PREVIEW only — nothing is saved
+// until the caller confirms via setRequiredSkills/addRequirementNotes.
+export async function uploadPrd(
+  identity: Identity, projectId: number, file: File, viewMode: ViewMode,
+): Promise<UploadPrdResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/projects/${projectId}/prd?view_mode=${viewMode}`, {
+    method: "POST",
+    headers: headers(identity),
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new ApiError(res.status, detail?.detail ?? `${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<UploadPrdResult>;
+}
 
 // --- Community Graph — every call here is implicitly scoped to `identity`'s
 // own graph; there is no person-id parameter anywhere below that could ask

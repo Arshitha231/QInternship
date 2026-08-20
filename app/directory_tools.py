@@ -114,8 +114,21 @@ def resolve_project_name(db: Session, name: str) -> list[Project]:
         if overlap:
             return overlap
 
+    # fuzz.ratio, NOT WRatio -- same reasoning and same fix as
+    # app.vocabulary._snap_one's identical comment. WRatio's partial-ratio
+    # pass scores a shared substring as though it were the whole string,
+    # which silently matched an entire unrelated sentence to "Project
+    # Atlas" at 85.5 (score_cutoff is 80) for the sole reason that both
+    # contain the word "project" -- a real production false-positive, not
+    # a hypothetical: a PRD conversation naming a project that doesn't
+    # exist was silently attributed to Project Atlas instead of coming
+    # back empty. fuzz.ratio scores that same pair at 36.9 while still
+    # scoring a genuine typo ("Zephyr Airlines Crew Schedulng") at 98.4 --
+    # this tier exists for typos, not partial/substring containment
+    # (tier 2's token-subset overlap above already covers a shortened or
+    # padded name).
     match = process.extractOne(
-        query_norm, list(by_norm.values()), scorer=fuzz.WRatio, score_cutoff=FUZZY_MATCH_THRESHOLD)
+        query_norm, list(by_norm.values()), scorer=fuzz.ratio, score_cutoff=FUZZY_MATCH_THRESHOLD)
     if match:
         matched_norm = match[0]
         return [p for p, norm in by_norm.items() if norm == matched_norm]

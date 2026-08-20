@@ -10,18 +10,18 @@ import { ContinuityPage } from "./components/ContinuityPage";
 import { PendingApprovals } from "./components/PendingApprovals";
 import { PeopleAdminPage } from "./components/PeopleAdminPage";
 import { ReviewPage } from "./components/ReviewPage";
+import { PRDsPage } from "./components/PRDsPage";
 import { HelpMenu } from "./components/HelpMenu";
 import { LoginPage } from "./components/LoginPage";
 import { HelpOverlay } from "./components/HelpOverlay";
 import type { HelpState } from "./components/HelpOverlay";
 import { useDebouncedValue, useFocusHistory } from "./hooks";
-import { ApiError, UNAUTHORIZED_EVENT, unifiedSearch, type SearchFilters } from "./api";
-import { getMyCapabilities } from "./api";
+import { ApiError, UNAUTHORIZED_EVENT, getConversation, getMyCapabilities, unifiedSearch, type SearchFilters } from "./api";
 import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
-type Mode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin";
+type Mode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin" | "prds";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -202,6 +202,28 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The caller's "search" surface conversation id, owned here (not inside
+  // AskChat) because BOTH an assisted search-bar answer and an AskChat
+  // follow-up write to the same server-side conversation (see
+  // app.unified_search._assisted). If only AskChat tracked this, every
+  // assisted search would silently open-and-abandon a fresh one-turn
+  // conversation, and GET /conversations/search's "most recent" would
+  // usually return that abandoned thread instead of AskChat's own —
+  // rehydration would show the wrong history. Fetched once on mount so
+  // even the FIRST assisted call after a reload continues the existing
+  // thread rather than starting a new one.
+  const [searchConversationId, setSearchConversationId] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getConversation(identity, "search", viewMode).then((res) => {
+      if (!cancelled) setSearchConversationId(res.conversation_id);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity]);
+
   const hasQuery = debouncedQuery.trim() !== "" || Object.keys(debouncedFilters).length > 0;
 
   // Keeps the URL shareable/bookmarkable (?q=...) without spamming browser
@@ -225,10 +247,16 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    unifiedSearch(identity, { q: debouncedQuery.trim() || undefined, ...debouncedFilters }, viewMode, controller.signal)
+    unifiedSearch(
+      identity, { q: debouncedQuery.trim() || undefined, ...debouncedFilters }, viewMode,
+      searchConversationId, controller.signal,
+    )
       .then((res) => {
         setResponse(res);
         setLoading(false);
+        // Absent (not null) on a direct-mode answer -- no model call, no
+        // conversation touched, so the existing id must survive untouched.
+        if (res.conversation_id !== undefined) setSearchConversationId(res.conversation_id ?? null);
       })
       .catch((e) => {
         if (e instanceof DOMException && e.name === "AbortError") return;
@@ -274,6 +302,8 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           // in employee mode (app.continuity._require_hr) -- this only stops
           // the UI from asking.
           if (next !== "work" && mode === "continuity") setMode("profile");
+          // PRDs is an HR work-mode surface too -- same reasoning as Review.
+          if (next !== "work" && mode === "prds") setMode("profile");
         }}
         onSignOut={onSignOut}
         onOpenPerson={(id, name) => {
@@ -369,6 +399,19 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             Admin
           </button>
         )}
+        {identity.role === "hr" && viewMode === "work" && (
+          <button
+            role="tab"
+            aria-selected={mode === "prds"}
+            className={`tab ${mode === "prds" ? "active" : ""}`}
+            onClick={() => {
+              setMode("prds");
+              setQuery("");
+            }}
+          >
+            PRDs
+          </button>
+        )}
       </div>
 
       <main className="content">
@@ -393,6 +436,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               onJumpToCard={jumpToCard}
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
+              onAddToFilter={(skill, level) => setFilters((f) => ({ ...f, skill, level: level ?? f.level }))}
             />
             {/* Available under every search, direct or assisted -- a bare
                 name/skill match still deserves a way to ask a follow-up
@@ -406,12 +450,18 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
                 question, so an old conversation never appears to answer
                 a different one. */}
             {!loading && !error && response !== null && (
-              <AskChat key={debouncedQuery} identity={identity} viewMode={viewMode} onSelect={(id, name) => {
-                setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
-                resetProfile(id, name);
-                setMode("profile");
-                setQuery("");
-              }} />
+              <AskChat
+                key={debouncedQuery} identity={identity} viewMode={viewMode}
+                conversationId={searchConversationId} onConversationId={setSearchConversationId}
+                contextPeople={response?.results ?? []}
+                onSelect={(id, name) => {
+                  setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
+                  resetProfile(id, name);
+                  setMode("profile");
+                  setQuery("");
+                }}
+                onAddToFilter={(skill, level) => setFilters((f) => ({ ...f, skill, level: level ?? f.level }))}
+              />
             )}
             </div>
           </>
@@ -431,7 +481,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         ) : mode === "graphs" ? (
           <div data-help="graphs">
           <GraphPage
-              canBuildTeam={canBuildTeam}
+            canBuildTeam={canBuildTeam}
             identity={identity}
             viewMode={viewMode}
             focus={graphFocus}
@@ -473,6 +523,8 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               }}
             />
           </div>
+        ) : mode === "prds" && identity.role === "hr" && viewMode === "work" ? (
+          <div data-help="prds"><PRDsPage identity={identity} viewMode={viewMode} /></div>
         ) : null}
       </main>
 
@@ -488,6 +540,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           ...(identity.role === "hr" && viewMode === "work" ? (["continuity"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["review"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["admin"] as const) : []),
+          ...(identity.role === "hr" && viewMode === "work" ? (["prds"] as const) : []),
         ]}
         onExit={() => setHelp("off")}
         onRequestMode={(m) => {

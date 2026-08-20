@@ -112,7 +112,7 @@ def test_no_is_true_in_query_code():
         for file in files:
             if "__pycache__" in str(file):
                 continue
-            for lineno in _is_true_false_calls(file.read_text()):
+            for lineno in _is_true_false_calls(file.read_text(encoding="utf-8")):
                 offenders.append(f"{file.relative_to(REPO_ROOT)}:{lineno}")
     assert not offenders, (
         f"`.is_(True)`/`.is_(False)` renders as `IS 1`/`IS 0`, which Azure SQL rejects. "

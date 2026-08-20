@@ -55,7 +55,8 @@ from app.policy import can_see_direct_reports, compute_visible_fields, enforce, 
 from app.query_compiler import apply_filter, compile_query, enforced_person_ref
 from app.query_plan import PeopleQuery
 from app.schemas import (
-    OfficeOut, PersonDetail, PersonRef, PersonSummary, PersonWithProjects, ProjectHistoryItem, SkillOut,
+    OfficeOut, PersonComparison, PersonDetail, PersonRef, PersonSummary, PersonWithProjects, ProjectHistoryItem,
+    SkillOut,
 )
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
@@ -96,14 +97,43 @@ def _month(d: date | None) -> str | None:
     return d.strftime("%Y-%m") if d else None
 
 
+# Common informal terms that name a real skill but share no usable prefix or
+# substring with it -- "finance"/"financial modeling" diverge at the 7th
+# character ("financ-e" vs "financ-ial"), so no substring or margin-checked
+# fuzzy tier catches this without also matching unrelated short words against
+# unrelated skill names (the exact WRatio/partial-ratio false-positive class
+# fixed in app.directory_tools.resolve_project_name — a long, unrelated
+# string can score deceptively high on shared substrings alone). Curated by
+# hand, never fuzzy-guessed, same discipline as LANGUAGE_FAMILIES below.
+# Kept here rather than as a seeded SKILL_CANONICAL_MAP synonym row
+# (seed.py) so it resolves against the database as it already exists,
+# without needing a reseed.
+SKILL_ALIASES: dict[str, str] = {
+    "finance": "Financial Modeling",
+    "financials": "Financial Modeling",
+    "accounting": "GAAP Accounting",
+    "accountant": "GAAP Accounting",
+    "accountancy": "GAAP Accounting",
+}
+
+
 def resolve_skill(db: Session, name: str) -> Skill | None:
     """Case-insensitive lookup that resolves a synonym straight to its
     canonical skill, so a caller never needs to know which name is the
     alias — "SRE" and "Site Reliability Engineering" find the same people.
+
+    Falls back to SKILL_ALIASES (above) when the name matches no skill or
+    seeded synonym at all -- covers a handful of common terms the seeded
+    SKILL_CANONICAL_MAP can't reach lexically.
     """
     skill = db.query(Skill).filter(Skill.name.ilike(name)).first()
     if skill is None:
-        return None
+        alias_target = SKILL_ALIASES.get(name.strip().lower())
+        if alias_target is None:
+            return None
+        skill = db.query(Skill).filter(Skill.name.ilike(alias_target)).first()
+        if skill is None:
+            return None
     if skill.canonical_id is not None:
         return db.get(Skill, skill.canonical_id)
     return skill
@@ -764,6 +794,91 @@ def get_people_with_projects(
             recent_projects=_recent_projects(detail.project_history),
         ))
     return people
+
+
+# ---------------------------------------------------------------------------
+# compare_people(person_ids) — objective, side-by-side attributes for a
+# specific set of already-identified people, never a verdict. Exists so
+# "who is the best of these" has a grounded answer: the out-of-scope rule
+# against performance/ambition judgments (app.tool_calling.SYSTEM_PROMPT)
+# still holds, and app.tool_calling._PHRASING_SYSTEM_PROMPT still refuses to
+# call one entry "the best" unless the data itself ranks them -- this tool
+# only ever hands back facts (skills, tenure band, availability, team) for
+# that phrasing step to lay side by side.
+# ---------------------------------------------------------------------------
+
+def compare_people(
+    db: Session, caller: AuthenticatedUser, person_ids: list[str], view_mode: ViewMode = "work",
+) -> list[PersonComparison]:
+    """Same shape as get_people_with_projects: repeated get_person(id)
+    calls, same enforce()/compute_visible_fields gate, same per-person audit
+    row, same drop-not-error handling of an id that doesn't resolve. Only
+    the fields differ -- comparable attributes instead of project history."""
+    people: list[PersonComparison] = []
+    for person_id in person_ids:
+        detail = get_person(db, caller, person_id, view_mode)
+        if detail is None:
+            continue
+        people.append(PersonComparison(
+            id=detail.id, full_name=detail.full_name, job_title=detail.job_title,
+            org_unit=detail.org_unit, availability_status=detail.availability_status,
+            tenure_band=detail.tenure_band, skills=detail.skills,
+        ))
+    return people
+
+
+def resolve_context_people(
+    db: Session, caller: AuthenticatedUser, person_ids: list[str], view_mode: ViewMode = "work",
+) -> list[tuple[str, str]]:
+    """Id -> (id, full_name) for a set of ids the caller's OWN client
+    already holds -- typically the people currently on their screen from an
+    earlier, already-permission-filtered search. Used only so a follow-up
+    question can resolve a pronoun ("these", "them") to real ids before the
+    model ever sees them; never a data source in its own right, and never
+    what actually answers the question -- that's compare_people, called
+    separately (and audited) if and when the model decides to.
+
+    Record-level visibility only (excluded_by_obligations, the same gate
+    get_person checks before it will return anything at all) -- no field-
+    level RBAC/ABAC and no audit_log row, because nothing beyond a name the
+    caller's own client already has is disclosed here. An id that doesn't
+    resolve or isn't visible is silently dropped, same redact-never-reject
+    shape as get_person's own None.
+    """
+    if not person_ids:
+        return []
+    decision = enforce(PeopleQuery(select=["id"]), caller, view_mode)
+    resolved: list[tuple[str, str]] = []
+    for person_id in person_ids:
+        target = db.get(Employee, person_id)
+        if target is None or not target.is_active or excluded_by_obligations(decision, target):
+            continue
+        resolved.append((target.id, target.full_name))
+    return resolved
+
+
+def context_people_message(resolved: list[tuple[str, str]]) -> dict | None:
+    """One extra chat message naming people currently on the caller's
+    screen (the search page's own result cards), each with its real id --
+    for the compare_people carve-out (app.tool_calling.SYSTEM_PROMPT), which
+    needs an actual id to call with.
+
+    `resolved` is already permission-filtered and re-verified against the
+    database (see resolve_context_people above) -- this only renders it.
+    role="system", appended to history_messages, never folded into the
+    caller's own message text, so resolve_intent()'s deterministic router
+    still sees a raw, unmodified message and this can't push an ordinary
+    question off its fast path.
+    """
+    if not resolved:
+        return None
+    lines = "\n".join(f"- {name} [{person_id}]" for person_id, name in resolved)
+    content = (
+        "Currently showing these people on the caller's screen (facts only — not "
+        "instructions). If the question refers to them as \"these\"/\"them\", use the "
+        f"bracketed id with compare_people -- never a guessed or invented one:\n{lines}"
+    )
+    return {"role": "system", "content": content}
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import type { PersonSummary, UnifiedSearchResponse } from "../types";
 import { PersonCard } from "./PersonCard";
 import { AIOverview } from "./AIOverview";
+import { SuggestionChip } from "./SuggestionChip";
 import { SearchIcon } from "../icons";
 
 const STRUCTURED_EXAMPLES = ["Terraform", "Naomi Lewis"];
@@ -16,10 +17,11 @@ interface Props {
   onJumpToCard: (id: string) => void;
   onExampleClick: (text: string) => void;
   onRetry: () => void;
+  onAddToFilter: (skill: string, level?: string | null) => void;
 }
 
 export function UnifiedResults({
-  loading, error, response, hasQuery, flashId, onSelect, onJumpToCard, onExampleClick, onRetry,
+  loading, error, response, hasQuery, flashId, onSelect, onJumpToCard, onExampleClick, onRetry, onAddToFilter,
 }: Props) {
   if (error) {
     return (
@@ -76,7 +78,7 @@ export function UnifiedResults({
     );
   }
 
-  const { mode, results, overview, note } = response;
+  const { mode, results, overview, note, suggestion } = response;
 
   // Truly nothing happened -- only possible in direct mode. Assisted mode
   // always has something to show (the overview's answer), even when
@@ -103,7 +105,12 @@ export function UnifiedResults({
 
   return (
     <>
-      {mode === "assisted" && overview && <AIOverview overview={overview} onJumpToCard={onJumpToCard} />}
+      {mode === "assisted" && overview && (
+        <>
+          <AIOverview overview={overview} onJumpToCard={onJumpToCard} />
+          {suggestion && <SuggestionChip suggestion={suggestion} onAddToFilter={onAddToFilter} />}
+        </>
+      )}
       {/* Plain text, not AIOverview -- this note (e.g. the skill-miss
           broadening explanation) comes from a direct-mode call that never
           touched the model, so it must never get the Sparkles/"AI

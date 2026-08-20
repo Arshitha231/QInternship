@@ -199,11 +199,32 @@ export interface AIOverview {
   trace: TraceStep[];
 }
 
+// Pure Python, deterministic, computed alongside an answer (app.
+// assistant_context) -- never the model's own idea, never a second model
+// call. `surface` is which assistant's OWN response this is attached to
+// ("search" here and on AskResponse; "prd" on a PRD-surface AskResponse),
+// informed by the OTHER surface's facts.
+export interface FollowUpSuggestion {
+  surface: "search" | "prd";
+  kind: "requirements_gap" | "unfilled_skill";
+  label: string;
+  project_name?: string | null;
+  skill?: string | null;
+  minimum_level?: string | null;
+}
+
 export interface UnifiedSearchResponse {
   mode: "direct" | "assisted";
   results: PersonSummary[];
   overview?: AIOverview;
   note?: string;
+  // Set only on an assisted-mode answer (direct mode makes no model call,
+  // so it never opens/continues a conversation) -- the caller's "search"
+  // surface conversation, for GET /conversations/search rehydration.
+  conversation_id?: number | null;
+  // Present (a real suggestion or null) only in assisted mode -- direct
+  // mode has no answer prose to attach one alongside.
+  suggestion?: FollowUpSuggestion | null;
 }
 
 export type Role = "employee" | "manager" | "hr" | "it";
@@ -492,6 +513,91 @@ export interface AskResponse {
   result: unknown;
   steps?: AskStep[];
   truncated?: ChainTruncationReason;
+  // The caller's "search" (POST /ask) or "prd" (POST /prd/ask) surface
+  // conversation -- pass it back on the next call on this thread instead
+  // of building a history array client-side; see GET /conversations/{surface}.
+  conversation_id?: number | null;
+  // Present only when a real answer was produced (a tool call happened,
+  // not an out-of-scope reply) -- a real suggestion, or null.
+  suggestion?: FollowUpSuggestion | null;
+}
+
+// GET /conversations/{surface} -- how a page reload rehydrates. `turns` are
+// PLANS only (see AskHistoryTurn above), never a stored result or phrased
+// answer, so a turn with a tool_call has no answer text or citations to
+// replay -- only its question and which tool it resolved to.
+export interface ConversationOut {
+  conversation_id: number | null;
+  turns: AskHistoryTurn[];
+}
+
+// --- PRD chatbot: requirements (app/project_requirements.py, app/schemas.py)
+//
+// One row of the PRD page's project picker (GET /projects).
+export interface ProjectListItem {
+  id: number;
+  name: string;
+  type: string;
+  is_client_engagement: boolean;
+  has_requirements: boolean;
+}
+
+export interface ProjectSkillRequirementIn {
+  skill: string;
+  minimum_level: "Learning" | "Working" | "Expert";
+}
+
+export interface ProjectSkillRequirementOut {
+  skill: string;
+  minimum_level: string;
+}
+
+export interface RequirementNoteIn {
+  note: string;
+  source_doc_id?: number | null;
+}
+
+export interface RequirementNoteOut {
+  note: string;
+  source_doc_id?: number | null;
+}
+
+// What get_project_requirements (the PRD assistant's own tool) answers
+// with for one resolved project -- skills and notes together.
+export interface ProjectRequirementsOut {
+  project_name: string;
+  description?: string | null;
+  skills: ProjectSkillRequirementOut[];
+  notes: RequirementNoteOut[];
+}
+
+// One row of list_project_requirements_summary -- the PRD assistant's
+// other tool, for "what have we captured so far" questions. Counts only.
+export interface ProjectRequirementsSummaryItem {
+  project_name: string;
+  skill_count: number;
+  note_count: number;
+}
+
+// POST /projects/{id}/prd's response -- a PREVIEW only, nothing saved yet.
+// `confidence` is extraction-quality metadata for the review UI, not
+// persisted anywhere once confirmed.
+export interface PrdSkillProposal {
+  skill: string;
+  minimum_level: string;
+  confidence: number;
+}
+
+export interface PrdNoteProposal {
+  note: string;
+  confidence: number;
+}
+
+export interface UploadPrdResult {
+  doc_id: number;
+  filename: string;
+  skills: PrdSkillProposal[];
+  notes: PrdNoteProposal[];
 }
 
 // --- Dashboards (app/analytics.py) ----------------------------------------

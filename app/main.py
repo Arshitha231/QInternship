@@ -53,7 +53,8 @@ from app.db import engine, get_db
 from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.insight_narrative import narrate as narrate_insights
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
-from app.models import DocSubjectMatch, Employee, Office, OrgUnit, TrainingCourse
+from app.prd_extraction import extract_requirements
+from app.models import DocSubjectMatch, Employee, Office, OrgUnit, Project, TrainingCourse
 from app.models.enums import CourseStatus, SkillCategory, SkillLevel, display_status
 from app.notifications import (
     NotifyDateMilestonesDenied, NotifyHrReviewsDenied, notifications_for, notify_date_milestones,
@@ -64,11 +65,24 @@ from app.own_skills import SkillAlreadyHeld, SkillCategoryMismatch, SkillNotHeld
 from app.own_skills import add_own_skill as add_own_skill_service
 from app.own_skills import remove_own_skill as remove_own_skill_service
 from app.own_skills import update_own_skill as update_own_skill_service
+from app.people import context_people_message, resolve_context_people
 from app.people import find_people as find_people_service
 from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.people import update_own_name_pronunciation as update_own_name_pronunciation_service
 from app.permissions import resolve_view_mode
+from app.assistant_conversations import (
+    ConversationNotFound,
+    append_turn,
+    get_most_recent_conversation,
+    load_history,
+    open_or_continue,
+)
+from app.assistant_context import facts_context_message
+from app.project_requirements import RequirementNotesNotAccessible
+from app.project_requirements import add_requirement_notes as add_requirement_notes_service
+from app.project_requirements import get_requirement_notes as get_requirement_notes_service
+from app.project_requirements import list_projects_for_picker as list_projects_for_picker_service
 from app.project_skills import ProjectNotWritable, UnknownSkill
 from app.project_skills import get_required_skills as get_required_skills_service
 from app.project_skills import set_required_skills as set_required_skills_service
@@ -144,11 +158,14 @@ from app.schemas import (
     PersonRef,
     PersonSummary,
     ProjectDescriptionRequest,
+    ProjectListItem,
     ProjectSkillRequirementIn,
     ProjectSkillRequirementOut,
     ReassignProposalRequest,
     RecordCourseStatusRequest,
     RejectActionRequestBody,
+    RequirementNoteIn,
+    RequirementNoteOut,
     ResolveSubjectRequest,
     SubmitAuthorizationRecordRequest,
     SuggestedOfficialLinkOut,
@@ -160,6 +177,7 @@ from app.schemas import (
     UpsertProjectHistoryRequest,
     UpdateNamePronunciationRequest,
 )
+from app.tool_calling import PRD_PROFILE
 from app.tool_calling import answer as answer_service
 from app.unified_search import unified_search
 from app.writes import (
@@ -325,6 +343,9 @@ def unified_search_route(
         None, description='"work" or "employee" — see GET /people. Applies to the '
                           'assisted path too, so an hr/it caller in employee mode gets '
                           'employee-mode data whether they searched or asked a question.'),
+    conversation_id: int | None = Query(
+        None, description="Continues the caller's own \"search\" conversation. Omit to open a new one "
+                          "(still returned in the response) — see AskRequest's docstring for the same rule."),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
@@ -333,6 +354,11 @@ def unified_search_route(
     tool-calling layer /ask uses) — see app.unified_search for the actual
     router. /people and /ask both stay in place unchanged underneath this;
     nothing here duplicates their retrieval or permission logic.
+
+    An assisted-mode answer opens/continues a "search" surface conversation
+    and records this turn to it, same as POST /ask — a direct-mode answer
+    (no model call at all) has no assistant turn to record, so it never
+    touches conversation_id or gains one in its response.
 
     No response_model here (the shape is a discriminated union, direct vs
     assisted) — so results/citations are dumped with exclude_unset by hand
@@ -345,12 +371,16 @@ def unified_search_route(
     just can't see it", the exact boundary-leak /people's flag exists to
     prevent.
     """
-    result = unified_search(
-        db, user, q=q,
-        filters={"skill": skill, "level": level, "org_unit": org_unit,
-                 "office": office, "language": language, "available": available},
-        view_mode=resolve_view_mode(user.role, view_mode),
-    )
+    try:
+        result = unified_search(
+            db, user, q=q,
+            filters={"skill": skill, "level": level, "org_unit": org_unit,
+                     "office": office, "language": language, "available": available},
+            view_mode=resolve_view_mode(user.role, view_mode),
+            conversation_id=conversation_id,
+        )
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     result["results"] = [p.model_dump(exclude_unset=True) for p in result["results"]]
     if result.get("overview") is not None:
         result["overview"]["citations"] = [c.model_dump(exclude_unset=True) for c in result["overview"]["citations"]]
@@ -1130,6 +1160,67 @@ def set_required_skills_route(
         raise HTTPException(status_code=404, detail="Project not found")
     return result
 
+
+@app.get("/projects", response_model=list[ProjectListItem])
+def list_projects_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[ProjectListItem]:
+    """The PRD page's project picker. HR + work mode only — this listing
+    exists for the PRD feature specifically, not as a general project
+    browser open to every role."""
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Listing projects for PRD upload is an HR action in work mode")
+    return list_projects_for_picker_service(db, user, mode)
+
+
+@app.get("/projects/{project_id}/requirement-notes", response_model=list[RequirementNoteOut])
+def get_requirement_notes_route(
+    project_id: int,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[RequirementNoteOut]:
+    """Qualitative requirements recorded against a project — HR-or-owner
+    only, unlike GET .../required-skills, which stays open to anyone who
+    can see the project. Notes are sentences lifted verbatim from a
+    planning document; skills are structured org facts. See
+    app/project_requirements.py's module docstring for why that asymmetry
+    is deliberate, not an oversight."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        result = get_requirement_notes_service(db, user, project_id, mode)
+    except RequirementNotesNotAccessible as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.post("/projects/{project_id}/requirement-notes", response_model=list[RequirementNoteOut])
+def add_requirement_notes_route(
+    project_id: int,
+    body: list[RequirementNoteIn],
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[RequirementNoteOut]:
+    """Appends requirement notes — unlike PUT .../required-skills, never
+    replaces the existing set: a second PRD upload confirming new notes
+    must not erase one recorded months ago. Same HR-or-owner gate as the
+    read route above."""
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        result = add_requirement_notes_service(db, user, project_id, body, mode)
+    except RequirementNotesNotAccessible as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
 def _require_continuity_access(user: AuthenticatedUser, view_mode: str | None) -> str:
     mode = resolve_view_mode(user.role, view_mode)
     if user.role != "hr" or mode != "work":
@@ -1772,6 +1863,53 @@ async def upload_doc_route(
     }
 
 
+@app.post("/projects/{project_id}/prd", status_code=201)
+async def upload_prd_route(
+    project_id: int,
+    file: UploadFile = File(..., description="A .docx or .pdf requirements document."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Upload a PRD for a project, parse it, and return a PREVIEW of
+    extracted skill requirements and notes. Nothing is saved yet — the
+    caller reviews (and may edit) the preview, then confirms it via
+    PUT /projects/{id}/required-skills and POST /projects/{id}/requirement-notes,
+    the same routes a hand-authored requirement already goes through.
+
+    HR + work mode only, same inline gate as POST /docs/upload — this is a
+    structurally separate pipeline (app/prd_extraction.py, not
+    app/doc_extraction.py's classify/person-disambiguation flow), since a
+    PRD names no person to disambiguate, only what a project needs.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="Uploading a PRD is an HR action in work mode")
+
+    if db.get(Project, project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    data = await _read_upload_capped(file)
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty file")
+
+    try:
+        doc = store_document(db, user, file.filename or "", file.content_type, data, project_id=project_id)
+    except UnsupportedDocument as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+
+    result = extract_requirements(doc.extracted_text)
+    return {
+        "doc_id": doc.id,
+        "filename": doc.filename,
+        "skills": [
+            {"skill": s.skill, "minimum_level": s.minimum_level, "confidence": s.confidence}
+            for s in result.skills
+        ],
+        "notes": [{"note": n.note, "confidence": n.confidence} for n in result.notes],
+    }
+
+
 @app.get("/uploaded_docs")
 def list_documents_route(
     view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
@@ -2204,11 +2342,142 @@ def ask(
     result here comes from the same permission-filtered service functions
     the structured endpoints above use — nothing bypasses the pipeline.
 
-    body.history carries this browser session's prior turns as plans
-    (tool + arguments), never results -- see schemas.HistoryTurn. Held by
-    the client for follow-up chat; nothing here persists it server-side."""
-    return answer_service(
-        db, user, body.message, resolve_view_mode(user.role, body.view_mode), body.history)
+    Every call opens or continues a "search" surface conversation (see
+    app.assistant_conversations) and records this turn to it — see
+    AskRequest's own docstring for the two ways a turn gets its PRIOR
+    context (server-side store vs. body.history), a decision this route
+    makes, not answer_service() itself (its signature is unchanged, still
+    taking a plain history list either way).
+
+    Also carries facts extracted from the caller's most recent PRD
+    conversation, if any (app.assistant_context) — e.g. a project the PRD
+    assistant confirmed requirements for, so a search-surface question can
+    be answered with that context without the caller repeating it.
+
+    And carries the people currently on the caller's screen, if
+    body.context_person_ids names any — re-resolved server-side
+    (app.people.resolve_context_people) rather than trusted from the
+    client, then handed to the model as their real ids (app.assistant_
+    context.context_people_message) so a follow-up like "who is the best
+    of these" can resolve "these" to something concrete instead of the
+    model having no idea who is being asked about."""
+    mode = resolve_view_mode(user.role, body.view_mode)
+    try:
+        conversation = open_or_continue(db, user, "search", body.conversation_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    history = load_history(db, conversation) if body.conversation_id is not None else body.history
+    context = facts_context_message(db, user, mode, surface="search")
+    context_people = context_people_message(resolve_context_people(db, user, body.context_person_ids, mode))
+    result = answer_service(
+        db, user, body.message, mode, history,
+        extra_context_messages=[m for m in (context, context_people) if m] or None,
+    )
+
+    append_turn(
+        db, conversation, message=body.message,
+        tool_call=result.get("tool_call"), arguments=result.get("arguments"),
+        assistant_text=result.get("message") if result.get("tool_call") is None else None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
+
+
+@app.post("/prd/ask")
+def prd_ask(
+    body: AskRequest,
+    project_id: int | None = Query(
+        None,
+        description=(
+            "Which project's PRD conversation to open. Required when "
+            "starting a new conversation (body.conversation_id absent); "
+            "ignored when continuing one."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The PRD assistant's own entry point — the same resolve -> execute ->
+    phrase pipeline as POST /ask (both call answer_service()), run under
+    PRD_PROFILE instead of the default search profile, so this can only
+    ever call get_project_requirements/list_project_requirements_summary —
+    it has no people-search tool to call even if asked. HR + work mode
+    only, inline gate (POST /docs/upload's convention).
+
+    A PRD conversation is always about exactly one project — `project_id`
+    is required to open a fresh one, and picks which project's thread it
+    opens against; once `body.conversation_id` continues an existing one,
+    that conversation's own stored project_id is what's actually used (see
+    app.assistant_conversations.open_or_continue), so project_id is not
+    required on a continuing call.
+    """
+    mode = resolve_view_mode(user.role, body.view_mode)
+    if user.role != "hr" or mode != "work":
+        raise HTTPException(status_code=403, detail="The PRD assistant is an HR action in work mode")
+    if body.conversation_id is None and project_id is None:
+        raise HTTPException(status_code=422, detail="project_id is required to start a new PRD conversation")
+
+    try:
+        conversation = open_or_continue(db, user, "prd", body.conversation_id, project_id=project_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    history = load_history(db, conversation) if body.conversation_id is not None else body.history
+    # PRD_SYSTEM_PROMPT requires a project NAME in the message before it will
+    # call get_project_requirements -- correct for a cold question, but this
+    # surface is already scoped to one project (AssistantConversation.
+    # project_id), and a caller sitting on that project's own page asking
+    # "what does this project need?" has every reason to expect the question
+    # resolves without repeating the name. Resolved server-side (not left to
+    # the frontend to prepend) so every caller of this route gets it, and
+    # stored history stays the raw question — see append_turn below.
+    project = db.get(Project, conversation.project_id) if conversation.project_id else None
+    contextualized_message = f'(Regarding the "{project.name}" project.) {body.message}' if project else body.message
+    # Facts from the caller's most recent SEARCH conversation, if any --
+    # e.g. a skill that turn looked for, so a PRD-surface question can be
+    # answered (or a follow-up suggestion computed) with that context.
+    context = facts_context_message(db, user, mode, surface="prd")
+    result = answer_service(
+        db, user, contextualized_message, mode, history, profile=PRD_PROFILE,
+        extra_context_messages=[context] if context else None, prd_project_id=conversation.project_id,
+    )
+
+    append_turn(
+        db, conversation, message=body.message,
+        tool_call=result.get("tool_call"), arguments=result.get("arguments"),
+        assistant_text=result.get("message") if result.get("tool_call") is None else None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
+
+
+@app.get("/conversations/{surface}")
+def get_conversation_route(
+    surface: str,
+    project_id: int | None = Query(None, description="Required for surface=\"prd\" — which project's thread."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The caller's most recent conversation on a surface, with its turns
+    — how a page reload rehydrates. "search" is never scoped to a project;
+    "prd" always is (project_id selects which project's thread, so HR
+    working on project B never rehydrates project A's), and is HR + work
+    mode only, the same gate as every other PRD-feature route."""
+    if surface not in ("search", "prd"):
+        raise HTTPException(status_code=404, detail="Unknown surface")
+    mode = resolve_view_mode(user.role, view_mode)
+    if surface == "prd" and (user.role != "hr" or mode != "work"):
+        raise HTTPException(status_code=403, detail="The PRD conversation surface is an HR action in work mode")
+
+    convo = get_most_recent_conversation(db, user, surface, project_id if surface == "prd" else None)
+    if convo is None:
+        return {"conversation_id": None, "turns": []}
+    return {
+        "conversation_id": convo.id,
+        "turns": [turn.model_dump() for turn in load_history(db, convo)],
+    }
 
 
 # Built frontend (frontend/dist, produced by the CI/CD deploy job's frontend

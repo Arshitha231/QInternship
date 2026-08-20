@@ -170,6 +170,31 @@ class PersonWithProjects(BaseModel):
     recent_projects: list[ProjectHistoryItem] | None = None
 
 
+class PersonComparison(BaseModel):
+    """compare_people results -- objective, already-visible attributes for a
+    specific, caller-identified set of people, side by side. Same shape and
+    provenance as PersonWithProjects (repeated get_person(id) calls, see
+    app.people.compare_people -- same enforce()/compute_visible_fields gate,
+    same per-person audit row), but no project history and no verdict field:
+    there is deliberately no "rank" or "score" here. The out-of-scope rule
+    against performance/ambition judgments ("who's the best candidate")
+    still holds -- this tool only ever hands back facts to phrase side by
+    side, never a winner. skills is None (not []) for a caller who can't
+    see it at all, the same absent-not-empty distinction PersonDetail
+    already carries.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    full_name: str
+    job_title: str | None = None
+    org_unit: str | None = None
+    availability_status: str | None = None
+    tenure_band: str | None = None
+    skills: list[SkillOut] | None = None
+
+
 class PersonDetail(BaseModel):
     """get_person result. Only fields the caller is actually allowed to see
     are ever set on the instance; the route serializes with
@@ -425,11 +450,36 @@ class AskRequest(BaseModel):
     # "work" | "employee". Resolved server-side by resolve_view_mode, so an
     # employee-role caller sending "work" is still answered in employee mode.
     view_mode: str | None = None
-    # Held client-side for the length of the browser session, not
-    # persisted server-side -- follow-up chat (phase 1), not saved
-    # sessions (phase 2). Bounded to the last few turns by
-    # tool_calling.MAX_HISTORY_TURNS regardless of how long the list is.
+    # Two ways a turn gets its prior context, not one -- see
+    # app.assistant_conversations.open_or_continue for the exact rule:
+    #
+    #   conversation_id given: this turn's history comes from the
+    #   server-side store (app.models.AssistantTurn rows on that
+    #   conversation), and `history` below is ignored even if the client
+    #   still sends one. conversation_id must already be this caller's own
+    #   conversation -- a 404 otherwise, never a 403.
+    #
+    #   conversation_id absent: the pre-persistence path, kept working
+    #   exactly as it always has -- `history` below is what's used for
+    #   THIS turn. A conversation is still opened and this turn is still
+    #   recorded to it server-side either way (its id comes back on the
+    #   response), so an old client that never learns about
+    #   conversation_id keeps working unmodified while still gaining
+    #   persistence for free.
+    #
+    # Bounded to the last few turns by tool_calling.MAX_HISTORY_TURNS
+    # regardless of which path supplied them or how long the list is.
+    conversation_id: int | None = None
     history: list[HistoryTurn] = Field(default_factory=list)
+    # Ids of the people currently on the caller's screen (e.g. the search
+    # page's own result cards), sent only on the "search" surface so a
+    # follow-up like "who is the best of these" can resolve "these" to real
+    # ids instead of the model having no idea who is being asked about.
+    # Untrusted as data: the route re-resolves each id server-side
+    # (app.people.resolve_context_people) before it ever reaches the model,
+    # never taking the client's word for who a name/id belongs to. Ignored
+    # entirely by POST /prd/ask, which has no people tool to use it with.
+    context_person_ids: list[str] = Field(default_factory=list)
 
 
 class RecordCourseStatusRequest(BaseModel):
@@ -694,6 +744,108 @@ class ProjectSkillRequirementOut(BaseModel):
 
     skill: str
     minimum_level: str
+
+
+class ProjectListItem(BaseModel):
+    """One row of the PRD page's project picker (GET /projects) -- id and
+    name plus enough to decide what to show, never the full record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    type: str
+    is_client_engagement: bool
+    has_requirements: bool
+
+
+class RequirementNoteIn(BaseModel):
+    """A single qualitative requirement note being added -- the free-text
+    field is deliberately named `note`, matching every other schema that
+    carries one, so app.tool_calling._UNTRUSTED_FREE_TEXT_KEYS can exclude
+    it from a model call by name alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    note: str
+    source_doc_id: int | None = None
+
+
+class RequirementNoteOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str
+    source_doc_id: int | None = None
+
+
+class ProjectRequirementsOut(BaseModel):
+    """What get_project_requirements (the PRD assistant's own tool) answers
+    with for one resolved project -- skills and notes together, the
+    combined shape a "what does this project need" question actually
+    wants."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    description: str | None = None
+    skills: list[ProjectSkillRequirementOut]
+    notes: list[RequirementNoteOut]
+
+
+class ProjectRequirementsSummaryItem(BaseModel):
+    """One row of list_project_requirements_summary -- the PRD assistant's
+    other tool, for "what have we captured so far" questions. Counts only,
+    never the requirements themselves (that's what get_project_requirements
+    is for, once a specific project is named)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_name: str
+    skill_count: int
+    note_count: int
+
+
+# --- Cross-surface context (app/assistant_context.py) ---------------------
+#
+# What crosses between the search and PRD assistants: a tool name plus a
+# resolved, re-checked reference -- never assistant_text (model-written
+# prose) and never document/note prose, which never enters a stored turn's
+# `arguments` in the first place. `ref_type`/`ref_id`, when set, are what
+# recent_facts() re-resolves against the live database (visible_project /
+# is_record_visible) before returning a fact -- a project reclassified
+# confidential or a person deactivated since the turn happened is simply
+# absent, the same freshness guarantee _history_messages() gives a
+# replayed tool call. `kind` is a closed set, not a free string, so a
+# renderer never has to guess what a new kind means.
+class ConversationFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "project_discussed", "skill_discussed", "person_discussed",
+        "requirements_confirmed", "gap_checked",
+    ]
+    label: str
+    ref_type: Literal["project", "skill", "person"] | None = None
+    ref_id: str | None = None
+
+
+# Pure Python, deterministic, computed alongside an answer -- never a tool
+# the model is expected to call (see app/assistant_context.py's
+# suggestion wrappers). `surface` is which assistant's OWN response this
+# suggestion is attached to/rendered on ("search" for a suggestion computed
+# by unified_search()'s wrapper and shown under a search answer, informed
+# by PRD facts; "prd" for one computed by answer()'s PRD-profile wrapper
+# and shown under a PRD answer, informed by search facts) -- not which
+# surface the facts it's built from came from, which is always the other one.
+class FollowUpSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    surface: Literal["search", "prd"]
+    kind: Literal["requirements_gap", "unfilled_skill"]
+    label: str
+    project_name: str | None = None
+    skill: str | None = None
+    minimum_level: str | None = None
 
 
 # --- Staffing Continuity Intelligence (app/continuity.py) — HR-only ------
