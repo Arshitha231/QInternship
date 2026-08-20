@@ -13,7 +13,7 @@ interface Props {
 // only purpose is a badge. Switching identity in the dev picker therefore
 // keeps each persona's own count, which is what you want when demoing the
 // employee view and the manager view side by side.
-const SEEN_KEY = "orghub.notifications.seen";
+const SEEN_KEY = "mel.notifications.seen";
 
 function loadSeen(identityId: string): number {
   try {

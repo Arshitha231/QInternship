@@ -15,7 +15,7 @@ import type {
 // deployed data without running uvicorn locally.
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
-export const UNAUTHORIZED_EVENT = "orghub:unauthorized";
+export const UNAUTHORIZED_EVENT = "mel:unauthorized";
 
 export class ApiError extends Error {
   status: number;
