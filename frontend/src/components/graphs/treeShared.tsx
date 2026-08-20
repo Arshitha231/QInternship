@@ -9,6 +9,13 @@ import { avatarStyle } from "../../avatarHue";
 // them is just what the "parent -> children" groups are (manager/reports
 // with recursive expand for Department; a single team hub -> teammates
 // row for Team) -- the connector math and node card are identical.
+//
+// All connector geometry is measured in LAYOUT pixels (offsetLeft/offsetTop,
+// see offsetWithin below), never in screen pixels. These trees sit inside a
+// CSS scale() that ANIMATES, so any screen-pixel measurement is a race
+// against the transition -- which is exactly the bug that made every line
+// land in the wrong place. Layout coordinates are immune to it, and there is
+// no zoom term in this file at all as a result.
 
 export function initials(name: string): string {
   return name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
@@ -74,7 +81,55 @@ export interface TreeGroup {
   childIds: string[];
 }
 
-export function useTreeConnectors(groups: TreeGroup[], deps: unknown[], scale = 1) {
+// Card footprint including its gap, in layout px -- must match .tree-node's
+// width and .tree-tier-reports' gap in index.css. Used both for wrapping a
+// long row (wrapWidth, below) and for placing a wrapped row's connector
+// gutter clear of the cards (useTreeConnectors).
+const CARD_PITCH = 154 + 18;
+
+/** An element's position relative to `ancestor`, in LAYOUT pixels.
+ *
+ *  This is the whole reason the connectors are correct. The obvious way to
+ *  measure -- getBoundingClientRect() on both, subtract -- reports
+ *  POST-TRANSFORM screen pixels, and these trees live inside ZoomPanFrame's
+ *  `scale()`. The previous version compensated by dividing by the current
+ *  zoom, which is right only while the DOM's actual scale and the zoom state
+ *  agree. They don't during a transition: .zoom-pan-viewport animates
+ *  transform over .18s, useLayoutEffect runs before that animation has
+ *  moved, so every delta got divided by the TARGET scale while the DOM was
+ *  still at the OLD one. Result: every path uniformly off by the ratio
+ *  between them (measured at 1.47x on a fit-after-expand), and nothing
+ *  recomputed once the transition settled, because a paint-only transform
+ *  changes no layout box and so fires no ResizeObserver.
+ *
+ *  offsetLeft/offsetTop are layout properties. A transform on an ancestor
+ *  does not affect them, which makes this measurement correct at any zoom,
+ *  mid-animation or at rest, with no scale term anywhere -- and it is
+ *  already the same unit as svgSize's scrollWidth/scrollHeight, so the paths
+ *  and the viewBox agree by construction rather than by arithmetic.
+ *
+ *  Walks the offsetParent chain rather than reading offsetLeft once, since
+ *  that is relative to the nearest POSITIONED ancestor, which is not
+ *  necessarily `ancestor` itself. .org-tree-wrap is position:relative so it
+ *  is in the chain; the hop bound is belt-and-braces against a future CSS
+ *  change quietly taking it out, in which case the connectors degrade to
+ *  slightly-off rather than looping forever.
+ */
+function offsetWithin(el: HTMLElement, ancestor: HTMLElement): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  let node: HTMLElement | null = el;
+  let hops = 0;
+  while (node && node !== ancestor && hops < 32) {
+    x += node.offsetLeft;
+    y += node.offsetTop;
+    node = node.offsetParent as HTMLElement | null;
+    hops += 1;
+  }
+  return { x, y };
+}
+
+export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const branchRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -105,41 +160,31 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[], scale = 
     // itself still runs at the parent's own x for every row, so it reads
     // as one spine forking at each row.
     function computeGroup(
-      wrapRect: DOMRect,
+      wrap: HTMLElement,
       parentId: string,
       childIds: string[],
       paths: { id: string; d: string }[],
     ) {
-      // getBoundingClientRect() reports post-transform SCREEN pixels -- with
-      // this hook's callers now wrapped in ZoomPanFrame's CSS `scale()`,
-      // every measured delta here shrinks/grows with that scale even though
-      // svgSize below (scrollWidth/scrollHeight, a LAYOUT property untouched
-      // by paint-only transforms) does not. Dividing by `scale` converts
-      // back to the same unscaled "layout pixel" unit svgSize's viewBox is
-      // already in, so the two stay aligned at any zoom level. A no-op when
-      // a caller doesn't pass one (default 1).
       const p = nodeRefs.current.get(parentId);
       if (!p) return;
-      const pr = p.getBoundingClientRect();
-      const px = (pr.left + pr.width / 2 - wrapRect.left) / scale;
-      const py = (pr.bottom - wrapRect.top) / scale;
+      const po = offsetWithin(p, wrap);
+      const px = po.x + p.offsetWidth / 2;
+      const py = po.y + p.offsetHeight;
 
       const items = childIds
         .map((id) => {
           const el = nodeRefs.current.get(id);
           if (!el) return null;
-          const r = el.getBoundingClientRect();
+          const o = offsetWithin(el, wrap);
           const branchEl = branchRefs.current.get(id);
-          const branchBottom = (
-            branchEl
-              ? branchEl.getBoundingClientRect().bottom - wrapRect.top
-              : r.bottom - wrapRect.top
-          ) / scale;
+          const branchBottom = branchEl
+            ? offsetWithin(branchEl, wrap).y + branchEl.offsetHeight
+            : o.y + el.offsetHeight;
           return {
             id,
-            cx: (r.left + r.width / 2 - wrapRect.left) / scale,
-            cy: (r.top - wrapRect.top) / scale,
-            top: Math.round((r.top - wrapRect.top) / scale),
+            cx: o.x + el.offsetWidth / 2,
+            cy: o.y,
+            top: Math.round(o.y),
             branchBottom,
           };
         })
@@ -153,49 +198,76 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[], scale = 
       }
       const rowKeys = Array.from(rows.keys()).sort((a, b) => a - b);
 
+      // Where a wrapped row's trunk drops. Running it at the parent's own x
+      // is right for the FIRST row and wrong for every row after it: the
+      // parent sits centred over the group, so a vertical from the parent
+      // down to row 2 passes straight through whichever row-1 card is also
+      // centred there -- which, with an 8-report row wrapping to 7 + 1, is
+      // exactly what happened. Rows after the first therefore leave the bus
+      // sideways and drop down a gutter to the left of every card in the
+      // group, where there is nothing to cross.
+      const leftMost = Math.min(...items.map((it) => it.cx));
+      const gutterX = leftMost - CARD_PITCH / 2;
+
       let prevBottom = py;
+      let prevBusY: number | null = null;
       for (const key of rowKeys) {
         const rowItems = rows.get(key)!;
         const busY = (prevBottom + key) / 2;
         for (const it of rowItems) {
-          paths.push({ id: `${parentId}->${it.id}`, d: `M ${px} ${py} V ${busY} H ${it.cx} V ${it.cy}` });
+          let d: string;
+          if (prevBusY === null) {
+            // First row: straight down from the parent, then out along the
+            // bus. A child already centred under the parent needs no elbow
+            // at all -- the H segment would be zero-length and the bus just
+            // a redundant kink in what should read as one clean drop.
+            d = Math.abs(it.cx - px) < 0.5
+              ? `M ${px} ${py} V ${it.cy}`
+              : `M ${px} ${py} V ${busY} H ${it.cx} V ${it.cy}`;
+          } else {
+            // Wrapped row: join the previous row's bus (which the parent
+            // trunk already reaches), run out to the gutter, drop clear of
+            // the cards above, then back in along this row's bus.
+            d = `M ${px} ${prevBusY} H ${gutterX} V ${busY} H ${it.cx} V ${it.cy}`;
+          }
+          paths.push({ id: `${parentId}->${it.id}`, d });
         }
         prevBottom = Math.max(...rowItems.map((it) => it.branchBottom));
+        prevBusY = busY;
       }
     }
 
     function recompute() {
       const wrap = wrapRef.current;
       if (!wrap) return;
-      const wrapRect = wrap.getBoundingClientRect();
       const paths: { id: string; d: string }[] = [];
-      for (const g of groups) computeGroup(wrapRect, g.parentId, g.childIds, paths);
+      for (const g of groups) computeGroup(wrap, g.parentId, g.childIds, paths);
       setLinePaths(paths);
       setSvgSize({ width: wrap.scrollWidth, height: wrap.scrollHeight });
     }
 
     recompute();
+    // Observes the wrap AND every node: a card that reflows because its name
+    // wrapped to a second line changes the geometry without changing the
+    // wrap's own box, and that used to leave the lines pointing at where the
+    // card had been.
     const ro = new ResizeObserver(recompute);
     if (wrapRef.current) ro.observe(wrapRef.current);
+    for (const el of nodeRefs.current.values()) ro.observe(el);
     window.addEventListener("resize", recompute);
+    // Fonts land after first paint and change card heights. Without this the
+    // very first render of a tree draws its lines against pre-font metrics.
+    document.fonts?.ready.then(recompute).catch(() => {});
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", recompute);
     };
-    // scale is appended here rather than left to each caller to remember --
-    // a zoom change doesn't touch layout size, so ResizeObserver never fires
-    // for it on its own, and stale line paths at the old scale is a worse
-    // failure mode than one extra recompute on every other caller's (fixed
-    // scale=1) render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, scale]);
+  }, deps);
 
   return { wrapRef, registerNode, registerBranch, linePaths, svgSize };
 }
 
-// Card footprint including its gap, in layout px -- must match .tree-node's
-// width and .tree-tier-reports' gap in index.css.
-const CARD_PITCH = 154 + 18;
 // The widest a wrapped row of cards is allowed to get. Sized to a typical
 // frame's inner width (~1300px on a maximised laptop window), so a big row
 // wraps to roughly the frame's own proportions.

@@ -8,17 +8,17 @@ import { Maximize, Minus, Plus } from "../icons";
 // Split into a hook (useZoomPan, owning zoom/pan state) and a presentational
 // wrapper (ZoomPanFrame, owning the toolbar/frame/transform markup) rather
 // than one component that both holds the state AND renders children via a
-// render-prop: DepartmentGraph and TeamGraph need the current `zoom` value
-// themselves, to pass into useTreeConnectors so its DOM measurements stay
-// correct at any scale (a CSS transform: scale() on an ancestor makes
-// getBoundingClientRect() return post-transform screen pixels, which
-// disagree with an untransformed measurement like scrollWidth unless
-// divided back down by the same factor -- see treeShared.tsx). That means
-// `zoom` has to come from a hook call in THEIR OWN component body, not from
-// a value handed back through a child callback -- calling useTreeConnectors
-// inside a render-prop closure would attach its hook state to this
-// component's fiber instead of theirs, which is exactly the render-prop-hook
-// anti-pattern the Rules of Hooks warn about.
+// render-prop, so a caller can read and drive its own zoom without the
+// render-prop-hook anti-pattern the Rules of Hooks warn about.
+//
+// Note what callers do NOT need from this hook: the current scale, to
+// correct their own DOM measurements with. treeShared.tsx used to take
+// `zoom` for exactly that and it was the source of a real bug -- the
+// transform here ANIMATES, so the scale on screen and the scale in state
+// disagree for .18s after every change, and anything dividing screen pixels
+// by the state value during that window is simply wrong. Measure in layout
+// coordinates instead (offsetLeft/offsetTop); they are untouched by a
+// paint-only transform, so there is nothing to correct for.
 //
 // FIT-TO-VIEW. Every one of these graphs draws content whose size is decided
 // by the data, not by the frame: a 2-report tree is ~620px tall, a 15-person
@@ -55,6 +55,13 @@ export function useZoomPan() {
   const frameRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const dragState = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+  // True while the current scale is one this component chose (a fit, or a
+  // rescue), false once the reader has set it themselves. Read by
+  // fitIfNeeded to decide whether growing the view back is restoring its own
+  // adjustment or overriding a person's. A ref, not state: nothing renders
+  // differently because of it, and it must be readable inside the same tick
+  // a zoom handler sets it.
+  const autoZoomed = useRef(true);
 
   const effectiveMin = Math.min(MIN_ZOOM, fitScale);
 
@@ -92,18 +99,55 @@ export function useZoomPan() {
     setFitScale(next);
     setZoom(next);
     setPan({ x: 0, y: 0 });
+    autoZoomed.current = true;
+  }, [measureFit]);
+
+  // Rescue fit: adjust the scale when the content's size changes, without
+  // ever discarding a scale the READER chose.
+  //
+  // The difference between this and fit() is the difference between a graph
+  // that helps and one that fights you. Expanding a branch used to trigger a
+  // full fit -- which rescales the entire tree and resets the pan, so asking
+  // to see one team's six people rearranged and shrank everything else on
+  // screen, including the card you had just clicked.
+  //
+  // Two directions, and the second is why `autoZoomed` exists:
+  //   - content no longer fits          -> shrink to the new fit scale.
+  //   - content fits again, and the
+  //     current scale was OUR doing     -> grow back up to it.
+  // Collapsing a branch you had expanded should undo the shrink expanding it
+  // caused; without the second case the tree stays needlessly small and the
+  // reader has to press Fit to undo something they never asked for. The
+  // guard is what keeps that from also stomping a deliberate zoom -- once
+  // someone touches +/- or pinches, their scale is theirs and this leaves it
+  // alone until they press Fit.
+  //
+  // Pan is deliberately never reset here: it is only ever wrong when the
+  // content identity changes, which is fit()'s job.
+  const fitIfNeeded = useCallback(() => {
+    const next = measureFit();
+    if (next === null) return;
+    setFitScale(next);
+    setZoom((z) => {
+      if (z > next) return next;
+      if (autoZoomed.current && z < next) return next;
+      return z;
+    });
   }, [measureFit]);
 
   function zoomIn() {
+    autoZoomed.current = false;
     setZoom((z) => clampZoom(z + ZOOM_STEP));
   }
   function zoomOut() {
+    autoZoomed.current = false;
     setZoom((z) => clampZoom(z - ZOOM_STEP));
   }
   // Trackpad pinch arrives as a wheel event with a smaller, continuous
   // delta rather than a button click's fixed step -- ZOOM_STEP/2 per notch
   // keeps it from feeling twitchy relative to +/- .
   function onZoomDelta(direction: 1 | -1) {
+    autoZoomed.current = false;
     setZoom((z) => clampZoom(z + direction * (ZOOM_STEP / 2)));
   }
 
@@ -128,7 +172,7 @@ export function useZoomPan() {
   }
 
   return {
-    zoom, pan, fit, zoomIn, zoomOut, onZoomDelta,
+    zoom, pan, fit, fitIfNeeded, zoomIn, zoomOut, onZoomDelta,
     onPointerDown, onPointerMove, onPointerUp,
     frameRef, contentRef,
   };
@@ -136,19 +180,33 @@ export function useZoomPan() {
 
 // Refits when the drawn content changes size, when the frame changes size,
 // and when `key` says this is different content now (a new focus person --
-// which should reset a pan even if the new tree happens to be the same
-// size as the old one).
+// which should reset a pan even if the new tree happens to be the same size
+// as the old one).
 //
-// A ResizeObserver on the CONTENT is the primary trigger, not a timer or an
-// animation frame. Two reasons. It is the direct signal -- the thing that
-// actually invalidates a fit is the content's measured size, so observing
-// that is neither early nor late, and it covers every cause at once (data
-// arriving, a branch expanding, a font finishing loading). And it keeps
-// working in a background tab: requestAnimationFrame does not fire in one,
-// so an rAF-scheduled fit silently never runs and the graph is left at the
-// wrong scale until something else nudges it.
+// TWO KEYS, doing different jobs:
 //
-// No feedback loop, despite this observer's own callback setting the zoom
+//   key       IDENTITY. A new focus person, a different data set. Triggers a
+//             full fit(): reset the scale AND the pan, because what the
+//             reader was looking at is gone.
+//   sizeKey   SIZE, same content. A branch expanded, a sub-team opened.
+//             Triggers fitIfNeeded(): pull the view back only if the content
+//             has genuinely outgrown the frame, and never touch the pan.
+//             Rescaling the whole tree because a reader opened one team is
+//             how a graph fights the person reading it.
+//
+// Both run in layout effects, synchronously, so the first paint after a
+// change is already at the right scale rather than showing one clipped frame
+// first -- and, less obviously, so they run AT ALL in a background tab. A
+// previous version of this comment claimed a ResizeObserver was the more
+// robust trigger for exactly that reason. It is not: ResizeObserver
+// callbacks are delivered as part of the rendering steps, which a hidden tab
+// does not run, so an observer-only rescue silently never fires there (same
+// blind spot as requestAnimationFrame, measured: document.hidden -> zero
+// callbacks from both). The observer below is kept as a SECONDARY trigger
+// for size changes React has no key for -- the frame itself resizing, a web
+// font landing and changing card heights.
+//
+// No feedback loop, despite that observer's own callback setting the zoom
 // that scales the observed element: offsetWidth/offsetHeight and
 // ResizeObserver's box sizes are LAYOUT measurements, and `scale()` is a
 // paint-only transform. Scaling the content does not change what either one
@@ -158,25 +216,38 @@ export function useFitOnChange(
   frameRef: React.RefObject<HTMLDivElement | null>,
   contentRef: React.RefObject<HTMLDivElement | null>,
   key: unknown,
+  // Rescue-only fit (see useZoomPan). Callers that redraw a whole new graph
+  // on every size change (Skills, Community) omit it and keep the plain
+  // always-fit behaviour, which is the right one for them.
+  fitIfNeeded?: () => void,
+  // Changes when the SAME content changes size. Omit when `key` already
+  // covers every size change a caller can produce.
+  sizeKey?: unknown,
 ) {
-  // Synchronous, in a layout effect, so the first paint after new data is
-  // already at the right scale rather than showing one clipped frame first.
-  // Safe to measure here: the tree graphs' connector <svg> is absolutely
-  // positioned and so contributes nothing to the content's layout size,
-  // which means their own layout effect can't change what this one measures.
+  const rescue = fitIfNeeded ?? fit;
+
   useLayoutEffect(() => {
     fit();
   }, [fit, key]);
+
+  // Deliberately separate from the effect above rather than folded into it:
+  // these two want different behaviour (reset vs rescue) and different
+  // triggers, and one effect keyed on both would apply whichever behaviour
+  // was written for whichever key happened to change.
+  useLayoutEffect(() => {
+    if (sizeKey === undefined) return;
+    rescue();
+  }, [rescue, sizeKey]);
 
   useEffect(() => {
     const frame = frameRef.current;
     const content = contentRef.current;
     if (!frame || !content) return;
-    const ro = new ResizeObserver(() => fit());
+    const ro = new ResizeObserver(() => rescue());
     ro.observe(frame);
     ro.observe(content);
     return () => ro.disconnect();
-  }, [fit, frameRef, contentRef]);
+  }, [rescue, frameRef, contentRef]);
 }
 
 // Props here deliberately match useZoomPan()'s return shape name-for-name
@@ -190,6 +261,10 @@ export function ZoomPanFrame({
   zoom: number;
   pan: { x: number; y: number };
   fit: () => void;
+  // Present on the hook's return value and spread in by every caller; the
+  // frame itself has no use for it (the Fit button is a deliberate, explicit
+  // reset -- the whole point of pressing it is to discard your pan).
+  fitIfNeeded?: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
   onZoomDelta: (direction: 1 | -1) => void;

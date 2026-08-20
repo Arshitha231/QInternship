@@ -121,21 +121,23 @@ export function DepartmentGraph({ identity, viewMode, focusId, focusPerson, onNa
     expandedIds,
     childrenCache,
     focusId,
-  ], zoomPan.zoom);
+  ]);
 
-  // Refit on every change to what's drawn -- including expand/collapse.
-  // Expanding a 14-person subtree roughly triples the tree's width, and
-  // without a refit most of the team you just asked to see lands outside
-  // the frame with nothing to say so. The viewport transition (see
-  // .zoom-pan-viewport) makes the rescale readable rather than abrupt.
+  // Two keys, doing different jobs (see useFitOnChange).
   //
-  // The key covers both halves of an expand, because they land in separate
-  // renders: clicking the toggle marks the branch expanded (and draws a
-  // "Loading…" placeholder), then the fetched children arrive and the row
-  // grows to its real width. Keying only on `expandedIds` fits the
-  // placeholder and never refits for the children -- so the branch you just
-  // opened ends up past the frame's edge after all. Hence the loaded-child
-  // counts in the key too.
+  // IDENTITY -- a different focus person -- resets scale and pan, because
+  // what the reader was looking at is gone. SIZE -- a branch expanding --
+  // only rescues the view if the tree has outgrown the frame, and never
+  // moves their pan. Both used to be one key calling a full fit, so opening
+  // a 14-person subtree rescaled the entire tree and reset the pan: you
+  // asked to see one team and everything else on screen shrank and shifted,
+  // including the card you had just clicked.
+  //
+  // The size key covers both halves of an expand, because they land in
+  // separate renders: clicking the toggle marks the branch expanded (and
+  // draws a "Loading…" placeholder), then the fetched children arrive and
+  // the row grows to its real width. Keying only on `expandedIds` would
+  // measure the placeholder and never re-measure for the children.
   const expandKey = Array.from(expandedIds).sort().join(",");
   const loadedKey = Object.entries(childrenCache)
     .map(([id, kids]) => `${id}=${kids.length}`)
@@ -145,7 +147,9 @@ export function DepartmentGraph({ identity, viewMode, focusId, focusPerson, onNa
     zoomPan.fit,
     zoomPan.frameRef,
     zoomPan.contentRef,
-    `${focusId}:${reports?.length ?? -1}:${manager?.id ?? ""}:${expandKey}:${loadedKey}`,
+    `${focusId}:${reports?.length ?? -1}:${manager?.id ?? ""}`,
+    zoomPan.fitIfNeeded,
+    `${expandKey}:${loadedKey}`,
   );
 
   // The set of ids on the highlighted path: the hovered node, its ancestors
