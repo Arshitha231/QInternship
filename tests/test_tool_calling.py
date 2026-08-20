@@ -1026,6 +1026,25 @@ def test_every_tool_has_a_chain_few_shot_or_single_shot_reason_field():
     assert "get_people_with_projects" in chained_tool_names
 
 
+def test_a_single_named_persons_project_question_has_its_own_chain_few_shot():
+    # find_people's own result never carries project data regardless of
+    # how confidently the name resolves -- "what is X working on" needs
+    # the same two-step shape as the N-people case, just for exactly one.
+    # Without a dedicated example the model reliably stopped at find_people
+    # alone and reported (honestly, but wrongly) that it had no project
+    # data for the person it had just found.
+    matches = [
+        steps for text, steps in tool_calling.CHAIN_FEW_SHOT_EXAMPLES
+        if "working on" in text
+    ]
+    assert len(matches) == 1
+    steps = matches[0]
+    assert steps[0][0] == "find_people"
+    assert steps[0][1].get("needs_followup") is True
+    assert steps[1][0] == "get_people_with_projects"
+    assert len(steps[1][1]["person_ids"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # Follow-up chat (Conversational Assistant plan, phase 1): a stored turn is
 # a PLAN (tool + arguments), never a result -- _history_messages() re-runs

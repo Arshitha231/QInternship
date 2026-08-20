@@ -427,13 +427,19 @@ most 3 calls total, so plan within that: if a request would genuinely need more,
 you can with what 3 calls can establish rather than declaring you need a 4th. Do not set \
 needs_followup just to double-check a result or to fetch something the caller didn't ask for.
 
-A request for SEVERAL people AND a per-person detail find_people/search_people cannot return \
-— "5 people who know Terraform and their recent projects", "everyone on the Payments team and \
-what they're working on" — is exactly this two-step shape: find_people or search_people first \
-(needs_followup true) to get the people, then get_people_with_projects with their ids (read \
-from that result — never invented) to get each one's recent project history in the same call. \
-Never loop get_person once per person for this: the step budget cannot support more than a \
-couple of individual lookups, and get_people_with_projects exists so it doesn't have to.
+A request for one or more people AND a per-person detail find_people/search_people cannot \
+return — "5 people who know Terraform and their recent projects", "everyone on the Payments \
+team and what they're working on", or even just one named person's — "what is Priya Sharma \
+working on", "what has Diego Hernandez worked on", "Priya Sharma's recent projects" — is \
+exactly this two-step shape: find_people or search_people first (needs_followup true) to get \
+the person/people, then get_people_with_projects with their id(s) (read from that result — \
+never invented) to get recent project history in the same call. This applies even for exactly \
+ONE named person: find_people's own result is a summary card (name, title, team, office, \
+availability) with no project history on it at all, so a question about someone's projects or \
+current work is never answerable from find_people alone, however confidently it resolves the \
+name — it always needs this second call. Never loop get_person once per person for this: the \
+step budget cannot support more than a couple of individual lookups, and \
+get_people_with_projects exists so it doesn't have to.
 
 If a request cannot be answered with exactly one of these functions — including requests \
 for compensation, home address or other personal contact details, performance or ambition \
@@ -616,6 +622,14 @@ CHAIN_FEW_SHOT_EXAMPLES: list[ChainFewShot] = [
         ("get_people_with_projects", {
             "person_ids": ["e1a2b3c4-0001", "e1a2b3c4-0002", "e1a2b3c4-0003", "e1a2b3c4-0004", "e1a2b3c4-0005"],
         }),
+    ]),
+    # The same two-step shape for exactly ONE named person -- find_people's
+    # own result (id below is what it would actually hand back) has no
+    # project data on it regardless of how confidently the name resolved,
+    # so a project question about someone by name still needs step 2.
+    ("what is Priya Sharma working on right now", [
+        ("find_people", {"name": "Priya Sharma", "needs_followup": True}),
+        ("get_people_with_projects", {"person_ids": ["e1a2b3c4-0006"]}),
     ]),
 ]
 
