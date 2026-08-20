@@ -2390,3 +2390,87 @@ button.route-pip:hover { border-color: var(--purple); box-shadow: var(--shadow-s
 @media (prefers-reduced-motion: reduce) {
   .suggest-chip, .route-pip { transition: none; }
 }
+
+/* ===========================================================================
+   Workforce Intelligence — components/WorkforceIntelligence.tsx
+
+   A report, not a chat. Fixed sections in a fixed order, so the same
+   question always produces the same shape and a reader knows where to look.
+   =========================================================================== */
+
+.wi { gap: 16px; }
+
+.wi-ask {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--page); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 8px 8px 8px 13px;
+}
+.wi-ask:focus-within { border-color: var(--purple); box-shadow: 0 0 0 3px var(--accent-ring); }
+.wi-ask-icon { color: var(--muted); display: inline-flex; flex: none; }
+.wi-ask input {
+  flex: 1; border: 0; background: none; font: inherit; font-size: var(--fs-md);
+  color: var(--ink); outline: none; min-width: 0;
+}
+
+.wi-examples { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+
+.wi-report { display: flex; flex-direction: column; gap: 18px; }
+.wi-report-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.wi-report-title { margin: 0; font-size: var(--fs-lg); font-weight: 650; }
+.wi-report-meta { margin: 2px 0 0; font-size: var(--fs-sm); }
+
+.wi-summary {
+  background: var(--purple-100); border-radius: var(--radius-card); padding: 14px 16px;
+}
+.wi-summary-text { margin: 0; font-size: var(--fs-md); line-height: 1.6; color: var(--ink); }
+.wi-summary-source { margin: 7px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: 1.45; }
+
+.wi-section { display: flex; flex-direction: column; gap: 9px; }
+.wi-section-head {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted);
+}
+.wi-section-head svg { color: var(--muted); }
+.wi-section-count {
+  font-weight: 600; color: var(--muted); background: var(--surface-sunk);
+  border-radius: 10px; padding: 1px 7px; letter-spacing: 0;
+}
+
+.wi-finding-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.wi-finding {
+  background: var(--surface-sunk); border-radius: var(--radius); padding: 11px 13px;
+  border-left: 3px solid var(--status-idle);
+}
+.wi-finding-high { border-left-color: var(--status-bad); }
+.wi-finding-medium { border-left-color: var(--status-warn); }
+.wi-finding-low, .wi-finding-info { border-left-color: var(--status-idle); }
+.wi-finding-head {
+  margin: 0; display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.wi-finding-title { font-weight: 600; font-size: var(--fs-md); }
+.wi-finding-detail { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--muted); line-height: 1.5; }
+
+/* Evidence is the audit trail: the number behind the claim. Chips with an
+   id become buttons into the dashboard's own surfaces; ones without stay
+   plain text, because a control that looks clickable and does nothing is
+   worse than no control. */
+.wi-evidence {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.wi-evidence-chip {
+  display: inline-block; font-size: var(--fs-xs); color: var(--muted);
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-pill); padding: 3px 8px; font-variant-numeric: tabular-nums;
+  text-align: left; font-family: inherit;
+}
+button.wi-evidence-chip.is-link { cursor: pointer; color: var(--purple); }
+button.wi-evidence-chip.is-link:hover { border-color: var(--purple); background: var(--purple-100); }
+
+.wi-evidence-all > summary {
+  cursor: pointer; color: var(--muted); font-size: var(--fs-sm); padding: 4px 0;
+  width: fit-content;
+}
+.wi-evidence-all[open] > summary { margin-bottom: 6px; }

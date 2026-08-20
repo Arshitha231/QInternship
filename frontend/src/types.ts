@@ -765,3 +765,52 @@ export interface SuggestedSkill {
   capable_count: number;
   reason: string;
 }
+
+// --- Workforce Intelligence reports (app/workforce_reports.py) ------------
+
+export type AnalysisType = "skill_gap" | "skill_scarcity" | "training" | "project_coverage";
+
+// One checkable fact behind a finding. The ids are the click-through: they
+// open the SAME skill / training / project surfaces the dashboard already
+// has, rather than a report-only rendering of the same data.
+export interface ReportEvidence {
+  kind: "skill" | "project" | "training" | "department";
+  label: string;
+  skill_id: number | null;
+  project_id: number | null;
+  course_code: string | null;
+  org_unit_id: number | null;
+}
+
+export interface ReportFinding {
+  title: string;
+  detail: string;
+  // Assigned by the deterministic analysis, never by the model -- how bad
+  // something is follows from the counts.
+  severity: "high" | "medium" | "low" | "info";
+  evidence: ReportEvidence[];
+}
+
+export interface ReportSection {
+  heading: string;
+  findings: ReportFinding[];
+}
+
+export interface WorkforceReport {
+  title: string;
+  query: string;
+  scope: DashboardScope;
+  analyses: AnalysisType[];
+  unsupported: string[];
+  executive_summary: string;
+  // "model" = written by a model over the findings and numeral-checked
+  // against them; "derived" = assembled deterministically.
+  narrative_source: "model" | "derived";
+  strengths: ReportSection;
+  skill_gaps: ReportSection;
+  risks: ReportSection;
+  training_insights: ReportSection;
+  project_insights: ReportSection;
+  recommendations: ReportSection;
+  evidence: ReportEvidence[];
+}
