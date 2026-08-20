@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import AuthenticatedUser
 from app.models import Project, ProjectSkillRequirement, Skill
-from app.models.enums import ProjectClassification, SkillLevel
+from app.models.enums import ProjectClassification, SkillCategory, SkillLevel
 from app.people import resolve_skill
 from app.permissions import ViewMode, can_see_confidential_project, effective_role
 from app.schemas import ProjectSkillRequirementIn, ProjectSkillRequirementOut
@@ -96,7 +96,15 @@ def set_required_skills(
     Returns None if the project doesn't exist or isn't visible to the
     caller (confidential, non-member); raises ProjectNotWritable if it's
     visible but the caller isn't its owner or hr; raises UnknownSkill on
-    the first name that doesn't resolve, before writing anything."""
+    the first name that doesn't resolve AND isn't marked create_if_missing,
+    before writing anything.
+
+    create_if_missing mirrors app.proposals._commit_skill's own precedent
+    for exactly this situation (a document naming a skill this system
+    hasn't seen before) -- category defaults to technical there too; a
+    caller that already knows better can create the Skill row itself
+    first, and resolve_skill will find it.
+    """
     project = visible_project(db, caller, project_id, view_mode)
     if project is None:
         return None
@@ -114,7 +122,11 @@ def set_required_skills(
     for req in requirements:
         skill = resolve_skill(db, req.skill)
         if skill is None:
-            raise UnknownSkill(req.skill)
+            if not req.create_if_missing:
+                raise UnknownSkill(req.skill)
+            skill = Skill(name=req.skill, category=SkillCategory.technical, canonical_id=None)
+            db.add(skill)
+            db.flush()
         resolved[skill.id] = (skill, SkillLevel(req.minimum_level))
 
     db.query(ProjectSkillRequirement).filter(ProjectSkillRequirement.project_id == project_id).delete()
