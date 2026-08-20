@@ -19,6 +19,7 @@ import {
   BUCKET_COLORS, BUCKET_LABELS, LEVEL_COLORS, VERDICT_COLORS, VERDICT_LABEL, categorical,
 } from "./charts/palette";
 import { SkillDetailModal } from "./SkillDetailModal";
+import { WorkforceIntelligence, type EvidenceHandlers } from "./WorkforceIntelligence";
 
 // ---------------------------------------------------------------------------
 // One page, two audiences.
@@ -117,6 +118,23 @@ export function DashboardPage({
     ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
+  // What a report finding opens. Every one of these targets a surface this
+  // page already owns, which is the whole point: the report says where to
+  // look, the dashboard does the looking.
+  const reportHandlers: EvidenceHandlers = useMemo(() => ({
+    onOpenSkill: (skillId) => setOpenSkillId(skillId),
+    onOpenCourse: (courseCode) => {
+      setDrill({ kind: "training", bucket: "overdue", course: courseCode });
+      scrollTo(trainingRef);
+    },
+    // Only HR can act on this -- a manager's scope is pinned to their own
+    // line, so re-scoping would be a control that silently does nothing.
+    onOpenUnit: (orgUnitId) => {
+      if (isHr) setOrgUnitId(orgUnitId);
+    },
+    onOpenProjects: () => scrollTo(projectsRef),
+  }), [scrollTo, isHr]);
+
   // "Open in graph" needs a PERSON to centre on -- the graph is a people
   // graph, and org units aren't nodes in it. A team scope already names its
   // manager; a department scope resolves to somebody in that department.
@@ -209,6 +227,17 @@ export function DashboardPage({
           the ones that would otherwise be too sparse carry a second panel
           instead of empty space. */}
       <div className="dashboard-stack">
+        {/* Report first: it is the "what should I look at" surface, and the
+            cards below are what it links INTO. Findings drive the same
+            skill modal, training drill-down and scope selector the rest of
+            this page already owns -- the report never re-renders data the
+            dashboard can already show. */}
+        <WorkforceIntelligence
+          identity={identity}
+          viewMode={viewMode}
+          handlers={reportHandlers}
+        />
+
         <TeamSkillsCard
           skills={skills}
           onOpenSkill={setOpenSkillId}

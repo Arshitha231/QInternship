@@ -101,6 +101,8 @@ from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
+from app.workforce_reports import ReportUnavailable
+from app.workforce_reports import generate_report as generate_report_service
 from app.skill_routes import RouteDenied
 from app.skill_routes import find_routes as find_skill_routes_service
 from app.skill_routes import suggest_skills as suggest_skills_service
@@ -129,6 +131,8 @@ from app.schemas import (
     TrainingAnalytics,
     TrainingRoster,
     WorkforceInsight,
+    WorkforceReport,
+    WorkforceReportRequest,
     FinalizeDocumentRequest,
     LoginRequest,
     HrReviewQueueItem,
@@ -1283,6 +1287,36 @@ def acknowledge_hr_review_route(
         raise HTTPException(status_code=404, detail="Authorization record not found") from exc
     except AuthorizationRecordNotActionable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/analytics/report", response_model=WorkforceReport)
+def workforce_report_route(
+    body: WorkforceReportRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> WorkforceReport:
+    """Answer a natural-language workforce question as a structured,
+    evidence-backed report.
+
+    Same gate as every other dashboard endpoint, and for the same reason:
+    scope is resolved from the CALLER by app/analytics.py's resolve_scope
+    before the planner, the model, or any data is touched. HR in work mode
+    reports on the organization; a manager reports on their own reporting
+    line and cannot phrase a question that widens it — the plan the model
+    produces has no scope field for one to land in.
+
+    The model chooses which analyses to run and writes the executive
+    summary. It never queries anything, never sees an employee row, and
+    every numeral it writes is checked back against the computed findings;
+    `narrative_source` says whether the prose survived that check or fell
+    back to the deterministic version.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        return generate_report_service(db, user, body.query, mode)
+    except ReportUnavailable as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

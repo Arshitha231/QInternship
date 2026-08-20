@@ -43,8 +43,8 @@ template off as model-written or vice versa.
 from __future__ import annotations
 
 import json
-import re
 
+from app.grounding import is_grounded, neutral_scope_label, numerals
 from app.schemas import DashboardScope, InsightNarrative, WorkforceInsight
 
 # Hard cap on what the model is allowed to hand back. A narrative summary
@@ -78,37 +78,18 @@ Be direct and specific. If the findings are mild, say so plainly rather \
 than manufacturing urgency."""
 
 
-def _numerals(text: str) -> set[str]:
-    """Every number in a string, normalised so 20.0 and 20 compare equal.
-
-    Trailing-zero normalisation matters because the facts carry percentages
-    as floats ("20.2%", "45.0%") and a model writing "45%" for a fact that
-    says "45.0%" is quoting it correctly, not inventing one.
-    """
-    out: set[str] = set()
-    for raw in re.findall(r"\d+(?:\.\d+)?", text):
-        value = float(raw)
-        out.add(str(int(value)) if value == int(value) else str(value))
-    return out
-
-
 def _fact_numerals(insights: list[WorkforceInsight], scope: DashboardScope) -> set[str]:
-    parts = [scope.label, str(scope.headcount)]
+    parts = [neutral_scope_label(scope), str(scope.headcount)]
     for insight in insights:
         parts += [insight.title, insight.detail, insight.recommendation, *insight.evidence]
-    return _numerals(" ".join(parts))
+    return numerals(" ".join(parts))
 
 
 def _numerals_are_grounded(text: str, allowed: set[str]) -> bool:
-    """Every number the model wrote must already appear in the facts.
-
-    One-way on purpose: the model is free to omit figures (a summary that
-    mentions two of six findings is doing its job), and free to write small
-    counts as words. What it may not do is produce a numeral that is not in
-    the input, which is exactly what summing, averaging or estimating looks
-    like from out here.
-    """
-    return _numerals(text).issubset(allowed)
+    """Thin alias over app/grounding.is_grounded, kept as a name because the
+    call sites below read better with it and because the report generator
+    shares the same check -- see that module for the rule."""
+    return is_grounded(text, allowed)
 
 
 def _facts_payload(insights: list[WorkforceInsight], scope: DashboardScope) -> str:
@@ -121,7 +102,9 @@ def _facts_payload(insights: list[WorkforceInsight], scope: DashboardScope) -> s
     out is an id that cannot be echoed into a sentence.
     """
     return json.dumps({
-        "scope": {"label": scope.label, "headcount": scope.headcount},
+        # De-identified: a manager's scope label names them, and the
+        # model has no use for whose team it is (app/grounding.py).
+        "scope": {"label": neutral_scope_label(scope), "headcount": scope.headcount},
         "findings": [
             {
                 "kind": i.kind,
