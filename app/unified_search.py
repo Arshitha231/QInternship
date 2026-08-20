@@ -144,9 +144,14 @@ def _wants_assistant(db: Session, text: str) -> bool:
       1. Is the whole query one person's identifier? Then it is a lookup.
          Settled before anything else, so a surname like "Report" can't be
          read as a relationship question.
-      2. Can the deterministic router answer it? Then the assisted path is
-         FREE (~4ms, no model call) and there is no reason punctuation
-         should decide whether to take it.
+      2. Can the deterministic router answer it? Then ROUTING is free
+         (~4ms, no model call) and there is no reason punctuation should
+         decide whether to take it. Routing free is not the same as the
+         request being free, though: _build_assisted's phrase_answer()
+         call still asks a real model to phrase the answer whenever one is
+         configured, deterministically-routed or not -- this gate only
+         ever decided the routing cost, never the phrasing cost, and it
+         would be wrong to read "FREE" here as the whole turn.
       3. Otherwise, fall back to the original test -- question shape or a
          described problem -- since from here the assisted path costs a
          real model call and should be asked for, not guessed at.
@@ -350,17 +355,34 @@ def _build_assisted(
     tool_name = raw["tool_call"]
     result = raw["result"]
     results, citations = _people_and_citations(db, caller, tool_name, result, view_mode)
-    # raw["message"] (disambiguation prompts, broadening explanations) is a
-    # specific procedural message the model has no way to reconstruct from
-    # the result alone -- kept verbatim. Otherwise, prefer a real model
-    # phrasing of the already-permission-filtered result (see phrase_answer's
-    # docstring for why that's safe); _phrase()'s template is only the
-    # fallback for when no real model is configured or the call fails.
-    answer_text = (
-        raw["message"]
-        or phrase_answer(text, tool_name, raw["arguments"] or {}, result)
-        or _phrase(tool_name, raw["arguments"] or {}, result)
-    )
+    if raw.get("truncated") is not None:
+        # execute_chain's own note ("Stopped after running out of
+        # reasoning steps...") describes the CHAIN's budget, not the
+        # caller's question -- it has nothing to say about who was
+        # actually found, so it can only ever supplement a real answer,
+        # never stand in for one. Phrasing the result first and appending
+        # the note (instead of letting raw["message"] short-circuit
+        # straight past phrase_answer/_phrase below) is what keeps a
+        # truncated chain from reporting a budget event instead of an
+        # answer -- the person cards still render either way, but without
+        # this the overview text would have said nothing about them.
+        base = phrase_answer(text, tool_name, raw["arguments"] or {}, result) or _phrase(
+            tool_name, raw["arguments"] or {}, result)
+        answer_text = f"{base} {raw['message']}" if raw["message"] else base
+    else:
+        # raw["message"] here (disambiguation prompts, broadening
+        # explanations) is a specific procedural message the model has no
+        # way to reconstruct from the result alone -- kept verbatim.
+        # Otherwise, prefer a real model phrasing of the already-
+        # permission-filtered result (see phrase_answer's docstring for
+        # why that's safe); _phrase()'s template is only the fallback for
+        # when no real model is configured, the call fails, or its output
+        # doesn't pass grounding.
+        answer_text = (
+            raw["message"]
+            or phrase_answer(text, tool_name, raw["arguments"] or {}, result)
+            or _phrase(tool_name, raw["arguments"] or {}, result)
+        )
     return {
         "mode": "assisted",
         "results": results,

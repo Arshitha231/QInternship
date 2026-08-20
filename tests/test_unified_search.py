@@ -98,6 +98,45 @@ async def test_needs_followup_query_produces_a_multi_step_trace(client, monkeypa
     assert all("reason" in s and isinstance(s["latency_ms"], int) for s in trace)
 
 
+async def test_a_truncated_chain_still_describes_what_it_found(client, monkeypatch):
+    """execute_chain's own truncation note ("Stopped after running out of
+    reasoning steps...") describes the budget event, not the caller's
+    question -- confirmed live to otherwise completely replace the
+    overview's answer, leaving the person who actually matched unnamed
+    even though their card still renders below. The note must SUPPLEMENT
+    a real answer, never stand in for one."""
+    from app.schemas import PersonSummary
+    from app.tool_calling import AssistantTurn, ResolvedToolCall
+
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_people", arguments={"name": "Riley"}, needs_followup=True)),
+    )
+    person = PersonSummary(
+        id="report-1", full_name="Riley Report", job_title="Software Engineer",
+        org_unit="Engineering", availability_status="available",
+    )
+    monkeypatch.setattr(
+        "app.unified_search.execute_chain",
+        lambda *_a, **_k: {
+            "message": "Stopped after running out of reasoning steps — this may be incomplete.",
+            "tool_call": "find_people", "arguments": {"name": "Riley"}, "result": [person],
+            "steps": [{"tool": "find_people", "arguments": {"name": "Riley"}, "latency_ms": 5}],
+            "truncated": "steps",
+        },
+    )
+
+    resp = await client.get(
+        "/search", params={"q": "who on Riley's team knows Terraform and is free next month?"},
+        headers=auth_headers("employee", "stranger-1"),
+    )
+    assert resp.status_code == 200
+    answer = resp.json()["overview"]["answer"]
+    assert "Riley Report" in answer  # the actual finding, not just the budget note
+    assert "Stopped after running out of reasoning steps" in answer  # the note, appended not substituted
+
+
 # ---------------------------------------------------------------------------
 # Assisted mode: citations are a reshaping of an already permission-filtered
 # tool result, never an independent lookup — this asserts that invariant
