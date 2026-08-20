@@ -24,11 +24,13 @@ stack doesn't know or care which one answered.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, get_args
 
@@ -1243,6 +1245,87 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Response cache for the two model calls.
+#
+# Measured on this dataset: a deterministically-routed question spends ~0ms
+# routing and 10-30ms in SQL, then 1.3-2.1s waiting for phrase_answer --
+# 98% of the wall clock is the phrasing call. An LLM-routed question pays
+# that twice (1.8-2.4s to route, 2.0-2.4s to phrase).
+#
+# Both calls are pure functions of what is sent to them, which is what makes
+# them cacheable at all:
+#   - _real_resolve reads ONLY the message text (plus retry/chain turns).
+#     It never sees the database or the caller.
+#   - phrase_answer reads ONLY the already-redacted, already-permission-
+#     filtered result it is handed.
+#
+# So the cache key is a hash of the exact model input, never of the
+# question alone. That is the security property: two callers who may see
+# different rows produce different sanitized results, therefore different
+# keys, and neither can ever be served the other's phrasing. A cache keyed
+# on the question text would have exactly that bug.
+#
+# Bounded and in-process on purpose -- an LRU dict, not Redis. There is one
+# App Service instance, this needs no infrastructure, and a cold cache is
+# only ever as slow as today.
+_CACHE_MAX = 512
+_response_cache: "OrderedDict[str, Any]" = OrderedDict()
+
+
+def _cache_key(*parts: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(parts, default=str, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _cache_get(key: str) -> Any:
+    """Returns _MISS rather than None, because None is a real cached value
+    here -- phrase_answer legitimately returns None when its output fails
+    grounding, and re-paying 2s to re-derive that same None on every repeat
+    is the case worth caching most."""
+    if key not in _response_cache:
+        return _MISS
+    _response_cache.move_to_end(key)
+    return _response_cache[key]
+
+
+def _cache_route(key: str | None, turn: "AssistantTurn") -> "AssistantTurn":
+    """Stores and returns independent COPIES, never the shared object.
+
+    execute_tool_call() mutates a ResolvedToolCall in place -- find_people's
+    branch writes snapped arguments back onto tool_call.arguments so the
+    trace shows the org unit actually searched. Handing out the cached
+    instance would let that write land inside the cache and change what the
+    next caller is told was searched.
+    """
+    if key is None:
+        return turn
+    _cache_put(key, turn.model_copy(deep=True))
+    return turn
+
+
+def _cache_put(key: str, value: Any) -> Any:
+    _response_cache[key] = value
+    _response_cache.move_to_end(key)
+    while len(_response_cache) > _CACHE_MAX:
+        _response_cache.popitem(last=False)
+    return value
+
+
+def clear_response_cache() -> None:
+    """Test hook. Tests that assert the model WAS called need a cold cache,
+    or a prior test's identical call would satisfy this one silently."""
+    _response_cache.clear()
+
+
+class _Miss:
+    __slots__ = ()
+
+
+_MISS = _Miss()
+
+
 _openai_client: OpenAI | None = None
 
 
@@ -1304,6 +1387,18 @@ def _real_resolve(
     function doesn't care which shape it's handed; it only extends
     `messages` with it.
     """
+    # Cached only for a PLAIN first attempt. A retry turn and a chain step
+    # both carry state that isn't in `message` -- why the last call failed,
+    # or what the previous step returned -- so keying on the message alone
+    # would serve step 2 of one chain the answer built for step 2 of a
+    # different one. Those paths skip the cache entirely rather than try to
+    # key on their whole message list.
+    cacheable = not extra_messages and not history_messages
+    key = _cache_key("route", message) if cacheable else None
+    if key is not None:
+        cached = _cache_get(key)
+        if cached is not _MISS:
+            return cached.model_copy(deep=True)
     try:
         client = _get_openai_client()
         messages = build_messages(message, history_messages)
@@ -1349,7 +1444,7 @@ def _real_resolve(
         try:
             arguments = json.loads(call.function.arguments)
         except json.JSONDecodeError:
-            return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
+            return _cache_route(key, AssistantTurn(message=OUT_OF_SCOPE_MESSAGE))
         # Lifted out of `arguments` here, at the point the model's own JSON
         # is parsed -- not left for a downstream caller to extract, unlike
         # routed_via (which needs to know WHICH path resolved the call,
@@ -1357,9 +1452,9 @@ def _real_resolve(
         # coerces anything that isn't already a clean True/False (a model
         # emitting "true" as a string, say) rather than trusting the shape.
         needs_followup = bool(arguments.pop("needs_followup", False))
-        return AssistantTurn(tool_call=ResolvedToolCall(
+        return _cache_route(key, AssistantTurn(tool_call=ResolvedToolCall(
             name=call.function.name, arguments=arguments, needs_followup=needs_followup,
-            tool_call_id=call.id))
+            tool_call_id=call.id)))
     # Model prose is NEVER passed through as an answer. Every real answer in
     # this system comes from a permission-filtered tool result; text with no
     # tool call behind it has no source, no citations, and no cards -- and
@@ -1376,8 +1471,9 @@ def _real_resolve(
     # states and could not previously enforce.
     content = (choice.content or "").strip()
     if content and content != OUT_OF_SCOPE_MESSAGE:
-        return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE, off_contract_text=content)
-    return AssistantTurn(message=OUT_OF_SCOPE_MESSAGE)
+        return _cache_route(key, AssistantTurn(
+            message=OUT_OF_SCOPE_MESSAGE, off_contract_text=content))
+    return _cache_route(key, AssistantTurn(message=OUT_OF_SCOPE_MESSAGE))
 
 
 # Self-authored free text an employee controls (bio via app.people's
@@ -1683,6 +1779,13 @@ def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -
         f'{{"tool": {json.dumps(tool_name)}, "arguments": {json.dumps(arguments, default=str)}, '
         f'"result": {json.dumps(sanitized)}}}'
     )
+    # Keyed on the question plus the exact payload -- so the key covers the
+    # already-redacted, already-permission-filtered rows, and a caller can
+    # only ever hit an entry produced from rows they themselves can see.
+    key = _cache_key("phrase", question, payload)
+    cached = _cache_get(key)
+    if cached is not _MISS:
+        return cached
     try:
         client = _get_openai_client()
         response = client.chat.completions.create(
@@ -1700,10 +1803,14 @@ def phrase_answer(question: str, tool_name: str, arguments: dict, result: Any) -
         return None
     text = (response.choices[0].message.content or "").strip()
     if not text:
-        return None
+        return _cache_put(key, None)
     if not _phrasing_is_grounded(text, sanitized, arguments):
-        return None
-    return text
+        # Cached deliberately. An ungrounded phrasing costs a full round
+        # trip to discover, and the same input reproduces it often enough
+        # (the Platform Engineering case was 2 in 6) that re-paying for the
+        # same rejection is the most expensive miss there is.
+        return _cache_put(key, None)
+    return _cache_put(key, text)
 
 
 def _llm_routed_via(tool_call: ResolvedToolCall) -> str:

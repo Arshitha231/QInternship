@@ -1787,3 +1787,148 @@ def test_stripping_imperatives_leaves_interrogative_triggers_intact():
     turn = _deterministic_resolve("Who's on the Billing API?")
     assert turn.tool_call.name == "find_project_owner"
     assert turn.tool_call.arguments == {"name": "Billing API"}
+
+
+# ---------------------------------------------------------------------------
+# Response cache. Both cached calls are pure functions of what is SENT to
+# them, and the tests that matter are the ones proving the key covers the
+# whole input -- not just the question text.
+# ---------------------------------------------------------------------------
+
+class _FakePhrasingClient:
+    """Counts calls and returns a phrasing naming whoever is in the payload."""
+
+    def __init__(self, text="Aditi Nguyen is on Mobile Team C."):
+        self.calls = 0
+        self.text = text
+
+    @property
+    def chat(self):
+        return self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        message = SimpleNamespace(content=self.text, tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+@pytest.fixture(autouse=True)
+def _cold_cache():
+    tool_calling.clear_response_cache()
+    yield
+    tool_calling.clear_response_cache()
+
+
+def _rows(name="Aditi Nguyen"):
+    return [{"id": "1", "full_name": name, "job_title": "Software Engineer",
+             "org_unit": "Mobile Team C"}]
+
+
+def test_identical_phrasing_request_does_not_call_the_model_twice(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    client = _FakePhrasingClient()
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: client)
+
+    args = {"org_unit": "Platform Engineering"}
+    first = tool_calling.phrase_answer("Who works in Platform Engineering?",
+                                       "find_people", args, _rows())
+    second = tool_calling.phrase_answer("Who works in Platform Engineering?",
+                                        "find_people", args, _rows())
+    assert first == second
+    assert client.calls == 1
+
+
+def test_the_cache_key_covers_the_result_not_just_the_question(monkeypatch):
+    """The security property. Two callers may ask the identical question and
+    be permitted to see different rows; phrase_answer is handed the
+    already-filtered result, so a key built from the question alone would
+    serve one caller the other's answer."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    client = _FakePhrasingClient()
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: client)
+
+    question, args = "who is on that team?", {"org_unit": "Platform Engineering"}
+    tool_calling.phrase_answer(question, "find_people", args, _rows("Aditi Nguyen"))
+    client.text = "Advait Kang is on Backend Team B."
+    tool_calling.phrase_answer(question, "find_people", args, _rows("Advait Kang"))
+
+    # Same question, different visible rows -> two distinct model calls.
+    assert client.calls == 2
+
+
+def test_an_ungrounded_phrasing_is_cached_as_a_rejection(monkeypatch):
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    # Names nobody in the result -> rejected by _ignores_a_non_empty_result.
+    client = _FakePhrasingClient("No one is listed here for Platform Engineering.")
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: client)
+
+    args = {"org_unit": "Platform Engineering"}
+    assert tool_calling.phrase_answer("q", "find_people", args, _rows()) is None
+    assert tool_calling.phrase_answer("q", "find_people", args, _rows()) is None
+    # The rejection cost a full round trip to discover; re-paying for the
+    # same rejection is the most expensive miss there is.
+    assert client.calls == 1
+
+
+def test_a_cached_route_is_not_shared_with_the_next_caller(monkeypatch):
+    """execute_tool_call writes snapped arguments back onto tool_call
+    .arguments, so handing out the cached instance would let that write land
+    inside the cache."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+
+    class _RoutingClient:
+        calls = 0
+
+        @property
+        def chat(self): return self
+
+        @property
+        def completions(self): return self
+
+        def create(self, **kwargs):
+            type(self).calls += 1
+            call = SimpleNamespace(
+                id="call_1",
+                function=SimpleNamespace(name="find_people",
+                                         arguments=json.dumps({"org_unit": "Backend"})))
+            message = SimpleNamespace(content=None, tool_calls=[call])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: _RoutingClient())
+
+    first = tool_calling._real_resolve("something the router cannot match")
+    first.tool_call.arguments["org_unit"] = "MUTATED"
+    second = tool_calling._real_resolve("something the router cannot match")
+
+    assert _RoutingClient.calls == 1                      # served from cache
+    assert second.tool_call.arguments == {"org_unit": "Backend"}  # unpoisoned
+
+
+def test_retry_and_chain_turns_are_never_served_from_cache(monkeypatch):
+    """Those carry state that isn't in `message` -- why the last call failed,
+    or what the previous step returned."""
+    monkeypatch.setattr(tool_calling, "_mode", lambda: "real")
+    seen = []
+
+    class _C:
+        @property
+        def chat(self): return self
+
+        @property
+        def completions(self): return self
+
+        def create(self, **kwargs):
+            seen.append(len(kwargs["messages"]))
+            message = SimpleNamespace(content=None, tool_calls=[SimpleNamespace(
+                id="c", function=SimpleNamespace(name="find_people", arguments="{}"))])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(tool_calling, "_get_openai_client", lambda: _C())
+    extra = [{"role": "user", "content": "that failed, try again"}]
+    tool_calling._real_resolve("same message", extra_messages=extra)
+    tool_calling._real_resolve("same message", extra_messages=extra)
+    assert len(seen) == 2
