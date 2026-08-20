@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BrandMark } from "./BrandMark";
 import { ChevronDown, Moon, SearchIcon, Sun, X } from "../icons";
 import type { ReactNode } from "react";
 import type { Identity, ViewMode } from "../types";
@@ -45,12 +46,8 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-          </svg>
-        </span>
-        <span className="brand-name">OrgHub</span>
+        <span className="brand-mark" aria-hidden="true"><BrandMark size={28} /></span>
+        <span className="brand-name">Mel</span>
       </div>
 
       <div className="search" data-help="search">

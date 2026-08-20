@@ -18,7 +18,7 @@ import type { Identity } from "./types";
 // closed and reopened should land on the login page, because the login page
 // is part of what's being demoed.
 
-const STORAGE_KEY = "orghub.session";
+const STORAGE_KEY = "mel.session";
 
 interface StoredSession {
   identity: Identity;

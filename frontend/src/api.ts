@@ -8,6 +8,10 @@ import type {
   SuggestedOfficialLinkOut, SuggestedSkill, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult, UploadPrdResult,
   UploadedDocSummary, ViewMode, WorkforceReport,
+  MeCapabilities,
+  TeamPlanInput,
+  TeamProposal,
+  TeamRecommendationResult,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -16,7 +20,7 @@ import type {
 // deployed data without running uvicorn locally.
 export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
-export const UNAUTHORIZED_EVENT = "orghub:unauthorized";
+export const UNAUTHORIZED_EVENT = "mel:unauthorized";
 
 export class ApiError extends Error {
   status: number;
@@ -1092,4 +1096,63 @@ export function generateWorkforceReport(
     body: JSON.stringify({ query }),
     signal,
   });
+}
+
+// --- AI Team Builder (app/team_builder.py) --------------------------------
+//
+// Scope is resolved server-side from the caller before the brief reaches the
+// planner, so there is nothing to send here but the brief. `assignments` is
+// how Replace works: re-post with {roleIndex: employeeId} and the server
+// recalculates coverage, gaps and risks against the substituted team. There
+// is no proposal state on the server between calls.
+export function buildTeam(
+  identity: Identity,
+  viewMode: ViewMode,
+  brief: string,
+  opts: {
+    constraints?: string;
+    assignments?: Record<number, string>;
+    // Echo the previous response's plan on a rebuild. Without it the server
+    // re-plans from the brief, and the planner is a language model -- a
+    // Replace click would also re-decide how many roles the project has.
+    plan?: TeamPlanInput;
+  } = {},
+  signal?: AbortSignal,
+): Promise<TeamProposal> {
+  return request<TeamProposal>(`/team/build?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      brief,
+      constraints: opts.constraints ?? "",
+      assignments: opts.assignments ?? {},
+      plan: opts.plan ?? null,
+    }),
+    signal,
+  });
+}
+
+// --- Find the Right Team (app/team_finder.py) -----------------------------
+//
+// Ranks EXISTING org units. A different gate from buildTeam on purpose: this
+// one runs behind the employee-discovery rule rather than resolve_scope, so
+// an ordinary employee can find a team outside their own reporting line.
+export function findTeams(
+  identity: Identity, viewMode: ViewMode, query: string, signal?: AbortSignal,
+): Promise<TeamRecommendationResult> {
+  return request<TeamRecommendationResult>(`/team/find?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+    signal,
+  });
+}
+
+// Which team features to OFFER this caller. Answered by the same
+// resolve_scope the endpoints run, rather than re-derived here where it
+// would be a second copy of the rule, free to drift from the first.
+export function getMyCapabilities(
+  identity: Identity, viewMode: ViewMode, signal?: AbortSignal,
+): Promise<MeCapabilities> {
+  return request<MeCapabilities>(`/me/capabilities?view_mode=${viewMode}`, identity, { signal });
 }

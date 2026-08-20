@@ -100,7 +100,7 @@ NEEDS_FOLLOWUP_PROPERTY = {
         "you will need to make another call afterward, using this call's result to fill "
         "in that call's arguments (e.g. resolving a person or team first, then filtering "
         "by that). False (the default -- omit unless true) for any request this one call "
-        "already fully answers, which is most of them. You get at most 3 total calls."
+        "already fully answers, which is most of them. You get at most 4 total calls."
     ),
 }
 
@@ -460,8 +460,8 @@ or find_people), then filter that team by skill and availability; there is no si
 expresses "Priya's team" without resolving it first. When you set needs_followup, you will be \
 shown this call's actual result and asked for the next call, using that result to fill in its \
 arguments — you do not need to guess ahead of time what the result will contain. You get at \
-most 3 calls total, so plan within that: if a request would genuinely need more, do the best \
-you can with what 3 calls can establish rather than declaring you need a 4th. Do not set \
+most 4 calls total, so plan within that: if a request would genuinely need more, do the best \
+you can with what 4 calls can establish rather than declaring you need a 5th. Do not set \
 needs_followup just to double-check a result or to fetch something the caller didn't ask for.
 
 A request for one or more people AND a per-person detail find_people/search_people cannot \

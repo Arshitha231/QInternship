@@ -310,8 +310,8 @@ seed_training.py      adds only the training-course tables to a database that
 seed_people_data.py   backfills salary and date of birth onto a database that
                        already has people, same non-destructive contract
 build_search_index.py CLI wrapper around search_index.py, run after seeding/migrating
-eval/                 golden evaluation set (55 questions) + scorer, run in CI when
-                       AI/search-relevant files change (eval/run_golden_eval.py)
+eval/                 golden evaluation set + scorer, run in CI on manual
+                       dispatch only (eval/run_golden_eval.py)
 
 frontend/src/
   App.tsx                     top-level state: search query, ?q= URL sync, profile
@@ -366,10 +366,20 @@ terraform/            Azure infra as code — see Deployment below
 
 Pushing to `main` runs `.github/workflows/ci-cd.yml`, three jobs in sequence:
 
-1. **test** — `pytest`, always. Also runs the 55-question golden evaluation
-   set against the real Azure resources (`eval/run_golden_eval.py`), but only
-   when AI/search-relevant files changed, and it never blocks the rest of the
-   pipeline — a regression there is a signal to look at, not a hard gate.
+1. **test** — `pytest`, always. If the push or PR touched AI/search-relevant
+   files it also annotates the run with a reminder that the golden eval is
+   worth running, but it does not run it.
+
+   The golden evaluation set (`eval/run_golden_eval.py`, 64 questions at the
+   time of writing — `eval/golden_set.py` is the source of truth) is its
+   own job and runs on **manual dispatch only** — the Actions tab's "Run
+   workflow" button, or `gh workflow run ci-cd.yml`. It hits the real Azure
+   OpenAI and Azure AI Search resources and paces itself deliberately
+   slowly against their token quota, so it is too slow and too rate-limited
+   to sit on every push; it also used to run twice per change (once for the
+   PR, once for the merge) for a result that never gated anything. Run it
+   when AI or search behaviour changed, and read it as a signal rather than
+   a gate.
 2. **terraform** — `terraform/main.tf` provisions the App Service (plan +
    web app), Azure SQL (server + database + firewall rule), and the storage
    account backing Terraform's own remote state. Azure AI Search

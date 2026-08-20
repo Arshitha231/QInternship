@@ -85,11 +85,6 @@ resource "azurerm_linux_web_app" "webapp"{
         SEARCH_ENDPOINT             = var.search_endpoint
         SEARCH_KEY                  = var.search_key
 
-        # OpenTelemetry variables for SRE dashboard
-        OTEL_EXPORTER_OTLP_ENDPOINT = ""
-        OTEL_EXPORTER_OTLP_HEADERS  = ""
-        OTEL_SERVICE_NAME           = "employee-directory-api"
-
         ALLOW_DEV_AUTH = "1"
     }
 }

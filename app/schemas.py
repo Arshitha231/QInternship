@@ -1644,3 +1644,304 @@ class WorkforceReportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1, max_length=500)
+
+
+# ---------------------------------------------------------------------------
+# AI Team Builder — app/team_builder.py
+#
+# Every field below is either copied from an authorized row or computed in
+# that module. Nothing here is written by a model except `narrative`, whose
+# numerals are checked back against the computed facts before it is kept
+# (`narrative_source` says whether it survived).
+# ---------------------------------------------------------------------------
+
+class CandidateSkill(BaseModel):
+    """One skill a proposed candidate holds.
+
+    `required` distinguishes "this is why they were picked" from "this is
+    extra they happen to bring" — the second is shown as context and never
+    contributes to the match score.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    level: Literal["Expert", "Working", "Learning"]
+    required: bool
+
+
+class CandidateMatch(BaseModel):
+    """One person proposed for one role.
+
+    Deliberately limited to app/people.py's SUMMARY_FIELDS plus skills and
+    project names — the same always-visible set a bulk directory listing
+    returns. No ABAC/RBAC-gated field appears here, so a team proposal can
+    never disclose more than the caller could read one profile at a time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+    full_name: str
+    job_title: str
+    org_unit: str
+    #: Shown, never scored — see the module docstring in app/team_builder.py
+    #: for why this column cannot rank anything in the current data.
+    availability_status: str
+    match_pct: int
+    matched_skills: list[CandidateSkill] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    relevant_projects: list[str] = Field(default_factory=list)
+    #: Built from the same values that produced match_pct, so an explanation
+    #: cannot drift from its score.
+    explanation: list[str] = Field(default_factory=list)
+
+
+class ProposedRole(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    required_skills: list[str] = Field(default_factory=list)
+    #: None when nobody in the caller's authorized pool holds any of the
+    #: role's required skills. An unfilled role is a real answer, not an error.
+    candidate: CandidateMatch | None = None
+    #: Ranked replacements, already excluding everyone assigned elsewhere on
+    #: this team. Shipped with the proposal so Replace needs no round trip.
+    alternatives: list[CandidateMatch] = Field(default_factory=list)
+
+
+class TeamCoverageSkill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    #: None when no proposed member holds this skill at all.
+    best_level: Literal["Expert", "Working", "Learning"] | None = None
+    holder_count: int
+    holders: list[str] = Field(default_factory=list)
+
+
+class TeamConcentrationRisk(BaseModel):
+    """A skill whose capability sits mostly with one person."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    employee_id: str
+    full_name: str
+    share_pct: int
+    holder_count: int
+
+
+class TeamCoverage(BaseModel):
+    """Computed from the database, never from the model.
+
+    `covered` and `coverage_pct` answer different questions on purpose: a
+    skill held only at Learning contributes its partial weight to the
+    percentage but is not listed as covered, because "the team has some
+    exposure to this" and "somebody here can do this" are not the same
+    statement.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    coverage_pct: int
+    skills: list[TeamCoverageSkill] = Field(default_factory=list)
+    covered: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    level_counts: dict[str, int] = Field(default_factory=dict)
+    risks: list[TeamConcentrationRisk] = Field(default_factory=list)
+
+
+class TeamConstraintsOut(BaseModel):
+    """What the backend understood from the constraints box, echoed back.
+
+    Returned so the UI can say which constraints were actually applied — a
+    constraint that was typed and not understood is worse than one that was
+    never typed, and silence would hide the difference.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefer_expert: bool = False
+    minimize_concentration: bool = False
+    max_per_department: int | None = None
+    prefer_experience_with: list[str] = Field(default_factory=list)
+    applied: bool = False
+
+
+class TeamProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Whose people this team was drawn from. Resolved from the CALLER before
+    #: the brief is read; `substituted` is never set by anything in the brief.
+    scope: DashboardScope
+    project_type: str
+    roles: list[ProposedRole] = Field(default_factory=list)
+    coverage: TeamCoverage
+    constraints: TeamConstraintsOut
+    #: Skills the planner named that this directory does not track. Surfaced
+    #: because "nobody has it" and "we don't record it" are different answers.
+    unrecognised_skills: list[str] = Field(default_factory=list)
+    plan_source: Literal["model", "derived"]
+    narrative: str = ""
+    narrative_source: Literal["model", "derived"] = "derived"
+    #: How many authorized people the match ran over. Lets the UI say "ranked
+    #: across your 34 reports" rather than implying the whole company.
+    candidate_pool_size: int = 0
+
+
+class TeamRoleInput(BaseModel):
+    """One role handed back to the server to re-staff without re-planning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=80)
+    required_skills: list[str] = Field(default_factory=list, max_length=6)
+
+
+class TeamPlanInput(BaseModel):
+    """A plan the client already has, sent back so a rebuild reuses it.
+
+    Deliberately carries roles and skills and NOTHING else. It cannot name
+    an employee, a department or a scope — re-staffing still draws from
+    resolve_scope(caller), and every skill here is re-resolved against the
+    real `skills` table exactly as the model's output is. A client cannot
+    reach anyone through this field that it could not reach without it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_type: str = Field(default="Project team", max_length=80)
+    roles: list[TeamRoleInput] = Field(default_factory=list, max_length=8)
+
+
+class TeamBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brief: str = Field(min_length=1, max_length=1000)
+    #: Free-text constraints, parsed into TeamConstraintsOut.
+    constraints: str = Field(default="", max_length=500)
+    #: Manual replacements as {role_index: employee_id}. Re-posting the same
+    #: brief with these set is how Replace recalculates coverage — the server
+    #: keeps no proposal state between calls.
+    assignments: dict[int, str] = Field(default_factory=dict)
+    #: The plan from the previous response, echoed back on a rebuild.
+    #:
+    #: Required for Replace to mean anything. Without it the server re-plans
+    #: from the brief on every call, and the planner is a language model:
+    #: replacing one person also silently re-decides how many roles the
+    #: project has. Observed live — a 3-role team became a 2-role team on a
+    #: Replace click, dropping a role nobody touched. Sending the plan back
+    #: keeps the server stateless AND the team stable.
+    plan: TeamPlanInput | None = None
+
+
+# ---------------------------------------------------------------------------
+# Find the Right Team — app/team_finder.py
+#
+# Recommends an EXISTING org unit. Nothing here creates or modifies a team.
+# Every count is computed over employees the caller is permitted to
+# discover (is_record_visible), so a headcount cannot disclose someone the
+# caller cannot see.
+# ---------------------------------------------------------------------------
+
+class TeamMatchSkill(BaseModel):
+    """One needed skill, and how the team holds it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    expert: int
+    working: int
+    learning: int
+    total: int
+
+
+class TeamManagerRef(BaseModel):
+    """Who to contact.
+
+    Name, job title and work_email only — all in app/permissions.py's
+    BASE_FIELDS, i.e. visible to every caller who can see the record at
+    all. No gated field (personal_mobile, salary, hire_date) is carried
+    here, so a recommendation discloses no more than opening the profile
+    would.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+    full_name: str
+    job_title: str
+    work_email: str
+
+
+class TeamRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    org_unit_id: int
+    name: str
+    unit_type: str
+    match_pct: int
+    #: Everyone in the unit (subtree, for a department) the caller may see.
+    headcount: int
+    #: How many of them hold at least one of the needed skills.
+    relevant_people: int
+    skills: list[TeamMatchSkill] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    #: None only when the unit's head is not visible to this caller.
+    manager: TeamManagerRef | None = None
+    #: Built from the same counts that produced match_pct, so the sentence
+    #: cannot claim something the numbers do not.
+    why: str
+
+
+class TeamRecommendationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    topic: str
+    #: The canonical skills the question was read as being about.
+    skills: list[str] = Field(default_factory=list)
+    teams: list[TeamRecommendation] = Field(default_factory=list)
+    #: Named in the question but not tracked in this directory.
+    unrecognised_skills: list[str] = Field(default_factory=list)
+    need_source: Literal["model", "derived"]
+    #: The granularity the question asked for ("team"/"department"), when it
+    #: said. Results of that type sort first; the other type still appears
+    #: below, so the reader can see when the wider answer is the better one.
+    preferred_unit_type: str | None = None
+
+
+class TeamFindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=500)
+
+
+class MeCapabilities(BaseModel):
+    """What the signed-in caller may actually do, decided server-side.
+
+    Exists because the client cannot work this out for itself. The obvious
+    two attempts both fail:
+
+      * the role claim alone — a "manager" with nobody reporting to them
+        has no team to build from, and app/analytics.py's resolve_scope
+        403s them;
+      * PersonSummary.has_reports — deliberately ABSENT in employee view
+        mode (see tests/test_has_reports.py), which is the only mode a
+        manager ever gets, so the flag is missing for exactly the people
+        it would be needed for.
+
+    So the answer is computed here by the same resolve_scope the endpoints
+    themselves use, rather than approximated twice in two places. This
+    decides what to SHOW; every endpoint still enforces independently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: POST /team/build and the analytics dashboards — HR in work mode, or
+    #: anyone with at least one active person reporting to them.
+    can_build_team: bool
+    #: POST /team/find — everyone. Team discovery runs behind the
+    #: employee-discovery rule, not resolve_scope, on purpose.
+    can_find_team: bool

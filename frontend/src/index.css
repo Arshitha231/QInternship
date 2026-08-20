@@ -274,10 +274,10 @@ button { font: inherit; }
   display: flex; align-items: center; gap: 18px; padding: 10px 24px;
 }
 .brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.brand-mark {
-  width: 28px; height: 28px; border-radius: var(--radius); background: var(--purple);
-  display: grid; place-items: center; flex-shrink: 0; color: #fff;
-}
+/* The mark supplies its own ground and corner radius (see BrandMark.tsx),
+   so this is only a box to sit it in -- it used to paint a purple square
+   that would now show as a halo behind the logo's own. */
+.brand-mark { display: grid; place-items: center; flex-shrink: 0; line-height: 0; }
 .brand-name { font-size: var(--fs-lg); font-weight: 500; letter-spacing: -0.01em; color: var(--ink); }
 .search { flex: 1; max-width: 660px; margin: 0 auto; position: relative; }
 .search input {
@@ -1795,10 +1795,9 @@ body::after {
 }
 
 /* Brand mark: a real gradient rather than a flat swatch. */
-.brand-mark {
-  background: linear-gradient(145deg, var(--purple), color-mix(in srgb, var(--purple) 55%, #C77DBB));
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--purple) 34%, transparent);
-}
+/* Glow, not fill: the gradient that used to live here was the old mark's
+   background and would sit behind the new one. */
+.brand-mark { filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--purple) 34%, transparent)); }
 
 /* A highlight that sweeps across a result card on hover. Masked to the card
    and driven by transform only, so it composites on the GPU. */
@@ -2487,3 +2486,344 @@ button.wi-evidence-chip.is-link:hover { border-color: var(--purple); background:
   width: fit-content;
 }
 .wi-evidence-all[open] > summary { margin-bottom: 6px; }
+
+/* ==========================================================================
+   AI Team Builder — Build Team mode on the Graph page.
+
+   The whole visual job here is one thing: a reader must never mistake a
+   proposed team for the real reporting hierarchy sitting one toggle away.
+   Four signals carry that at once — dashed borders, dashed connectors, a
+   violet proposal tint, and a banner inside the scroll frame. Any one of
+   them alone is a caption someone can miss.
+   ========================================================================== */
+
+.graph-mode { margin-left: auto; }
+.tab-ai { display: inline-flex; align-items: center; gap: 5px; }
+.tab-ai.active { color: var(--purple); }
+
+.team-builder { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
+
+/* --- Brief form --- */
+.tb-form {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.tb-label { font-size: var(--fs-md); font-weight: 500; color: var(--ink); margin: 0; }
+.tb-input {
+  font: inherit; font-size: var(--fs-body); width: 100%; resize: vertical;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--page); color: var(--ink);
+}
+.tb-input:focus { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px var(--accent-ring); }
+.tb-input-line { resize: none; margin-top: 8px; }
+.tb-constraints summary {
+  font-size: var(--fs-sm); color: var(--muted); cursor: pointer; user-select: none;
+}
+.tb-actions { display: flex; align-items: center; gap: 10px; }
+.tb-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.tb-example {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: var(--fs-sm); color: var(--purple); text-decoration: underline;
+}
+
+.tb-error {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: var(--fs-body); color: var(--red);
+  background: var(--red-100); border-radius: var(--radius); padding: 9px 12px;
+}
+
+.tb-result { display: flex; flex-direction: column; gap: 16px; }
+/* A rebuild is in flight: dim rather than unmount, so the numbers being
+   replaced stay readable and the page does not jump. */
+.tb-result-busy { opacity: .55; pointer-events: none; transition: opacity .12s ease; }
+
+.tb-scope { margin: 0; font-size: var(--fs-sm); color: var(--muted); }
+.tb-narrative {
+  margin: 0; font-size: var(--fs-md); line-height: 1.55; color: var(--ink);
+  background: var(--purple-100); border-radius: var(--radius-card); padding: 12px 14px;
+}
+.tb-source {
+  margin-left: 8px; font-size: var(--fs-xs); color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 1px 5px;
+}
+
+/* --- Coverage --- */
+.tb-coverage {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.tb-coverage-headline { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+.tb-gauge { display: flex; flex-direction: column; gap: 4px; min-width: 190px; }
+.tb-gauge-pct { font-size: var(--fs-xl); font-weight: 600; color: var(--ink); line-height: 1; }
+.tb-gauge-label { font-size: var(--fs-sm); color: var(--muted); }
+.tb-gauge-bar {
+  display: block; height: 6px; border-radius: 3px; background: var(--page);
+  overflow: hidden; margin-top: 4px;
+}
+.tb-gauge-bar > span { display: block; height: 100%; background: var(--purple); }
+
+.tb-stats { display: flex; gap: 24px; margin: 0; flex-wrap: wrap; }
+.tb-stats div { display: flex; flex-direction: column; gap: 2px; }
+.tb-stats dt { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.tb-stats dd { margin: 0; font-size: var(--fs-lg); font-weight: 500; color: var(--ink); }
+
+.tb-skill-lists { display: flex; gap: 28px; flex-wrap: wrap; }
+.tb-skill-group h4 {
+  font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); margin: 0 0 6px;
+}
+.tb-skill-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tb-skill-group li { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); color: var(--green-800); }
+.tb-skill-gap li { color: var(--red); }
+.tb-skill-thin li { color: var(--amber); }
+
+.tb-applied { margin: 0; font-size: var(--fs-sm); color: var(--muted); }
+
+/* --- Proposed team graph. Deliberately unlike the real org charts. --- */
+.proposed-team { display: flex; flex-direction: column; gap: 0; }
+.proposed-team-banner {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font-size: var(--fs-sm); color: var(--purple-800);
+  background: var(--purple-100); border: 1px dashed var(--purple);
+  border-bottom: none;
+  border-radius: var(--radius-card) var(--radius-card) 0 0; padding: 8px 12px;
+}
+.proposed-team-banner span { color: var(--muted); }
+.proposed-team .zoom-pan-frame {
+  border-top-left-radius: 0; border-top-right-radius: 0;
+  border-color: var(--purple);
+  border-style: dashed;
+}
+.proposed-tree-wrap { --tree-tint: var(--purple-100); }
+
+/* Dashed, and thinner than a real reporting line. */
+.proposed-edge { stroke-dasharray: 5 4; stroke: var(--purple); opacity: .55; }
+
+.proposed-root {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  width: 190px; padding: 12px; border-radius: var(--radius-card);
+  background: var(--purple); color: var(--purple-on);
+  border: 1px solid var(--purple);
+}
+.proposed-root-name { margin: 6px 0 0; font-size: var(--fs-md); font-weight: 600; }
+.proposed-root-meta { margin: 3px 0 0; font-size: var(--fs-xs); opacity: .8; }
+
+.proposed-node {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  width: 172px; padding: 11px 10px; border-radius: var(--radius-card);
+  background: var(--white); border: 1.5px dashed var(--purple);
+}
+.proposed-node-empty { border-color: var(--border); background: var(--page); }
+.proposed-node-role {
+  margin: 0 0 8px; font-size: var(--fs-xs); font-weight: 600; color: var(--purple);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.proposed-node-person {
+  background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.proposed-node-person:hover .proposed-node-name { text-decoration: underline; }
+.proposed-node-person .avatar { width: 36px; height: 36px; font-size: var(--fs-body); }
+.proposed-node-name { font-size: var(--fs-body); font-weight: 500; color: var(--ink); }
+.proposed-node-title { margin: 3px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+
+.proposed-node-match {
+  margin: 8px 0 0; font-size: var(--fs-xs); color: var(--muted);
+  display: flex; flex-direction: column; align-items: center; gap: 3px; width: 100%;
+}
+.proposed-match-bar {
+  display: block; width: 100%; height: 4px; border-radius: 2px;
+  background: var(--page); overflow: hidden;
+}
+.proposed-match-bar > span { display: block; height: 100%; }
+.match-strong .proposed-match-bar > span { background: var(--green-800); }
+.match-partial .proposed-match-bar > span { background: var(--amber); }
+.match-weak .proposed-match-bar > span { background: var(--red); }
+
+.proposed-node-skills {
+  margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+  font-size: var(--fs-xs); color: var(--muted);
+}
+.proposed-chip {
+  border-radius: var(--radius-pill); padding: 1px 5px; font-size: var(--fs-xs);
+  border: 1px solid var(--border);
+}
+.proposed-chip.lvl-expert { background: var(--green-100); color: var(--green-800); border-color: transparent; }
+.proposed-chip.lvl-working { background: var(--purple-100); color: var(--purple-800); border-color: transparent; }
+.proposed-chip.lvl-learning { background: var(--amber-100); color: var(--amber); border-color: transparent; }
+
+.proposed-node-gap { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--red); }
+.proposed-node-vacant { margin: 4px 0; font-size: var(--fs-body); color: var(--muted); font-style: italic; }
+.proposed-node-replace {
+  margin-top: 9px; background: none; border: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: var(--fs-xs); color: var(--purple); text-decoration: underline;
+}
+
+/* --- Sections, roles, risks --- */
+.tb-section {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 16px;
+}
+.tb-section h3 { margin: 0 0 12px; font-size: var(--fs-md); font-weight: 600; color: var(--ink); }
+
+.tb-role-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.tb-role { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+.tb-role h4 { margin: 0; font-size: var(--fs-body); font-weight: 600; color: var(--ink); }
+.tb-role-skills { margin: 2px 0 10px; font-size: var(--fs-xs); color: var(--muted); }
+.tb-role-person {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  background: var(--page); border: none; border-radius: var(--radius);
+  padding: 8px 10px; cursor: pointer; font: inherit;
+}
+.tb-role-person:hover { background: var(--purple-100); }
+.tb-role-person .avatar { width: 32px; height: 32px; font-size: var(--fs-sm); flex: none; }
+.tb-role-person span span, .tb-role-person > span:nth-child(2) { display: flex; flex-direction: column; }
+.tb-role-person strong { font-size: var(--fs-body); font-weight: 500; color: var(--ink); }
+.tb-role-person em { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+.tb-role-pct { margin-left: auto; font-size: var(--fs-md); font-weight: 600; color: var(--purple); }
+.tb-role-vacant { margin: 0; font-size: var(--fs-body); color: var(--muted); font-style: italic; }
+.tb-why { list-style: none; margin: 9px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.tb-why li { font-size: var(--fs-xs); color: var(--muted); }
+
+.tb-risks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.tb-risks li { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-body); color: var(--amber); }
+.tb-risks strong { color: var(--ink); }
+
+.tb-unrecognised { margin: 0; font-size: var(--fs-sm); color: var(--muted); font-style: italic; }
+.tb-empty {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 20px; text-align: center;
+}
+.tb-empty p { margin: 0 0 6px; font-size: var(--fs-body); color: var(--muted); }
+
+/* --- Replace panel --- */
+.tb-replace {
+  background: var(--white); border: 1.5px solid var(--purple);
+  border-radius: var(--radius-card); padding: 14px 16px;
+}
+.tb-replace header { display: flex; align-items: center; gap: 10px; }
+.tb-replace h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--ink); }
+.tb-replace-close {
+  margin-left: auto; background: none; border: none; cursor: pointer;
+  color: var(--muted); display: flex; padding: 3px;
+}
+.tb-replace-current { margin: 4px 0 10px; font-size: var(--fs-sm); color: var(--muted); }
+.tb-replace-none { margin: 8px 0 0; font-size: var(--fs-body); color: var(--muted); font-style: italic; }
+.tb-alts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tb-alts button {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--page); border: 1px solid transparent; border-radius: var(--radius);
+  padding: 9px 11px; cursor: pointer; font: inherit;
+}
+.tb-alts button:hover { border-color: var(--purple); background: var(--purple-100); }
+.tb-alts .avatar { width: 32px; height: 32px; font-size: var(--fs-sm); flex: none; }
+.tb-alt-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tb-alt-text strong { font-size: var(--fs-body); font-weight: 500; color: var(--ink); }
+.tb-alt-text em { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+.tb-alt-why { opacity: .85; }
+.tb-alt-pct { margin-left: auto; font-size: var(--fs-md); font-weight: 600; color: var(--purple); }
+
+@media (max-width: 720px) {
+  .tb-coverage-headline { gap: 16px; }
+  .tb-stats { gap: 16px; }
+  .tb-role-list { grid-template-columns: 1fr; }
+}
+
+/* --- Technical-only disclaimer on Build Team ------------------------------
+   Amber, not red: this is a caveat about scope, not an error. Never
+   collapsed and never a tooltip — the risk it addresses is somebody acting
+   on a skills ranking as if it were a staffing decision, and a warning
+   behind an interaction does not reach that person. */
+.tb-notice {
+  display: flex; align-items: flex-start; gap: 9px;
+  background: var(--amber-100); border: 1px solid transparent;
+  border-radius: var(--radius); padding: 10px 12px; color: var(--amber);
+}
+.tb-notice-prominent { border-color: var(--amber); }
+.tb-notice-title { margin: 0 0 2px; font-size: var(--fs-body); font-weight: 600; }
+.tb-notice-body { margin: 0; font-size: var(--fs-sm); line-height: 1.5; color: var(--ink); opacity: .85; }
+
+/* --- Find the Right Team -------------------------------------------------- */
+.team-finder { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
+.tf-hint { margin: -4px 0 0; font-size: var(--fs-sm); color: var(--muted); }
+.tf-row { display: flex; align-items: center; gap: 9px; }
+.tf-row > svg { color: var(--muted); flex: none; }
+.tf-query { flex: 1; margin-top: 0; }
+.tf-row .btn { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.tf-examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.tf-example {
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  padding: 3px 9px; cursor: pointer; font: inherit; font-size: var(--fs-xs); color: var(--muted);
+}
+.tf-example:hover { border-color: var(--purple); color: var(--purple); }
+
+.tf-result { display: flex; flex-direction: column; gap: 12px; }
+
+.tf-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.tf-card-head { display: flex; align-items: flex-start; gap: 16px; }
+.tf-card-head h3 {
+  margin: 0; font-size: var(--fs-lg); font-weight: 600; color: var(--ink);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.tf-unit-type {
+  font-size: var(--fs-xs); font-weight: 400; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em;
+  border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 1px 6px;
+}
+.tf-why { margin: 4px 0 0; font-size: var(--fs-body); color: var(--muted); line-height: 1.5; }
+.tf-match { margin-left: auto; text-align: right; flex: none; }
+.tf-match-pct { display: block; font-size: var(--fs-xl); font-weight: 600; color: var(--purple); line-height: 1; }
+.tf-match-label { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+.tf-card-body { display: flex; gap: 28px; flex-wrap: wrap; }
+.tf-skills { display: flex; flex-direction: column; gap: 10px; min-width: 240px; }
+.tf-skill-name {
+  margin: 0; font-size: var(--fs-body); font-weight: 500; color: var(--ink);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.tf-skill-count { font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
+.tf-levels { margin: 4px 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.lvl { font-size: var(--fs-xs); border-radius: var(--radius-pill); padding: 1px 7px; }
+.lvl-expert { background: var(--green-100); color: var(--green-800); }
+.lvl-working { background: var(--purple-100); color: var(--purple-800); }
+.lvl-learning { background: var(--amber-100); color: var(--amber); }
+
+.tf-projects h4 {
+  margin: 0 0 6px; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+}
+.tf-projects ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.tf-projects li { font-size: var(--fs-body); color: var(--ink); }
+
+.tf-card-foot {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  border-top: 1px solid var(--border); padding-top: 12px;
+}
+.tf-manager { display: flex; align-items: center; gap: 9px; }
+.tf-manager .avatar { width: 32px; height: 32px; font-size: var(--fs-sm); flex: none; }
+.tf-manager-text { display: flex; flex-direction: column; }
+.tf-manager-text strong { font-size: var(--fs-body); font-weight: 500; color: var(--ink); }
+.tf-manager-text em { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+.tf-contact {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 10px;
+  font-size: var(--fs-sm); color: var(--purple);
+}
+.tf-no-manager { margin: 0; font-size: var(--fs-sm); color: var(--muted); font-style: italic; }
+.tf-headcount {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-sm); color: var(--muted);
+}
+.tf-graph-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 720px) {
+  .tf-row { flex-wrap: wrap; }
+  .tf-query { min-width: 0; }
+  .tf-card-body { gap: 14px; }
+  .tf-graph-btn { margin-left: 0; }
+}

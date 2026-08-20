@@ -62,16 +62,23 @@ CEILING = ChainBudget(steps=8, max_records=300, max_wall_clock_ms=20_000)
 DEFAULT_PLAN_CLASS = "assistant_chain"
 
 PLAN_CLASS_BUDGETS: dict[str, ChainBudget] = {
-    # steps=3 preserves this system's existing behavior (the prior bare
-    # MAX_CHAIN_STEPS constant). max_records=100 is generous enough that
-    # an ordinary 2-3 step chain over a normal-sized result set (a
-    # find_people page is 50) doesn't spuriously truncate, while still
-    # bounding the fan-out pattern cross-query inference actually runs
-    # along -- many individually-small results accumulating past it.
-    # max_wall_clock_ms=8s is comfortably above a real multi-step chain's
-    # measured latency (tens to low hundreds of ms per step) with room
-    # for a slow step, not so high it stops meaning anything.
-    DEFAULT_PLAN_CLASS: ChainBudget(steps=3, max_records=100, max_wall_clock_ms=8_000),
+    # steps=4, one above the 2-step shape every declared chain pattern
+    # actually needs (resolve, then filter/fetch) -- the prior steps=3
+    # gave a 2-step pattern exactly one step of margin, and reasoning_effort
+    # ="minimal" routing is noisy enough that a step is sometimes spent on a
+    # repeated call (e.g. find_people called twice before
+    # get_people_with_projects) rather than genuine extra reasoning depth.
+    # That left zero headroom for the intended pattern once the noise step
+    # fired. steps=4 restores the same one-step margin the 2-step patterns
+    # were designed around. max_records=100 is generous enough that an
+    # ordinary 2-3 step chain over a normal-sized result set (a find_people
+    # page is 50) doesn't spuriously truncate, while still bounding the
+    # fan-out pattern cross-query inference actually runs along -- many
+    # individually-small results accumulating past it. max_wall_clock_ms=8s
+    # is comfortably above a real multi-step chain's measured latency (tens
+    # to low hundreds of ms per step) with room for a slow step, not so high
+    # it stops meaning anything.
+    DEFAULT_PLAN_CLASS: ChainBudget(steps=4, max_records=100, max_wall_clock_ms=8_000),
     # Lower max_records than assistant_chain: a PRD conversation is about
     # one project's requirements, not directory fan-out -- a chain
     # returning dozens of records here is a signal something went wrong

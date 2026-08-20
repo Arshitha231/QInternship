@@ -6,7 +6,9 @@ import { DepartmentGraph } from "./graphs/DepartmentGraph";
 import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
 import { CommunityPage } from "./CommunityPage";
-import { ChevronLeft, ChevronRight, Home } from "../icons";
+import { TeamBuilder, useTeamBuilderState } from "./TeamBuilder";
+import { TeamFinder, useTeamFinderState } from "./TeamFinder";
+import { ChevronLeft, ChevronRight, Home, SearchIcon, Sparkles } from "../icons";
 import { avatarStyle } from "../avatarHue";
 
 type GraphKind = "department" | "team" | "skills" | "community";
@@ -39,6 +41,7 @@ export function GraphPage({
   viewMode,
   focus,
   onOpenProfile,
+  canBuildTeam,
 }: {
   identity: Identity;
   viewMode: ViewMode;
@@ -47,10 +50,31 @@ export function GraphPage({
   // through it and the history has to see those navigations to be a history.
   focus: FocusHistory;
   onOpenProfile: (id: string, name: string) => void;
+  /** Whether to OFFER Build Team. Resolved once in App, because the guided
+   *  tour needs the same answer — a step whose target is hidden is a dead
+   *  step, and two independent probes could disagree. */
+  canBuildTeam: boolean;
 }) {
   const { focusId } = focus;
   const onFocusChange = focus.go;
   const [kind, setKind] = useState<GraphKind>("department");
+  // Build Team is a MODE, not a fifth tab. The four tabs are all views of
+  // the real organization; this one shows a team that does not exist yet,
+  // and putting it beside them would say the two kinds of picture are the
+  // same kind of thing. The existing hierarchy is untouched underneath --
+  // switching back restores it exactly, including the focus person.
+  const [mode, setMode] = useState<"hierarchy" | "build" | "find">("hierarchy");
+  // Held here so a generated team survives a look at the real hierarchy --
+  // see useTeamBuilderState.
+  const teamState = useTeamBuilderState();
+  const finderState = useTeamFinderState();
+
+  // Losing access mid-session (HR switching out of work mode) must not
+  // leave Build Team on screen. Snapping back to the hierarchy is the one
+  // view every caller can always see.
+  useEffect(() => {
+    if (!canBuildTeam && mode === "build") setMode("hierarchy");
+  }, [canBuildTeam, mode]);
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
   useEffect(() => {
@@ -96,11 +120,65 @@ export function GraphPage({
           </div>
         </div>
 
+        <div className="tabs graph-mode" role="tablist" aria-label="Graph mode">
+          <button
+            role="tab"
+            aria-selected={mode === "hierarchy"}
+            className={`tab ${mode === "hierarchy" ? "active" : ""}`}
+            onClick={() => setMode("hierarchy")}
+          >
+            Current Hierarchy
+          </button>
+          {/* Hidden until the server confirms, not shown-then-removed: a
+              control that appears and vanishes reads as a bug, and offering
+              a feature that answers 403 is worse than not offering it. */}
+          {canBuildTeam && (
+            <button
+              role="tab"
+              data-help="graph-build-team"
+              aria-selected={mode === "build"}
+              className={`tab tab-ai ${mode === "build" ? "active" : ""}`}
+              onClick={() => setMode("build")}
+            >
+              Build Team <Sparkles size={13} />
+            </button>
+          )}
+          <button
+            role="tab"
+            data-help="graph-find-team"
+            aria-selected={mode === "find"}
+            className={`tab tab-ai ${mode === "find" ? "active" : ""}`}
+            onClick={() => setMode("find")}
+          >
+            Find a Team <SearchIcon size={13} />
+          </button>
+        </div>
+
         <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
       </div>
 
+      {mode === "build" && canBuildTeam ? (
+        <TeamBuilder identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} state={teamState} />
+      ) : mode === "find" ? (
+        <TeamFinder
+          identity={identity}
+          viewMode={viewMode}
+          state={finderState}
+          // "View Team Graph" re-centres the REAL hierarchy on the unit's
+          // manager and opens the Team view. This feature recommends an
+          // existing team, so the existing picture of it is the correct
+          // picture -- drawing a second one would be inventing a view of
+          // something the app already renders.
+          onViewTeamGraph={(employeeId) => {
+            onFocusChange(employeeId);
+            setKind("team");
+            setMode("hierarchy");
+          }}
+        />
+      ) : (
+      <>
       <div className="graph-viewbar">
-        <div className="graph-history" role="group" aria-label="Graph navigation">
+        <div className="graph-history" role="group" aria-label="Graph navigation" data-help="graph-history">
           <button
             className="graph-history-btn"
             onClick={focus.back}
@@ -201,6 +279,8 @@ export function GraphPage({
           viewMode={viewMode}
           onNavigate={(id, personName) => onOpenProfile(id, personName)}
         />
+      )}
+      </>
       )}
     </div>
   );

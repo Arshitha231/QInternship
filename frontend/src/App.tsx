@@ -16,7 +16,7 @@ import { LoginPage } from "./components/LoginPage";
 import { HelpOverlay } from "./components/HelpOverlay";
 import type { HelpState } from "./components/HelpOverlay";
 import { useDebouncedValue, useFocusHistory } from "./hooks";
-import { ApiError, UNAUTHORIZED_EVENT, getConversation, unifiedSearch, type SearchFilters } from "./api";
+import { ApiError, UNAUTHORIZED_EVENT, getConversation, getMyCapabilities, unifiedSearch, type SearchFilters } from "./api";
 import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
@@ -117,6 +117,24 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
   // render a tab that then says so, never open one that should be shut.
   const canSeeDashboard =
     (identity.role === "hr" && viewMode === "work") || identity.role === "manager";
+
+  // Build Team's gate, resolved by the SERVER rather than guessed from the
+  // role the way canSeeDashboard above is. It has to be: a "manager" claim
+  // with nobody reporting to them cannot build a team, and the role alone
+  // cannot tell. Lives here rather than in GraphPage because the guided
+  // tour needs the same answer -- a tour step whose target is hidden is a
+  // dead step, and two independent probes could disagree with each other.
+  const [canBuildTeam, setCanBuildTeam] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    getMyCapabilities(identity, viewMode, controller.signal)
+      .then((c) => { if (!cancelled) setCanBuildTeam(c.can_build_team); })
+      // A failed probe hides the feature rather than offering it. The
+      // endpoint 403s regardless, so guessing "yes" only buys a later error.
+      .catch(() => { if (!cancelled) setCanBuildTeam(false); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [identity, viewMode]);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
   const [savedSearch, setSavedSearch] = useState<{ query: string; filters: SearchFilters } | null>(null);
@@ -463,6 +481,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         ) : mode === "graphs" ? (
           <div data-help="graphs">
           <GraphPage
+            canBuildTeam={canBuildTeam}
             identity={identity}
             viewMode={viewMode}
             focus={graphFocus}
@@ -513,12 +532,14 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         state={help}
         // Mirrors the tab bar's own render conditions above -- if a tab
         // isn't there, the tour must not walk to it.
+        capabilities={{ build_team: canBuildTeam }}
         availableModes={[
           "profile",
           "graphs",
           ...(canSeeDashboard ? (["dashboard"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["continuity"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["review"] as const) : []),
+          ...(identity.role === "hr" && viewMode === "work" ? (["admin"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["prds"] as const) : []),
         ]}
         onExit={() => setHelp("off")}
