@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # golden-eval is dispatched through this, not through push/pull_request --
+  # see that job's comment for why.
+  workflow_dispatch: {}
 
 # Two pushes a minute apart used to produce two runs racing each other to the
 # same App Service, each deploying with `--clean true`, and whichever finished
@@ -37,8 +40,6 @@ jobs:
   # ---------------------------------------------------------------------
   test:
     runs-on: ubuntu-latest
-    outputs:
-      ai-changed: ${{ steps.filter.outputs.ai }}
     steps:
       - uses: actions/checkout@v5
 
@@ -52,24 +53,25 @@ jobs:
       - name: Run pytest
         run: pytest
 
-      # Only used to decide whether the golden-eval JOB below runs --
-      # doesn't gate pytest, doesn't gate anything else.
+      # This no longer GATES anything -- golden-eval is manual now (see that
+      # job). It stays because making the eval manual otherwise loses the
+      # only automatic signal that a change was one worth evaluating, and
+      # "remember to run the eval" is exactly the kind of thing nobody
+      # remembers. Now it annotates the run instead of gating a job: an
+      # AI-touching PR says so in its own checks summary.
       #
       # Deliberately an ALLOW-EVERYTHING-THEN-SUBTRACT list, not the curated
       # include list this used to be. That version named four modules
       # (tool_calling, search_client, directory_tools, people) and had
       # already drifted: get_org_chain is a scored tool and app/org_chart.py
-      # was never listed, app/permissions.py decides what every scored result
-      # contains and was never listed, and run_golden_eval.py imports
+      # was never listed, app/permissions.py decides what every scored
+      # result contains and was never listed, and run_golden_eval.py imports
       # app/auth.py and app/db.py directly. A curated include list fails
-      # OPEN -- a file nobody remembered to add means the eval silently
-      # doesn't run, which looks identical to "the eval passed". Subtracting
-      # instead means a new module is covered by default and the failure mode
-      # of forgetting to update this block is a job that runs when it didn't
-      # strictly need to.
-      #
-      # If the eval ever stops running when you expect it to, this exclusion
-      # list is the first thing to check.
+      # OPEN -- a file nobody remembered to add means no signal, which looks
+      # identical to "nothing AI-relevant changed". Subtracting instead
+      # means a new module is covered by default and the failure mode of
+      # forgetting to update this block is an advisory that fires when it
+      # didn't strictly need to.
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -84,6 +86,13 @@ jobs:
               - 'build_search_index.py'
               - 'eval/**'
               - 'requirements.txt'
+
+      - name: Note whether the golden eval is worth running
+        if: steps.filter.outputs.ai == 'true'
+        run: |
+          echo "::notice title=Golden eval not run::AI/search-relevant files changed. \
+          The golden eval is manual -- run the CI/CD workflow via workflow_dispatch \
+          (Actions tab, or 'gh workflow run ci-cd.yml') to score this change."
 
   # ---------------------------------------------------------------------
   # Golden evaluation set. Its own job, and deliberately NOT in anything
@@ -108,9 +117,19 @@ jobs:
   # fails fast with a diagnosis when the chat resource isn't configured,
   # so a red job here is a real finding, not a timeout.
   #
-  # Hits the real Azure OpenAI + Azure AI Search resources, so it's slow
-  # (rate-limited, deliberately paced -- see eval/run_golden_eval.py) and
-  # needs its own secrets. Only runs when AI/search-relevant files changed.
+  # Manual (workflow_dispatch) only, not on push/PR. It used to run
+  # automatically whenever a paths-filter said app/** or eval/** changed --
+  # that meant an AI-touching PR ran the whole set once when opened and
+  # again when the same commit landed on push to main, back to back, for a
+  # result nothing downstream even waited on. It also hits real
+  # Azure OpenAI + Azure AI Search resources and is deliberately
+  # rate-limited (see eval/run_golden_eval.py), so both runs were slow.
+  # Since it was already non-binding and CLAUDE.md already says to ask
+  # before running it, making it opt-in outright removes the double-run
+  # instead of just halving it. Trigger it by hand from the Actions tab (or
+  # `gh workflow run ci-cd.yml`) after an app/** or eval/** change. It still
+  # needs its own secrets -- unrelated to the manual trigger, just how it
+  # reaches the real Azure OpenAI + Azure AI Search resources:
   #
   # Chat, embeddings, and search each have their own secret pair --
   # GROUP3_4OPENAI* (chat), GROUP3_4_TEXT_EMBEDDING_3_SMALL_* (embedding),
@@ -131,7 +150,7 @@ jobs:
   golden-eval:
     runs-on: ubuntu-latest
     needs: test
-    if: needs.test.outputs.ai-changed == 'true'
+    if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -148,7 +167,9 @@ jobs:
           DATABASE_URL: sqlite:///eval/fixture.db
         run: alembic upgrade head
 
-      - name: Golden evaluation set (57 questions)
+      # No question count in this label on purpose -- it said 57 while the
+      # set held 64, and a number here has no way to stay true.
+      - name: Golden evaluation set
         env:
           CHAT_ENDPOINT: ${{ secrets.GROUP3_4OPENAIENDPOINT }}
           CHAT_KEY: ${{ secrets.GROUP3_4OPENAIAPIKEY }}
