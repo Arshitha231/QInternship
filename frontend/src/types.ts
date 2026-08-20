@@ -721,3 +721,47 @@ export interface DashboardOverview {
   training_employee_count: number;
   due_soon_days: number;
 }
+
+// --- Skill bridges (app/skill_routes.py) ----------------------------------
+
+export interface SkillTarget {
+  skill_id: number;
+  skill: string;
+  category: string;
+  capable_count: number;
+}
+
+export interface SkillRouteHop {
+  person: { id: string; full_name: string };
+  job_title: string;
+  // WHY this step exists. A path with unlabelled edges tells you to go talk
+  // to a stranger; "you are both on Payroll Annual Planning" tells you how
+  // to open.
+  via_kind: "project" | "team" | "past_project" | "skill";
+  via: string;
+}
+
+export interface SkillRoute {
+  target: { id: string; full_name: string };
+  job_title: string;
+  level: "Expert" | "Working";
+  hops: SkillRouteHop[];
+}
+
+export interface SkillRouteResult {
+  // null when the name matched no skill -- reported as unresolved rather
+  // than as zero routes, which would read as "nobody has it".
+  skill: SkillTarget | null;
+  requested: string;
+  from_person: { id: string; full_name: string };
+  already_capable: boolean;
+  routes: SkillRoute[];
+  unreachable_holder_count: number;
+}
+
+export interface SuggestedSkill {
+  skill_id: number;
+  skill: string;
+  capable_count: number;
+  reason: string;
+}

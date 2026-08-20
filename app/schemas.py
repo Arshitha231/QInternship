@@ -1322,3 +1322,77 @@ class SendRemindersRequest(BaseModel):
     #: selected person is reminded — one notification per (person, course),
     #: which is how their inbox already works.
     course_code: str | None = None
+
+
+# --- Skill bridges (app/skill_routes.py) ----------------------------------
+#
+# The shortest introduction chain to somebody who has a skill you lack. Built
+# entirely from BASE_FIELDS (skills, project membership) so a route discloses
+# nothing the traveller could not look up person by person -- see that
+# module's docstring for why the reporting line is deliberately not an edge.
+
+class SkillTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: int
+    skill: str
+    category: str
+    #: People who hold it at Working or above, across the whole directory --
+    #: not just the ones reachable from the asker.
+    capable_count: int
+
+
+class SkillRouteHop(BaseModel):
+    """One step along the chain, and — the part that matters — WHY that step
+    exists. A path with unlabelled edges tells you to go talk to a stranger;
+    "you are both on Payroll Annual Planning" tells you how to open."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person: PersonRef
+    job_title: str
+    via_kind: Literal["project", "team", "past_project", "skill"]
+    #: The project or skill the two people have in common.
+    via: str
+
+
+class SkillRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: PersonRef
+    job_title: str
+    level: Literal["Expert", "Working"]
+    #: In order, starting from the first person the asker already has a
+    #: connection to and ending at the target. Never empty.
+    hops: list[SkillRouteHop]
+
+
+class SkillRouteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: None when the requested name matched no skill at all -- reported as
+    #: unresolved rather than silently returning zero routes, which would
+    #: look like "nobody has it".
+    skill: SkillTarget | None
+    requested: str
+    from_person: PersonRef
+    #: True when the asker already holds it at Working or above. Routing
+    #: somebody to themselves is not an answer.
+    already_capable: bool
+    routes: list[SkillRoute]
+    #: Capable holders no chain reaches within the hop limit. "Three people
+    #: have this and none are connected to you" is a real answer, and an
+    #: empty list with no count would read as "nobody has it".
+    unreachable_holder_count: int
+
+
+class SuggestedSkill(BaseModel):
+    """An entry in the empty state. Always carries its own reason: "learn
+    this" with nothing attached is horoscope advice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: int
+    skill: str
+    capable_count: int
+    reason: str

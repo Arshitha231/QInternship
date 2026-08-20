@@ -26,7 +26,7 @@ const KIND_LABEL: Record<GraphKind, string> = {
 const KIND_CAPTION: Record<GraphKind, string> = {
   department: "Who reports to whom — one level up, one level down. Open any manager to go deeper.",
   team: "Everyone sharing this person's org unit.",
-  skills: "Skills this person has, and the colleagues who share them.",
+  skills: "The shortest way to reach someone who has a skill you don't — through people you already share work with. Always computed from you.",
   community: "Who to contact for what. Private to you.",
 };
 
@@ -161,6 +161,12 @@ export function GraphPage({
           <p className="graph-legend">
             <span>Always your own graph, whoever is selected above.</span>
           </p>
+        ) : kind === "skills" ? (
+          // A path view, not a node/edge canvas: no colours to key, and the
+          // pan/zoom hint would be describing controls this tab has not got.
+          <p className="graph-legend">
+            <span className="graph-legend-hint">Click anyone on a route to open their profile</span>
+          </p>
         ) : (
           <p className="graph-legend">
             <span><i className="dot dot-focus" />Selected</span>
@@ -168,10 +174,6 @@ export function GraphPage({
             {kind === "team" && <>
               <span><i className="dot dot-person" />Teammate</span>
               <span><i className="dot dot-hub" />Team</span>
-            </>}
-            {kind === "skills" && <>
-              <span><i className="dot dot-person" />Person</span>
-              <span><i className="dot dot-skill" />Skill</span>
             </>}
             <span className="graph-legend-hint">Click a person to re-centre · drag to pan · pinch to zoom</span>
           </p>
@@ -194,7 +196,11 @@ export function GraphPage({
           onOpenProfile={onOpenProfile}
         />
       ) : (
-        <SkillsGraph identity={identity} viewMode={viewMode} focusId={focusId} focusName={name} focusRole={role} onNavigate={onFocusChange} />
+        <SkillsGraph
+          identity={identity}
+          viewMode={viewMode}
+          onNavigate={(id, personName) => onOpenProfile(id, personName)}
+        />
       )}
     </div>
   );
