@@ -18,10 +18,13 @@ class ProjectEmbedding(Base):
     ~10k projects; the retrieval interface in project_search.py stays the
     same either way, only the storage behind it moves.
 
-    Stored as raw little-endian float32 (array('f').tobytes()) rather than
-    JSON: 6 KB per row instead of ~30 KB, and it round-trips through
-    LargeBinary identically on both dialects (BLOB on SQLite,
-    VARBINARY(max) on Azure SQL).
+    Stored as raw little-endian float16 (struct.pack("<Ne")) rather than
+    JSON or float32: 3 KB per row instead of ~30 KB as JSON or 6 KB as
+    float32, and it round-trips through LargeBinary identically on both
+    dialects (BLOB on SQLite, VARBINARY(max) on Azure SQL). Half precision
+    is safe here because project_search.py only ever sorts on the
+    dot-product score and discards the value itself -- rank order survives
+    float16 rounding, exact distances wouldn't.
 
     Vectors are stored ALREADY L2-NORMALISED, so query-time cosine
     similarity is a plain dot product — see project_search._cosine.

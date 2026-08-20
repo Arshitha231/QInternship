@@ -43,7 +43,7 @@ import hashlib
 import json
 import math
 import re
-from array import array
+import struct
 from datetime import date, datetime
 
 from sqlalchemy.orm import Session
@@ -114,14 +114,17 @@ def _normalise(vector: list[float]) -> list[float]:
 
 
 def pack_vector(vector: list[float]) -> bytes:
-    """Store L2-normalised, so query-time cosine is a plain dot product."""
-    return array("f", _normalise(vector)).tobytes()
+    """Store L2-normalised float16, so query-time cosine is a plain dot
+    product. Half precision keeps ~3 significant digits -- plenty to
+    preserve rank order (all _semantic_ranking() reads back: the score is
+    sorted on, then discarded), not enough for exact distances -- and
+    halves storage versus float32."""
+    return struct.pack(f"<{len(vector)}e", *_normalise(vector))
 
 
 def unpack_vector(blob: bytes) -> list[float]:
-    arr = array("f")
-    arr.frombytes(blob)
-    return list(arr)
+    n = len(blob) // 2
+    return list(struct.unpack(f"<{n}e", blob))
 
 
 def _dot(a: list[float], b: list[float]) -> float:

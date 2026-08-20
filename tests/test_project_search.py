@@ -44,8 +44,10 @@ CONF_MEMBER = AuthenticatedUser(id="member-1", role="employee", name="Mel Member
 def test_pack_unpack_roundtrips_and_normalises():
     packed = unpack_vector(pack_vector([3.0, 4.0]))
     # 3-4-5 triangle: normalised to 0.6/0.8, so cosine is a plain dot product.
-    assert packed[0] == pytest.approx(0.6, abs=1e-6)
-    assert packed[1] == pytest.approx(0.8, abs=1e-6)
+    # Tolerance is float16-scale (~1e-3), not float32: storage is half
+    # precision, see pack_vector()'s docstring for why that's safe here.
+    assert packed[0] == pytest.approx(0.6, abs=1e-3)
+    assert packed[1] == pytest.approx(0.8, abs=1e-3)
 
 
 def test_zero_vector_does_not_divide_by_zero():
