@@ -14,7 +14,7 @@
 // empty states are handled by the same rule, with no role logic duplicated
 // here.
 
-export type HelpMode = "profile" | "graphs" | "continuity" | "review";
+export type HelpMode = "profile" | "graphs" | "dashboard" | "continuity" | "review";
 
 export interface HelpTopic {
   /** Matches `data-help="<key>"` on the element being described. */
@@ -185,6 +185,16 @@ export const HELP_TOPICS: HelpTopic[] = [
       "step proposes reaches a record until someone accepts it here, field by field.",
     mode: "review",
     tourStep: 15,
+  },
+  {
+    key: "dashboard",
+    title: "Dashboard",
+    body:
+      "Workforce analytics for the people you're responsible for. HR sees the whole organisation and " +
+      "can narrow to any department; a manager sees their own reporting line and only that — the server " +
+      "resolves the scope from who you are, so there is no selection that widens it. Every figure is " +
+      "counted from the directory's own records, and each verdict states the numbers behind it.",
+    mode: "dashboard",
   },
 ];
 

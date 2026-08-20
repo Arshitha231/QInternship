@@ -4,6 +4,7 @@ import { Filters } from "./components/Filters";
 import { UnifiedResults } from "./components/UnifiedResults";
 import { ProfilePage, type ProfileStackEntry } from "./components/ProfilePage";
 import { GraphPage } from "./components/GraphPage";
+import { DashboardPage } from "./components/DashboardPage";
 import { ContinuityPage } from "./components/ContinuityPage";
 import { PendingApprovals } from "./components/PendingApprovals";
 import { PeopleAdminPage } from "./components/PeopleAdminPage";
@@ -18,7 +19,7 @@ import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
 
-type Mode = "profile" | "graphs" | "continuity" | "review" | "admin";
+type Mode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -98,6 +99,19 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
   });
   const profileId = profileStack[profileStack.length - 1].id;
   const [graphFocusId, setGraphFocusId] = useState<string>(identity.id);
+  // Whether to OFFER the Dashboard tab. HR gets it in work mode, the same
+  // gate Continuity/Review/Admin carry; a manager gets it in either mode,
+  // because their dashboard is their own reporting line and that is not a
+  // privileged lens -- app/permissions.py already grants a manager their
+  // reports' training status, which is the only non-BASE_FIELDS data on it.
+  //
+  // This is a decision about what to SHOW. The backend resolves the scope
+  // from the caller regardless (app/analytics.py's resolve_scope) and 403s
+  // anyone with no dashboard of their own, including a "manager" role claim
+  // with nobody reporting to them -- so a wrong guess here can only ever
+  // render a tab that then says so, never open one that should be shut.
+  const canSeeDashboard =
+    (identity.role === "hr" && viewMode === "work") || identity.role === "manager";
   const [flashId, setFlashId] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
   const [savedSearch, setSavedSearch] = useState<{ query: string; filters: SearchFilters } | null>(null);
@@ -226,6 +240,11 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           if (next !== "work" && mode === "review") setMode("profile");
           // Admin is HR's work-mode surface for the same reason.
           if (next !== "work" && mode === "admin") setMode("profile");
+          // HR's dashboard is an org-wide view, so it belongs to work mode
+          // for the same reason Continuity does -- and the server refuses
+          // it in employee mode regardless. A manager keeps theirs: their
+          // scope is their own team either way.
+          if (next !== "work" && mode === "dashboard" && identity.role === "hr") setMode("profile");
           // So is Continuity: employee mode is "what an ordinary colleague
           // sees", and work-authorization review dates are precisely what an
           // ordinary colleague does not see. The server refuses these calls
@@ -275,6 +294,19 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         >
           Graphs
         </button>
+        {canSeeDashboard && (
+          <button
+            role="tab"
+            aria-selected={mode === "dashboard"}
+            className={`tab ${mode === "dashboard" ? "active" : ""}`}
+            onClick={() => {
+              setMode("dashboard");
+              setQuery("");
+            }}
+          >
+            Dashboard
+          </button>
+        )}
         {identity.role === "hr" && viewMode === "work" && (
           <button
             role="tab"
@@ -367,6 +399,21 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             }}
           />
           </div>
+        ) : mode === "dashboard" && canSeeDashboard ? (
+          <div data-help="dashboard">
+            <DashboardPage
+              identity={identity}
+              viewMode={viewMode}
+              onOpenProfile={(id, name) => {
+                resetProfile(id, name);
+                setMode("profile");
+              }}
+              onOpenGraph={(employeeId) => {
+                setGraphFocusId(employeeId);
+                setMode("graphs");
+              }}
+            />
+          </div>
         ) : mode === "continuity" && identity.role === "hr" && viewMode === "work" ? (
           <div data-help="continuity"><ContinuityPage identity={identity} viewMode={viewMode} /></div>
         ) : mode === "review" && identity.role === "hr" && viewMode === "work" ? (
@@ -391,6 +438,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         availableModes={[
           "profile",
           "graphs",
+          ...(canSeeDashboard ? (["dashboard"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["continuity"] as const) : []),
           ...(identity.role === "hr" && viewMode === "work" ? (["review"] as const) : []),
         ]}

@@ -436,3 +436,215 @@ export interface SuggestedOfficialLinkOut {
   reviewed_by: string | null;
   reviewed_at: string | null;
 }
+
+// --- Dashboards (app/analytics.py) ----------------------------------------
+//
+// HR's and a manager's payloads are structurally identical; what differs is
+// the DashboardScope each was computed over. The narrowing happens
+// server-side (app/analytics.py's resolve_scope) and is never something this
+// client reproduces -- it only decides what to OFFER, same division of
+// responsibility as WORK_MODE_ROLES above.
+
+export interface DashboardScope {
+  kind: "org" | "org_unit" | "team";
+  label: string;
+  headcount: number;
+  org_unit_id: number | null;
+  org_unit: string | null;
+  manager_id: string | null;
+  // True when the caller asked for one scope and the server gave another --
+  // a manager sending an org_unit_id. The header says so rather than leaving
+  // a selector pointing at data it didn't produce.
+  substituted: boolean;
+}
+
+export interface OrgUnitOption {
+  id: number;
+  name: string;
+  unit_type: string;
+  parent_id: number | null;
+  // SUBTREE headcount: what picking this option actually scopes to.
+  headcount: number;
+}
+
+export type TrainingBucket = "completed" | "overdue" | "due_soon" | "outstanding";
+
+// The four buckets are mutually exclusive and sum to `expected`, so they
+// render as one donut. `incomplete` is the rollup of the three non-completed
+// ones and deliberately overlaps them -- never add it to the chart.
+export interface TrainingBuckets {
+  expected: number;
+  completed: number;
+  incomplete: number;
+  overdue: number;
+  due_soon: number;
+  outstanding: number;
+  compliance_pct: number;
+}
+
+export interface TrainingBreakdown {
+  key: string;
+  label: string;
+  buckets: TrainingBuckets;
+  employee_count: number;
+}
+
+export interface TrainingAnalytics {
+  scope: DashboardScope;
+  buckets: TrainingBuckets;
+  employee_count: number;
+  no_record_count: number;
+  no_deadline_count: number;
+  due_soon_days: number;
+  by_course: TrainingBreakdown[];
+  by_unit: TrainingBreakdown[];
+  courses: TrainingBreakdown[];
+}
+
+export interface TrainingPersonRow {
+  employee_id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string;
+  course_code: string;
+  course_name: string;
+  display_status: "completed" | "not_completed";
+  bucket: TrainingBucket;
+  due_on: string | null;
+  days_overdue: number | null;
+  has_record: boolean;
+}
+
+export interface TrainingRoster {
+  rows: TrainingPersonRow[];
+  total: number;
+  truncated: boolean;
+}
+
+export interface ReminderResult {
+  requested: number;
+  eligible: number;
+  sent: number;
+  recipients_notified: number;
+  out_of_scope: number;
+  skipped: number;
+  detail: string;
+}
+
+export type SkillVerdict = "understaffed" | "healthy" | "overrepresented" | "unused";
+
+export interface SkillSupplyDemand {
+  skill_id: number;
+  skill: string;
+  category: string;
+  expert_count: number;
+  working_count: number;
+  learning_count: number;
+  capable_count: number;
+  holder_count: number;
+  demand_project_count: number;
+  // "declared" = a project recorded this as a requirement; "inferred" = read
+  // off what assigned people happen to know, which overcounts. Always shown.
+  demand_basis: "declared" | "inferred" | "none";
+  declared_project_count: number;
+  supply_per_project: number | null;
+  verdict: SkillVerdict;
+  single_point_of_failure: boolean;
+  coverage_pct: number;
+  maturity_pct: number;
+  maturity_label: string;
+}
+
+export interface SkillHolder {
+  id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string;
+  level: "Expert" | "Working" | "Learning";
+}
+
+export interface SkillProjectUse {
+  project_id: number;
+  project_name: string;
+  basis: "declared" | "inferred";
+  member_count: number;
+  capable_member_count: number;
+}
+
+export interface SkillDetail {
+  scope: DashboardScope;
+  skill_id: number;
+  skill: string;
+  category: string;
+  expert_count: number;
+  working_count: number;
+  learning_count: number;
+  capable_count: number;
+  holder_count: number;
+  coverage_pct: number;
+  maturity_pct: number;
+  maturity_label: string;
+  demand_project_count: number;
+  supply_per_project: number | null;
+  verdict: SkillVerdict;
+  risk: "high" | "medium" | "low";
+  risk_reason: string;
+  holders: SkillHolder[];
+  holders_truncated: boolean;
+  projects: SkillProjectUse[];
+}
+
+export interface ProjectCoverage {
+  project_id: number;
+  project_name: string;
+  project_type: string;
+  is_client_engagement: boolean;
+  member_count: number;
+  in_scope_member_count: number;
+  // False means nothing was declared and no verdict is offered --
+  // coverage_pct is null and risk is "unknown".
+  requirements_recorded: boolean;
+  required_skill_count: number;
+  covered_skill_count: number;
+  coverage_pct: number | null;
+  gap_skills: string[];
+  single_cover_skills: string[];
+  risk: "high" | "medium" | "low" | "unknown";
+}
+
+export interface WorkforceInsight {
+  kind:
+    | "skill_shortage" | "skill_concentration" | "training_compliance"
+    | "project_staffing_gap" | "profile_coverage" | "bench_capacity";
+  severity: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  evidence: string[];
+  skill_ids: number[];
+  project_ids: number[];
+  recommendation: string;
+}
+
+export interface DashboardOverview {
+  scope: DashboardScope;
+  headcount: number;
+  department_count: number;
+  division_count: number;
+  team_count: number;
+  manager_count: number | null;
+  active_project_count: number;
+  client_engagement_count: number;
+  skill_count: number;
+  expert_count: number;
+  people_with_skills: number;
+  skill_profile_coverage_pct: number;
+  avg_skills_per_person: number;
+  understaffed_skill_count: number;
+  healthy_skill_count: number;
+  overrepresented_skill_count: number;
+  unused_skill_count: number;
+  single_point_skill_count: number;
+  training: TrainingBuckets;
+  training_employee_count: number;
+  due_soon_days: number;
+}

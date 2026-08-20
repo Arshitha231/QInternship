@@ -1623,12 +1623,42 @@ TRAINING_COURSES = [
 #
 # Divisions with no second row (People & Culture, Legal) get exactly one
 # course, which is the point: one course everywhere is the floor, never zero.
+# (course code, org unit, job-title keyword, employment type, due_date,
+#  due_days_after_hire, note).
+#
+# The two deadline columns are what make "overdue" and "due soon" real
+# rather than decorative on the dashboards — see CourseRequirement's model
+# comment for why there are two of them. Spread deliberately across all
+# three shapes so the demo exercises each: a fixed annual deadline, a
+# rolling onboarding one, both together, and one requirement with no
+# deadline at all (LEAD-301), which must render as "no deadline set" and
+# never as late.
+#
+# Dates are computed relative to today rather than hardcoded, so a seeded
+# database still shows a live mix of overdue / due-soon / comfortable
+# whenever it is rebuilt — a hardcoded 2026 date would quietly turn the
+# whole org overdue a year from now.
+_TODAY = date.today()
+
 TRAINING_REQUIREMENTS = [
-    ("SEC-101", None, None, None, "Everyone, annually."),
-    ("SECDEV-210", "Engineering", None, None, "Anyone in the Engineering division."),
-    ("FINCTRL-150", "Finance", None, None, "Anyone in the Finance division."),
-    ("LEAD-301", "Product", "Manager", None, "Product managers — division AND title must match."),
+    # Annual security refresh: everyone, on a fixed org-wide date three
+    # weeks out, so the demo always has a populated "due soon" bucket.
+    ("SEC-101", None, None, None, _TODAY + timedelta(days=21), None, "Everyone, annually."),
+    # Secure coding: last cycle's deadline has passed, with a 60-day grace
+    # for anyone who joined since. This is what populates "overdue" —
+    # weeks late, which is what a real compliance backlog looks like, not
+    # the six years a hire-relative deadline alone would have produced for
+    # long-tenured engineers.
+    ("SECDEV-210", "Engineering", None, None, _TODAY - timedelta(days=40), 60,
+     "Anyone in the Engineering division."),
+    # Fixed date still ahead, 90-day grace for new joiners past it.
+    ("FINCTRL-150", "Finance", None, None, _TODAY + timedelta(days=45), 90,
+     "Anyone in the Finance division."),
+    # No deadline: expected, but never late.
+    ("LEAD-301", "Product", "Manager", None, None, None,
+     "Product managers — division AND title must match."),
     ("CONDUCT-102", "Sales & Marketing", None, EmploymentType.fte,
+     _TODAY - timedelta(days=10), 30,
      "Sales & Marketing employees — contractors sign an equivalent through their agency."),
 ]
 
@@ -1663,12 +1693,14 @@ def build_training_courses(session) -> dict[str, TrainingCourse]:
 
 
 def build_course_requirements(session, courses, units) -> None:
-    for code, unit_name, title_keyword, employment_type, note in TRAINING_REQUIREMENTS:
+    for code, unit_name, title_keyword, employment_type, due_date, due_days, note in TRAINING_REQUIREMENTS:
         session.add(CourseRequirement(
             course_id=courses[code].id,
             org_unit_id=units[unit_name].id if unit_name else None,
             job_title_keyword=title_keyword,
             employment_type=employment_type,
+            due_date=due_date,
+            due_days_after_hire=due_days,
             note=note,
         ))
     session.flush()

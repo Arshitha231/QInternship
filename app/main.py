@@ -10,6 +10,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+from app.analytics import DashboardForbidden
+from app.analytics import insights as insights_service
+from app.analytics import org_unit_options as org_unit_options_service
+from app.analytics import overview as dashboard_overview_service
+from app.analytics import project_coverage as project_coverage_service
+from app.analytics import send_reminders as send_reminders_service
+from app.analytics import skill_detail as skill_detail_service
+from app.analytics import skill_supply_demand as skill_supply_demand_service
+from app.analytics import training_analytics as training_analytics_service
+from app.analytics import training_roster as training_roster_service
 from app.auth import AuthenticatedUser, get_current_user
 from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
@@ -69,6 +79,7 @@ from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
 from app.schemas import (
     AskRequest,
+    DashboardOverview,
     BulkProposalRequest,
     CommunityLinkOut,
     ContinuityOverview,
@@ -78,6 +89,15 @@ from app.schemas import (
     EditProposalRequest,
     EmployeeContinuityDetail,
     EngagementExposure,
+    OrgUnitOption,
+    ProjectCoverage,
+    ReminderResult,
+    SendRemindersRequest,
+    SkillDetail,
+    SkillSupplyDemand,
+    TrainingAnalytics,
+    TrainingRoster,
+    WorkforceInsight,
     FinalizeDocumentRequest,
     HrReviewQueueItem,
     LoginRequest,
@@ -1123,6 +1143,234 @@ def continuity_employee_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Dashboards — HR (organization-wide) and manager (own reporting line).
+#
+# Eight endpoints, one gate. Every one of them takes the same optional
+# org_unit_id / manager_id pair and hands it straight to
+# app.analytics.resolve_scope, which is where the decision actually
+# happens: HR chooses freely, everybody else is pinned to their own
+# reporting subtree whatever they asked for, and a caller with no reports
+# gets nothing.
+#
+# Note what these routes deliberately do NOT do: they don't check the role
+# themselves. Continuity's routes re-check HR because the service raises a
+# plain exception and the route owes the client an HTTP status — the same
+# reason applies here, and _dashboard_scope_error below is that translation
+# and only that. The authorization itself is single-sourced in the service,
+# because a route-layer check that has to be remembered eight times is a
+# route-layer check that eventually isn't.
+# ---------------------------------------------------------------------------
+
+def _dashboard_view_mode(user: AuthenticatedUser, view_mode: str | None) -> ViewMode:
+    """Resolve the requested mode through the server's own rules, same as
+    everywhere else: an unrecognised value narrows the lens rather than
+    rejecting the request, so a malformed `?view_mode=` can only close a
+    view, never open one."""
+    return resolve_view_mode(user.role, view_mode)
+
+
+@app.get("/analytics/org-units", response_model=list[OrgUnitOption])
+def analytics_org_units_route(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[OrgUnitOption]:
+    """The department selector's contents, with the headcount each option
+    resolves to. Narrowed to the caller's own scope: a manager is offered
+    only the units their own people sit in, never the company tree."""
+    try:
+        return org_unit_options_service(db, user, _dashboard_view_mode(user, view_mode))
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/overview", response_model=DashboardOverview)
+def analytics_overview_route(
+    org_unit_id: int | None = Query(None, description="Scope to this unit and everything under it. HR only; ignored for other callers."),
+    manager_id: str | None = Query(None, description="Scope to this person's reporting line. HR only; ignored for other callers."),
+    due_soon_days: int = Query(30, ge=1, le=365, description="Lookahead for the training 'due soon' bucket."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DashboardOverview:
+    """Headline figures for the scope: headcount, structure, projects,
+    skill health and course compliance."""
+    try:
+        return dashboard_overview_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id, due_soon_days=due_soon_days,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/skills", response_model=list[SkillSupplyDemand])
+def analytics_skills_route(
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    verdict: str | None = Query(None, description='Filter: "understaffed", "healthy", "overrepresented" or "unused".'),
+    limit: int | None = Query(None, ge=1, le=500),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[SkillSupplyDemand]:
+    """Skill supply (people in scope) against demand (active projects in
+    scope depending on it), with a verdict per skill. `demand_basis` says
+    whether the demand figure came from recorded project requirements or
+    was inferred from what assigned people happen to know."""
+    try:
+        return skill_supply_demand_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id, verdict=verdict, limit=limit,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/skills/{skill_id}", response_model=SkillDetail)
+def analytics_skill_detail_route(
+    skill_id: int,
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> SkillDetail:
+    """One skill in depth — the chart's click-through. 404s for a skill
+    nobody in scope holds and no project in scope needs, rather than
+    returning an all-zeros card that looks like a measurement."""
+    try:
+        result = skill_detail_service(
+            db, user, skill_id, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=404, detail="No such skill in this scope")
+    return result
+
+
+@app.get("/analytics/training", response_model=TrainingAnalytics)
+def analytics_training_route(
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    course: str | None = Query(None, description="Course code, e.g. SEC-101."),
+    due_soon_days: int = Query(30, ge=1, le=365),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TrainingAnalytics:
+    """Course compliance for the scope, split completed / overdue / due
+    soon / outstanding, and broken down by course and by department."""
+    try:
+        return training_analytics_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id, course_code=course,
+            due_soon_days=due_soon_days,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/training/roster", response_model=TrainingRoster)
+def analytics_training_roster_route(
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    bucket: str | None = Query(None, description='"completed", "overdue", "due_soon", "outstanding", or "incomplete" for all three non-completed buckets.'),
+    course: str | None = Query(None, description="Course code, e.g. SEC-101."),
+    due_soon_days: int = Query(30, ge=1, le=365),
+    limit: int = Query(500, ge=1, le=1000),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TrainingRoster:
+    """The named people behind a bucket — the drill-down, and the list
+    reminders are selected from. Reports the two-value display status only;
+    the underlying not_started / in_progress / failed distinction is not
+    management-facing data."""
+    try:
+        return training_roster_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id, bucket=bucket,
+            course_code=course, due_soon_days=due_soon_days, limit=limit,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.post("/analytics/training/reminders", response_model=ReminderResult)
+def analytics_send_reminders_route(
+    body: SendRemindersRequest,
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> ReminderResult:
+    """Nudge the selected people about their outstanding courses.
+
+    Employee ids outside the caller's resolved scope are dropped and
+    counted, not rejected — so a stale selection can never reach further
+    than the dashboard that produced it. The response reports what actually
+    went out, which is not necessarily one per id: completed courses are
+    never reminded about and a same-day duplicate is suppressed.
+    """
+    try:
+        return send_reminders_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            employee_ids=body.employee_ids, course_code=body.course_code,
+            org_unit_id=org_unit_id, manager_id=manager_id,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/projects", response_model=list[ProjectCoverage])
+def analytics_project_coverage_route(
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[ProjectCoverage]:
+    """Active projects in scope, and whether their DECLARED required skills
+    are met by their current members. Projects with no recorded
+    requirements come back with requirements_recorded=False and no verdict
+    — inferring a project's needs from its members and then checking its
+    members against them would report full coverage everywhere."""
+    try:
+        return project_coverage_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/analytics/insights", response_model=list[WorkforceInsight])
+def analytics_insights_route(
+    org_unit_id: int | None = Query(None),
+    manager_id: str | None = Query(None),
+    due_soon_days: int = Query(30, ge=1, le=365),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> list[WorkforceInsight]:
+    """Risk and development signals for the scope. Rule-derived and
+    deterministic — see app/analytics.py's `insights` for why this section
+    is not handed to a model. Returns fewer items when less crosses a
+    threshold rather than padding the list."""
+    try:
+        return insights_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id, due_soon_days=due_soon_days,
+        )
+    except DashboardForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

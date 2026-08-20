@@ -38,6 +38,7 @@ it in a notification either.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date, datetime
 
 from sqlalchemy import select
@@ -273,6 +274,150 @@ def on_course_status_changed(
         len(created),
     )
     return created
+
+
+# ---------------------------------------------------------------------------
+# Manual reminders: HR or a manager nudging named people about a named course
+#
+# The third way a course notification can come to exist, and the only one a
+# human initiates. The other two fire from a status change; this one fires
+# because somebody looked at a compliance dashboard and pressed a button.
+#
+# What it deliberately reuses rather than reinvents: _send (so the same
+# _may_receive permission check and the same _deliver seam apply), the same
+# employee_course_reminder kind (an employee's inbox should not sprout a
+# second species of "you haven't finished X" that renders differently), and
+# event_key (so a double-click, a retried request, or two HR people working
+# the same list on the same day produce one reminder, not three).
+#
+# What it adds: the deadline. A status-change reminder can't mention one —
+# it fires the instant a status changes and the due date isn't part of that
+# event — whereas the whole reason someone is pressing the button is that a
+# date is approaching or has passed, so saying which date is the point.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ReminderTarget:
+    """One (person, course) pair to nudge, with the facts the wording needs.
+
+    Assembled by the caller (app/analytics.py, off the dashboard's own
+    buckets) rather than re-derived here: the caller has already resolved
+    who is expected to do what by when in order to render the list the user
+    selected from, and recomputing it would risk sending a reminder that
+    disagrees with the screen it was sent from.
+    """
+
+    employee: Employee
+    course: TrainingCourse
+    status: CourseStatus
+    due_on: date | None = None
+
+
+def reminder_message(status: CourseStatus, course_name: str, due_on: date | None,
+                     on_date: date) -> str:
+    """The status-specific wording, plus a deadline clause when there is a
+    deadline to state.
+
+    Built on employee_message rather than beside it: "you didn't pass" vs
+    "you haven't started" is the same distinction here as on the automatic
+    trigger, and having two places decide it is how the two drift apart. The
+    deadline clause is appended, never substituted, so the actionable part
+    survives regardless of whether a due date exists.
+
+    A course with no recorded deadline gets no clause at all — not "due
+    soon", not an invented date. Nothing in the training data says when it
+    is due, so neither does the message.
+    """
+    base = employee_message(status, course_name)
+    if due_on is None:
+        return base
+    if due_on < on_date:
+        days = (on_date - due_on).days
+        return f"{base} It was due on {due_on.isoformat()} — {days} day{'s' if days != 1 else ''} ago."
+    if due_on == on_date:
+        return f"{base} It's due today."
+    days = (due_on - on_date).days
+    return f"{base} It's due on {due_on.isoformat()}, in {days} day{'s' if days != 1 else ''}."
+
+
+def send_course_reminders(
+    db: Session,
+    *,
+    actor_id: str,
+    targets: list[ReminderTarget],
+    on_date: date | None = None,
+) -> list[Notification]:
+    """Send one reminder per target, skipping any already sent today.
+
+    Returns what was actually created — which is not necessarily one per
+    target, and the caller is expected to say so rather than report the
+    input count back as a success figure. Three things drop a target
+    silently, all of them deliberate: an inactive employee, a recipient
+    _send judges not entitled (redact, never reject, same as everywhere
+    else), and a same-day duplicate.
+
+    Reminders about a course somebody has already completed are refused
+    here, not filtered by the caller. It is the one mistake this endpoint
+    could make that lands in a real person's inbox and is visibly wrong to
+    them, so the guard belongs at the last point before the row is written.
+
+    Caller commits, matching on_course_status_changed.
+    """
+    on_date = on_date or date.today()
+    created: list[Notification] = []
+    if not targets:
+        _write_reminder_audit(db, actor_id, on_date, 0, 0)
+        return created
+
+    keys = {
+        f"course-reminder:{on_date.isoformat()}:{t.employee.id}:{t.course.code}"
+        for t in targets
+    }
+    # One query for every key already used today, not an existence check per
+    # target — same reasoning as the date-milestone sweep above.
+    already_sent: set[str] = {
+        row.event_key
+        for row in db.execute(
+            select(Notification.event_key).where(Notification.event_key.in_(keys))
+        ).all()
+        if row.event_key is not None
+    }
+
+    for target in targets:
+        if display_status(target.status) is CourseDisplayStatus.completed:
+            continue
+        event_key = (f"course-reminder:{on_date.isoformat()}:"
+                     f"{target.employee.id}:{target.course.code}")
+        if event_key in already_sent:
+            continue
+        sent = _send(
+            db, recipient=target.employee, subject=target.employee, course=target.course,
+            kind=NotificationKind.employee_course_reminder,
+            body=reminder_message(target.status, target.course.name, target.due_on, on_date),
+            display=CourseDisplayStatus.not_completed,
+            sequence=0, levels_up=0, event_key=event_key,
+            requires_field=TRAINING_FIELD,
+        )
+        if sent is not None:
+            created.append(sent)
+            already_sent.add(event_key)
+
+    _write_reminder_audit(db, actor_id, on_date, len(targets), len(created))
+    return created
+
+
+def _write_reminder_audit(db: Session, actor_id: str, on_date: date,
+                          requested: int, sent: int) -> None:
+    """Actor is the person who pressed the button, unlike the course and date
+    triggers whose actor is the subject or "system" — a manual reminder has a
+    human behind it and the audit row should name them."""
+    db.add(AuditLog(
+        actor_id=actor_id, action="send_course_reminders",
+        query_text=f"on_date={on_date.isoformat()};requested={requested}",
+        result_count=sent,
+        fields_returned=json.dumps(["recipient_id", "kind", "display_status", "body", "event_key"]),
+        timestamp=datetime.now(),
+    ))
 
 
 # ---------------------------------------------------------------------------

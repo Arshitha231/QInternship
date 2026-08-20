@@ -68,6 +68,36 @@
   --skel-a: #EDE8E0;
   --skel-b: #F5F2EC;
 
+  /* Chart palette. Defined here and in the dark block below, and referenced
+     only through these names -- a chart that hardcodes a hex is a chart that
+     stays light-theme in dark mode, which is the bug --graph-person-fill
+     above was added to fix. See components/charts/palette.ts.
+
+     Skill levels reuse the profile pills' own hues so Expert means one
+     colour everywhere in the product, pill or slice. */
+  --level-expert: #6C4A85;
+  --level-working: #4E8A6B;
+  --level-learning: #C08A3E;
+
+  /* Training buckets ARE a traffic light, unusually for this palette, and
+     deliberately: overdue / due-soon / complete is exactly what a traffic
+     light encodes. --status-idle is the fourth, and stays neutral -- not
+     completed, but nothing says it is late. */
+  --status-good: #4E8A6B;
+  --status-warn: #C08A3E;
+  --status-bad: #A9432F;
+  --status-idle: #B3AAA0;
+
+  /* Categorical ramp for things with no inherent status. Six, walking
+     around the wheel from the aubergine accent, all desaturated to sit on
+     the cream ground rather than vibrate against it. */
+  --chart-1: #4A2D5F;
+  --chart-2: #4E7A96;
+  --chart-3: #C08A3E;
+  --chart-4: #4E8A6B;
+  --chart-5: #96566A;
+  --chart-6: #7B7A96;
+
   --radius: 5px;
   --radius-card: 7px;
   --radius-pill: 3px;
@@ -120,6 +150,25 @@
 
   --skel-a: #231E2A;
   --skel-b: #2B2533;
+
+  /* Chart palette, taken light. Same hues, raised in lightness and dropped
+     in saturation so a filled slice reads against the near-black ground and
+     white pill text on it still passes contrast. */
+  --level-expert: #B598CE;
+  --level-working: #6FCFA0;
+  --level-learning: #E0AC63;
+
+  --status-good: #6FCFA0;
+  --status-warn: #E0AC63;
+  --status-bad: #E28A7C;
+  --status-idle: #6A6272;
+
+  --chart-1: #C3A8DB;
+  --chart-2: #7FB2CE;
+  --chart-3: #E0AC63;
+  --chart-4: #6FCFA0;
+  --chart-5: #D992A6;
+  --chart-6: #A9A7C6;
 
   color-scheme: dark;
 }
@@ -1656,4 +1705,429 @@ body::after {
   .profile-page::before, .profile-page::after { animation: none; }
   .result-card::after { transition: none; }
   .result-card:hover::after { transform: translateX(-120%); }
+}
+
+/* ===========================================================================
+   Dashboards (HR + manager) — components/DashboardPage.tsx
+   =========================================================================== */
+
+/* ---------- small primitives the dashboards needed ---------- */
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.muted { color: var(--muted); }
+
+/* A button that reads as a link. Used where the target is a record (a
+   person, a skill) rather than an action — an <a> would be wrong because
+   there is no URL, and a .btn would overstate it. */
+.linklike {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--purple);
+  cursor: pointer; text-align: left;
+}
+.linklike:hover { text-decoration: underline; }
+
+.btn-quiet { background: none; border-color: transparent; color: var(--muted); }
+.btn-quiet:hover { background: var(--surface-sunk); color: var(--ink); }
+
+.tabs-sm .tab { font-size: var(--fs-sm); padding: 4px 10px; }
+
+.checkbox {
+  display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-sm);
+  color: var(--muted); cursor: pointer;
+}
+.checkbox input { accent-color: var(--purple); }
+
+/* ---------- page frame ---------- */
+
+.dashboard { display: flex; flex-direction: column; gap: 18px; }
+
+.dashboard-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.dashboard-title { font-size: var(--fs-xl); font-weight: 650; margin: 0; letter-spacing: -.01em; }
+.dashboard-scope { margin: 3px 0 0; color: var(--muted); font-size: var(--fs-md); }
+.dashboard-scope-count { opacity: .8; }
+.dashboard-substituted {
+  margin: 6px 0 0; font-size: var(--fs-sm); color: var(--amber);
+  background: var(--amber-100); padding: 5px 9px; border-radius: var(--radius);
+  display: inline-block;
+}
+.dashboard-head-controls { display: flex; align-items: center; gap: 10px; }
+
+.dashboard-unit-picker { position: relative; display: inline-flex; align-items: center; }
+.dashboard-unit-picker select {
+  appearance: none; font: inherit; font-size: var(--fs-body); color: var(--ink);
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 7px 30px 7px 11px; cursor: pointer; max-width: 280px;
+}
+.dashboard-unit-picker select:hover { border-color: color-mix(in srgb, var(--purple) 34%, var(--border)); }
+.dashboard-unit-picker svg { position: absolute; right: 9px; pointer-events: none; color: var(--muted); }
+
+.metric-card-clickable {
+  text-align: left; cursor: pointer; font: inherit; width: 100%;
+}
+.metric-card-clickable:hover { border-color: color-mix(in srgb, var(--purple) 30%, var(--border)); }
+
+/* Full-width cards in one column. A two-column grid put a 345px donut card
+   beside a 1300px list and left a screen of dead space; splitting WITHIN a
+   card (donut beside a bar list, gauges in two columns) fills the width with
+   content instead of stretching one card to match another's height. */
+.dashboard-stack { display: flex; flex-direction: column; gap: 18px; }
+
+/* Donut on the left, the "most widely held" bars on the right. */
+.team-skills-body {
+  display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 30px; align-items: start;
+}
+.team-skills-top { display: flex; flex-direction: column; gap: 10px; }
+.team-skills-top .skill-label { margin: 0; }
+@media (max-width: 900px) { .team-skills-body { grid-template-columns: 1fr; } }
+
+.dashboard-card { display: flex; flex-direction: column; gap: 14px; }
+.dashboard-card .card-head { margin-bottom: 0; align-items: flex-start; }
+.dashboard-card-sub { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-sm); max-width: 62ch; }
+.dashboard-card-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+.dashboard-note {
+  margin: 0; font-size: var(--fs-sm); color: var(--muted); line-height: 1.5;
+  background: var(--surface-sunk); padding: 8px 11px; border-radius: var(--radius);
+}
+.dashboard-note em { font-style: normal; font-weight: 600; color: var(--ink); }
+.dashboard-note-quiet { background: none; padding: 0; }
+
+/* ---------- charts ---------- */
+
+.dashboard-donut-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+/* Wide enough that a chart whose viewBox grew to fit long callout labels
+   still renders its arc at a readable size -- the viewBox is sized from the
+   longest label (see DonutChart), so capping the rendered width too tightly
+   shrinks the circle rather than the text. */
+.donut { width: 100%; max-width: 520px; height: auto; display: block; }
+
+.donut-slice { stroke: var(--white); stroke-width: 1.5; transition: opacity .14s ease; }
+.donut-slice-clickable { cursor: pointer; }
+.donut-slice-clickable:hover { opacity: .82; }
+.donut-slice-dim { opacity: .3; }
+.donut-slice-on { stroke: var(--ink); stroke-width: 2; }
+
+.donut-center-value { font-size: 26px; font-weight: 650; fill: var(--ink); }
+.donut-center-label { font-size: 11px; fill: var(--muted); text-transform: lowercase; }
+
+.donut-leader { stroke: var(--graph-edge); stroke-width: 1; }
+.donut-pill { }
+.donut-pill-text { font-size: 11px; font-weight: 600; fill: #fff; }
+.donut-callout-dim { opacity: .32; }
+
+.donut-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; min-height: 180px; color: var(--muted); font-size: var(--fs-sm);
+}
+.donut-empty-mark { font-size: 30px; margin: 0; opacity: .4; }
+
+.chart-legend {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap;
+  gap: 4px 16px; justify-content: center;
+}
+.chart-legend-btn {
+  display: inline-flex; align-items: center; gap: 7px; background: none; border: 0;
+  padding: 3px 6px; border-radius: var(--radius); font: inherit; font-size: var(--fs-sm);
+  color: var(--ink); cursor: pointer;
+}
+button.chart-legend-btn:hover { background: var(--surface-sunk); }
+.chart-legend li.on .chart-legend-btn { background: var(--purple-100); color: var(--purple-800); }
+.chart-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.chart-legend-label { }
+.chart-legend-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-legend-pct { opacity: .75; }
+
+.bar-rows { display: flex; flex-direction: column; gap: 7px; }
+.bar-row {
+  display: grid; grid-template-columns: minmax(90px, 1.1fr) 2fr auto; align-items: center;
+  gap: 10px; font-size: var(--fs-sm); width: 100%; text-align: left;
+  background: none; border: 0; padding: 2px 0; color: inherit;
+}
+.bar-row-clickable { cursor: pointer; }
+.bar-row-clickable:hover .bar-row-label { color: var(--purple); }
+.bar-row-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row-track { background: var(--surface-sunk); border-radius: 3px; height: 9px; overflow: hidden; }
+.bar-row-fill { display: block; height: 100%; border-radius: 3px; }
+.bar-row-value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.stacked-bar {
+  display: flex; width: 100%; min-width: 70px; border-radius: 3px; overflow: hidden;
+  background: var(--surface-sunk);
+}
+.stacked-bar span { display: block; height: 100%; }
+.stacked-bar-empty { opacity: .5; }
+
+/* ---------- tables ---------- */
+
+.dashboard-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.dashboard-table th {
+  text-align: left; font-weight: 600; color: var(--muted); font-size: var(--fs-xs);
+  text-transform: uppercase; letter-spacing: .04em; padding: 0 10px 7px 0;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.dashboard-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.dashboard-table tr:last-child td { border-bottom: 0; }
+.dashboard-table .num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 14px; }
+.dashboard-table th.num { text-align: right; }
+.dashboard-table .chk { width: 28px; padding-right: 4px; }
+.dashboard-table .chk input { accent-color: var(--purple); }
+
+.supply-skill { font-weight: 550; color: var(--ink); margin-right: 7px; }
+
+/* ---------- capacity gauges (supply vs demand) ----------
+   Replaces a five-column numeric table. One row = one skill, and the bar is
+   normalised to that skill's own demand so the "needed" line lands at the
+   same x on every row — see components/charts/CapacityGauge.tsx. */
+
+.gauge-key {
+  display: flex; align-items: center; gap: 9px; margin: 0;
+  font-size: var(--fs-sm); color: var(--muted); line-height: 1.45;
+  background: var(--surface-sunk); padding: 9px 11px; border-radius: var(--radius);
+}
+.gauge-key-sample {
+  position: relative; flex: none; width: 46px; height: 10px;
+  background: var(--border); border-radius: 3px; overflow: hidden;
+}
+.gauge-key-fill { position: absolute; inset: 0 auto 0 0; width: 60%; background: var(--status-good); }
+.gauge-key-needed { position: absolute; top: -1px; bottom: -1px; left: 36%; width: 2px; background: var(--ink); }
+
+.gauge-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gauge-list li + li { border-top: 1px solid var(--border); }
+
+/* Two columns of gauges on a wide card. Each row is self-contained — name,
+   bar, caption — so splitting the list costs no alignment and halves the
+   scrolling. The column rule replaces the horizontal separator between the
+   two halves. */
+@media (min-width: 1000px) {
+  .gauge-list-split {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 26px;
+  }
+  .gauge-list-split li { border-top: 1px solid var(--border); }
+  .gauge-list-split li:nth-child(1), .gauge-list-split li:nth-child(2) { border-top: 0; }
+}
+
+.gauge-row {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  padding: 11px 10px; border-radius: var(--radius); color: inherit; font: inherit; cursor: pointer;
+}
+.gauge-row:hover { background: var(--surface-sunk); }
+
+.gauge-row-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin-bottom: 7px;
+}
+.gauge-row-name {
+  display: flex; align-items: center; gap: 9px; font-weight: 550; font-size: var(--fs-md);
+  min-width: 0;
+}
+.gauge-row-tags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+
+/* Level mix as a thin strip beside the name — present for context, not for
+   scanning. The numbers behind it are one click away in the popup. */
+.level-strip {
+  display: inline-flex; width: 42px; height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--surface-sunk); flex: none;
+}
+.level-strip i { display: block; height: 100%; }
+
+.gauge { display: flex; flex-direction: column; gap: 5px; }
+.gauge-track {
+  position: relative; height: 12px; border-radius: 3px;
+  background: var(--surface-sunk); overflow: hidden;
+}
+.gauge-track-idle { opacity: .7; }
+.gauge-fill { display: block; height: 100%; border-radius: 3px 0 0 3px; transition: width .2s ease; }
+/* Has to read against BOTH the empty track and a saturated fill, since a
+   bar past the line is drawn under it. A single flat colour can only manage
+   one of those, so this is a light core with a dark edge (inverted in dark
+   mode, where the tokens flip) — visible on anything. */
+.gauge-needed {
+  position: absolute; top: 0; bottom: 0; width: 2px; background: var(--page);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+.gauge-over {
+  position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+  color: var(--purple-on); font-size: 12px; font-weight: 700; line-height: 1;
+}
+.gauge-caption {
+  margin: 0; font-size: var(--fs-sm); color: var(--muted);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.gauge-caption strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.gauge-delta {
+  margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.gauge-delta-short { color: var(--red); }
+.gauge-delta-level { color: var(--muted); font-weight: 500; }
+.gauge-delta-spare { color: var(--green-800); }
+
+.pill-inferred {
+  background: var(--amber-100); border-color: transparent; color: var(--amber);
+  font-weight: 500; font-size: var(--fs-xs);
+}
+
+@media (prefers-reduced-motion: reduce) { .gauge-fill { transition: none; } }
+
+.coverage-cell { min-width: 130px; display: flex; align-items: center; gap: 9px; }
+.coverage-cell .stacked-bar { height: 8px; }
+.coverage-num { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gap-skills { color: var(--red); }
+
+/* ---------- verdict + status pills ---------- */
+
+.verdict-filters { display: flex; flex-wrap: wrap; gap: 7px; }
+.verdict-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm);
+  padding: 5px 10px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--white); color: var(--ink); cursor: pointer;
+}
+.verdict-chip i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.verdict-chip span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.verdict-chip:hover:not(:disabled) { border-color: color-mix(in srgb, var(--purple) 34%, var(--border)); }
+.verdict-chip.on { background: var(--purple-100); border-color: transparent; color: var(--purple-800); }
+.verdict-chip.on span { color: inherit; opacity: .75; }
+.verdict-chip:disabled { opacity: .45; cursor: default; }
+
+.pill.verdict-understaffed { background: var(--red-100); border-color: transparent; color: var(--red); font-weight: 500; }
+.pill.verdict-healthy { background: var(--green-100); border-color: transparent; color: var(--green-800); font-weight: 500; }
+.pill.verdict-overrepresented { background: var(--amber-100); border-color: transparent; color: var(--amber); font-weight: 500; }
+.pill.verdict-unused { background: var(--surface-sunk); border-color: transparent; color: var(--muted); font-weight: 500; }
+
+.pill-spof { background: var(--red-100); border-color: transparent; color: var(--red); font-weight: 500; font-size: var(--fs-xs); }
+.pill-overdue { background: var(--red-100); border-color: transparent; color: var(--red); font-weight: 500; font-size: var(--fs-xs); margin-left: 7px; }
+.pill-gap { background: var(--red-100); border-color: transparent; color: var(--red); font-weight: 500; font-size: var(--fs-xs); }
+.pill-client { background: var(--purple-100); border-color: transparent; color: var(--purple-800); font-size: var(--fs-xs); margin-left: 7px; }
+.pill.severity-high { background: var(--red-100); border-color: transparent; color: var(--red); font-weight: 500; }
+.pill.severity-medium { background: var(--amber-100); border-color: transparent; color: var(--amber); font-weight: 500; }
+.pill.severity-low { background: var(--surface-sunk); border-color: transparent; color: var(--muted); font-weight: 500; }
+
+/* ---------- training ---------- */
+
+.training-body {
+  display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 26px; align-items: start;
+}
+@media (max-width: 900px) { .training-body { grid-template-columns: 1fr; } }
+.training-breakdown { display: flex; flex-direction: column; gap: 12px; }
+.training-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+
+.training-drill {
+  border-top: 1px solid var(--border); padding-top: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.training-drill-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.training-drill-head .skill-label { margin: 0; }
+.training-drill-actions {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  background: var(--surface-sunk); padding: 10px 12px; border-radius: var(--radius);
+}
+.training-drill-result { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--green-800); }
+.training-drill-scroll { max-height: 420px; overflow-y: auto; }
+.training-drill-role { display: block; color: var(--muted); font-size: var(--fs-xs); }
+.training-drill-cont { color: var(--muted); padding-left: 6px; }
+
+/* ---------- insights ---------- */
+
+.insight-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.insight {
+  display: flex; gap: 12px; padding: 13px 14px; border-radius: var(--radius-card);
+  background: var(--surface-sunk); border-left: 3px solid var(--status-idle);
+}
+.insight-high { border-left-color: var(--status-bad); }
+.insight-medium { border-left-color: var(--status-warn); }
+.insight-low { border-left-color: var(--status-idle); }
+.insight-icon { color: var(--muted); flex: none; padding-top: 2px; }
+.insight-high .insight-icon { color: var(--red); }
+.insight-medium .insight-icon { color: var(--amber); }
+.insight-body { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.insight-head {
+  margin: 0; font-weight: 600; font-size: var(--fs-md); display: flex; align-items: center;
+  gap: 9px; flex-wrap: wrap;
+}
+.insight-detail { margin: 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.5; }
+.insight-evidence {
+  list-style: none; margin: 3px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px 8px;
+  font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.insight-evidence li {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  padding: 2px 8px;
+}
+.insight-rec { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--ink); }
+.insight-rec-go { margin-left: 8px; }
+
+/* ---------- skill detail modal ---------- */
+
+/* Centred, not a right-hand drawer: this one is reached by clicking a chart
+   slice, and a panel that flies in from the edge loses the connection to
+   the thing that was clicked. The scrim is shared with the profile panel. */
+.skill-modal-scrim { align-items: center; justify-content: center; padding: 4vh 16px; }
+.skill-modal {
+  width: 620px; max-width: 100%; max-height: 92vh; overflow-y: auto;
+  background: var(--page); border-radius: var(--radius-card); box-shadow: var(--shadow-md);
+  animation: modalin .16s ease;
+}
+@keyframes modalin { from { transform: translateY(8px) scale(.99); opacity: .7; } to { transform: none; opacity: 1; } }
+.skill-modal .panel-head { border-radius: var(--radius-card) var(--radius-card) 0 0; align-items: flex-start; }
+.skill-modal-title { margin: 0; font-size: var(--fs-lg); font-weight: 650; }
+.skill-modal-sub { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-sm); }
+/* Only the category is a lowercase enum value needing a capital. Applying
+   the transform to the whole line rewrote the scope label beside it —
+   "Organization-wide" came out "Organization-Wide". */
+.skill-modal-category { text-transform: capitalize; }
+.skill-modal-body { gap: 20px; }
+.skill-modal-chart { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+
+.skill-modal-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+@media (max-width: 560px) { .skill-modal-stats { grid-template-columns: repeat(2, 1fr); } }
+.skill-stat {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.skill-stat-value { margin: 0; font-size: var(--fs-lg); font-weight: 650; font-variant-numeric: tabular-nums; }
+.skill-stat-label { margin: 1px 0 0; font-size: var(--fs-sm); }
+.skill-stat-note { margin: 1px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+
+.skill-risk {
+  display: flex; gap: 11px; padding: 12px 13px; border-radius: var(--radius);
+  background: var(--surface-sunk); border-left: 3px solid var(--status-idle);
+}
+.skill-risk-high { border-left-color: var(--status-bad); background: var(--red-100); }
+.skill-risk-medium { border-left-color: var(--status-warn); background: var(--amber-100); }
+.skill-risk svg { flex: none; margin-top: 3px; }
+.skill-risk-high svg { color: var(--red); }
+.skill-risk-medium svg { color: var(--amber); }
+.skill-risk-head { margin: 0; font-weight: 600; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.skill-risk-why { margin: 3px 0 0; font-size: var(--fs-sm); color: var(--muted); line-height: 1.5; }
+
+.skill-modal-projects, .skill-modal-holders { list-style: none; margin: 7px 0 0; padding: 0; }
+.skill-modal-projects li {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+}
+.skill-modal-projects li:last-child { border-bottom: 0; }
+.skill-modal-project-name { font-weight: 500; }
+.skill-modal-project-meta { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); white-space: nowrap; }
+
+.skill-modal-holders { max-height: 300px; overflow-y: auto; }
+.skill-modal-holder {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+  background: none; border: 0; padding: 7px 8px; border-radius: var(--radius);
+  color: inherit; font: inherit; cursor: pointer;
+}
+.skill-modal-holder:disabled { cursor: default; }
+.skill-modal-holder:not(:disabled):hover { background: var(--white); }
+.skill-modal-holder-who { flex: 1; min-width: 0; }
+.skill-modal-holder-name { display: block; font-weight: 500; }
+.skill-modal-holder-role { display: block; font-size: var(--fs-xs); color: var(--muted); }
+.skill-modal-holder-go { color: var(--muted); flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skill-modal { animation: none; }
+  .donut-slice { transition: none; }
 }
