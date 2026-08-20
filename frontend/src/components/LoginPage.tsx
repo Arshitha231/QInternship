@@ -3,7 +3,6 @@ import { BrandMark } from "./BrandMark";
 import { ApiError, login } from "../api";
 import { Moon, Sun } from "../icons";
 import { useTheme } from "../hooks";
-import { LoginHeart } from "./LoginHeart";
 import type { Identity } from "../types";
 
 interface Props {
@@ -49,47 +48,43 @@ export function LoginPage({ onLogin }: Props) {
         {theme === "dark" ? <Sun /> : <Moon />}
       </button>
 
-      <div className="login-stack">
-        <LoginHeart />
-
-        <div className="login-card">
-          <div className="brand login-brand">
-            <span className="brand-mark" aria-hidden="true"><BrandMark size={36} /></span>
-            <span className="brand-name">Mel</span>
-          </div>
-          <p className="login-tagline">Sign in to the employee directory</p>
-
-          <form onSubmit={submit}>
-            <label className="login-field">
-              <span>Work email</span>
-              <input
-                type="email"
-                autoComplete="username"
-                autoFocus
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-              />
-            </label>
-            <label className="login-field">
-              <span>Password</span>
-              <input
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-
-            {error && <p className="login-error" role="alert">{error}</p>}
-
-            <button type="submit" className="btn btn-primary login-submit" disabled={submitting}>
-              {submitting ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
+      <div className="login-card">
+        <div className="brand login-brand">
+          <span className="brand-mark" aria-hidden="true"><BrandMark size={36} /></span>
+          <span className="brand-name">Mel</span>
         </div>
+        <p className="login-tagline">Sign in to the employee directory</p>
+
+        <form onSubmit={submit}>
+          <label className="login-field">
+            <span>Work email</span>
+            <input
+              type="email"
+              autoComplete="username"
+              autoFocus
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+            />
+          </label>
+          <label className="login-field">
+            <span>Password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+
+          {error && <p className="login-error" role="alert">{error}</p>}
+
+          <button type="submit" className="btn btn-primary login-submit" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
       </div>
     </div>
   );
