@@ -1682,3 +1682,85 @@ class TeamBuildRequest(BaseModel):
     #: Replace click, dropping a role nobody touched. Sending the plan back
     #: keeps the server stateless AND the team stable.
     plan: TeamPlanInput | None = None
+
+
+# ---------------------------------------------------------------------------
+# Find the Right Team — app/team_finder.py
+#
+# Recommends an EXISTING org unit. Nothing here creates or modifies a team.
+# Every count is computed over employees the caller is permitted to
+# discover (is_record_visible), so a headcount cannot disclose someone the
+# caller cannot see.
+# ---------------------------------------------------------------------------
+
+class TeamMatchSkill(BaseModel):
+    """One needed skill, and how the team holds it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill: str
+    expert: int
+    working: int
+    learning: int
+    total: int
+
+
+class TeamManagerRef(BaseModel):
+    """Who to contact.
+
+    Name, job title and work_email only — all in app/permissions.py's
+    BASE_FIELDS, i.e. visible to every caller who can see the record at
+    all. No gated field (personal_mobile, salary, hire_date) is carried
+    here, so a recommendation discloses no more than opening the profile
+    would.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: str
+    full_name: str
+    job_title: str
+    work_email: str
+
+
+class TeamRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    org_unit_id: int
+    name: str
+    unit_type: str
+    match_pct: int
+    #: Everyone in the unit (subtree, for a department) the caller may see.
+    headcount: int
+    #: How many of them hold at least one of the needed skills.
+    relevant_people: int
+    skills: list[TeamMatchSkill] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    #: None only when the unit's head is not visible to this caller.
+    manager: TeamManagerRef | None = None
+    #: Built from the same counts that produced match_pct, so the sentence
+    #: cannot claim something the numbers do not.
+    why: str
+
+
+class TeamRecommendationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    topic: str
+    #: The canonical skills the question was read as being about.
+    skills: list[str] = Field(default_factory=list)
+    teams: list[TeamRecommendation] = Field(default_factory=list)
+    #: Named in the question but not tracked in this directory.
+    unrecognised_skills: list[str] = Field(default_factory=list)
+    need_source: Literal["model", "derived"]
+    #: The granularity the question asked for ("team"/"department"), when it
+    #: said. Results of that type sort first; the other type still appears
+    #: below, so the reader can see when the wider answer is the better one.
+    preferred_unit_type: str | None = None
+
+
+class TeamFindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=500)

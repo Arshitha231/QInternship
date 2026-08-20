@@ -9,6 +9,7 @@ import type {
   UploadedDocSummary, ViewMode, WorkforceReport,
   TeamPlanInput,
   TeamProposal,
+  TeamRecommendationResult,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -1026,6 +1027,22 @@ export function buildTeam(
       assignments: opts.assignments ?? {},
       plan: opts.plan ?? null,
     }),
+    signal,
+  });
+}
+
+// --- Find the Right Team (app/team_finder.py) -----------------------------
+//
+// Ranks EXISTING org units. A different gate from buildTeam on purpose: this
+// one runs behind the employee-discovery rule rather than resolve_scope, so
+// an ordinary employee can find a team outside their own reporting line.
+export function findTeams(
+  identity: Identity, viewMode: ViewMode, query: string, signal?: AbortSignal,
+): Promise<TeamRecommendationResult> {
+  return request<TeamRecommendationResult>(`/team/find?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
     signal,
   });
 }

@@ -2717,3 +2717,100 @@ button.wi-evidence-chip.is-link:hover { border-color: var(--purple); background:
   .tb-stats { gap: 16px; }
   .tb-role-list { grid-template-columns: 1fr; }
 }
+
+/* --- Technical-only disclaimer on Build Team ------------------------------
+   Amber, not red: this is a caveat about scope, not an error. Never
+   collapsed and never a tooltip — the risk it addresses is somebody acting
+   on a skills ranking as if it were a staffing decision, and a warning
+   behind an interaction does not reach that person. */
+.tb-notice {
+  display: flex; align-items: flex-start; gap: 9px;
+  background: var(--amber-100); border: 1px solid transparent;
+  border-radius: var(--radius); padding: 10px 12px; color: var(--amber);
+}
+.tb-notice-prominent { border-color: var(--amber); }
+.tb-notice-title { margin: 0 0 2px; font-size: var(--fs-body); font-weight: 600; }
+.tb-notice-body { margin: 0; font-size: var(--fs-sm); line-height: 1.5; color: var(--ink); opacity: .85; }
+
+/* --- Find the Right Team -------------------------------------------------- */
+.team-finder { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
+.tf-hint { margin: -4px 0 0; font-size: var(--fs-sm); color: var(--muted); }
+.tf-row { display: flex; align-items: center; gap: 9px; }
+.tf-row > svg { color: var(--muted); flex: none; }
+.tf-query { flex: 1; margin-top: 0; }
+.tf-row .btn { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.tf-examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.tf-example {
+  background: var(--page); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  padding: 3px 9px; cursor: pointer; font: inherit; font-size: var(--fs-xs); color: var(--muted);
+}
+.tf-example:hover { border-color: var(--purple); color: var(--purple); }
+
+.tf-result { display: flex; flex-direction: column; gap: 12px; }
+
+.tf-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.tf-card-head { display: flex; align-items: flex-start; gap: 16px; }
+.tf-card-head h3 {
+  margin: 0; font-size: var(--fs-lg); font-weight: 600; color: var(--ink);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.tf-unit-type {
+  font-size: var(--fs-xs); font-weight: 400; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em;
+  border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 1px 6px;
+}
+.tf-why { margin: 4px 0 0; font-size: var(--fs-body); color: var(--muted); line-height: 1.5; }
+.tf-match { margin-left: auto; text-align: right; flex: none; }
+.tf-match-pct { display: block; font-size: var(--fs-xl); font-weight: 600; color: var(--purple); line-height: 1; }
+.tf-match-label { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+.tf-card-body { display: flex; gap: 28px; flex-wrap: wrap; }
+.tf-skills { display: flex; flex-direction: column; gap: 10px; min-width: 240px; }
+.tf-skill-name {
+  margin: 0; font-size: var(--fs-body); font-weight: 500; color: var(--ink);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.tf-skill-count { font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
+.tf-levels { margin: 4px 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.lvl { font-size: var(--fs-xs); border-radius: var(--radius-pill); padding: 1px 7px; }
+.lvl-expert { background: var(--green-100); color: var(--green-800); }
+.lvl-working { background: var(--purple-100); color: var(--purple-800); }
+.lvl-learning { background: var(--amber-100); color: var(--amber); }
+
+.tf-projects h4 {
+  margin: 0 0 6px; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+}
+.tf-projects ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.tf-projects li { font-size: var(--fs-body); color: var(--ink); }
+
+.tf-card-foot {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  border-top: 1px solid var(--border); padding-top: 12px;
+}
+.tf-manager { display: flex; align-items: center; gap: 9px; }
+.tf-manager .avatar { width: 32px; height: 32px; font-size: var(--fs-sm); flex: none; }
+.tf-manager-text { display: flex; flex-direction: column; }
+.tf-manager-text strong { font-size: var(--fs-body); font-weight: 500; color: var(--ink); }
+.tf-manager-text em { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
+.tf-contact {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 10px;
+  font-size: var(--fs-sm); color: var(--purple);
+}
+.tf-no-manager { margin: 0; font-size: var(--fs-sm); color: var(--muted); font-style: italic; }
+.tf-headcount {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-sm); color: var(--muted);
+}
+.tf-graph-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 720px) {
+  .tf-row { flex-wrap: wrap; }
+  .tf-query { min-width: 0; }
+  .tf-card-body { gap: 14px; }
+  .tf-graph-btn { margin-left: 0; }
+}

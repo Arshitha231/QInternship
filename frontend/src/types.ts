@@ -912,3 +912,49 @@ export interface TeamProposal {
   narrative_source: "model" | "derived";
   candidate_pool_size: number;
 }
+
+// --- Find the Right Team (app/team_finder.py) -----------------------------
+//
+// Recommends an EXISTING org unit. Every count is computed server-side over
+// employees the caller is permitted to discover, so a headcount here cannot
+// disclose somebody they cannot see.
+
+export interface TeamMatchSkill {
+  skill: string;
+  expert: number;
+  working: number;
+  learning: number;
+  total: number;
+}
+
+export interface TeamManagerRef {
+  employee_id: string;
+  full_name: string;
+  job_title: string;
+  work_email: string;
+}
+
+export interface TeamRecommendation {
+  org_unit_id: number;
+  name: string;
+  unit_type: string;
+  match_pct: number;
+  headcount: number;
+  relevant_people: number;
+  skills: TeamMatchSkill[];
+  projects: string[];
+  manager: TeamManagerRef | null;
+  why: string;
+}
+
+export interface TeamRecommendationResult {
+  query: string;
+  topic: string;
+  skills: string[];
+  teams: TeamRecommendation[];
+  unrecognised_skills: string[];
+  need_source: "model" | "derived";
+  // "team"/"department" when the question said which; results of that type
+  // sort first, the other type still appears below.
+  preferred_unit_type: string | null;
+}
