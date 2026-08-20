@@ -16,6 +16,7 @@ from app.auth import AuthenticatedUser, get_current_user
 from app.certifications import LocalStatusWritesDisabled, UnknownCourse, record_course_status
 from app import config
 from app.analytics import DashboardForbidden
+from app.analytics import resolve_scope
 from app.analytics import insights as insights_service
 from app.analytics import org_unit_options as org_unit_options_service
 from app.analytics import overview as dashboard_overview_service
@@ -93,6 +94,8 @@ from app.proposals import reject as reject_proposal
 from app.proposals import resolve_subject
 from app.proposals import undo as undo_proposal
 from app.registry import assert_registry_covers_schema
+from app.team_builder import TeamBuildUnavailable, build_team
+from app.team_finder import find_teams
 from app.workforce_reports import ReportUnavailable
 from app.workforce_reports import generate_report as generate_report_service
 from app.skill_routes import RouteDenied
@@ -124,6 +127,11 @@ from app.schemas import (
     TrainingRoster,
     WorkforceInsight,
     WorkforceReport,
+    MeCapabilities,
+    TeamBuildRequest,
+    TeamFindRequest,
+    TeamProposal,
+    TeamRecommendationResult,
     WorkforceReportRequest,
     FinalizeDocumentRequest,
     LoginRequest,
@@ -228,6 +236,32 @@ def health() -> dict:
 @app.get("/auth/whoami", response_model=AuthenticatedUser)
 def whoami(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
     return user
+
+
+@app.get("/me/capabilities", response_model=MeCapabilities)
+def my_capabilities(
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> MeCapabilities:
+    """Which of the team features this caller can actually use.
+
+    Answered by running the real gate — app/analytics.py's resolve_scope,
+    the same function POST /team/build runs — rather than by re-deriving
+    the rule client-side, where it would be a second copy free to drift
+    from the first.
+
+    Purely advisory. Every endpoint enforces for itself, so a wrong answer
+    here can hide a feature that would have worked, never open one that
+    should be shut.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        resolve_scope(db, user, mode)
+        can_build = True
+    except DashboardForbidden:
+        can_build = False
+    return MeCapabilities(can_build_team=can_build, can_find_team=True)
 from pydantic import BaseModel
 
 class LoginRequest(BaseModel):
@@ -1284,6 +1318,82 @@ def workforce_report_route(
         return generate_report_service(db, user, body.query, mode)
     except ReportUnavailable as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# AI Team Builder — propose a project team from a natural-language brief.
+#
+# Sits on the same gate as every other dashboard route. The ordering inside
+# app/team_builder.py's build_team is the security property: resolve_scope
+# runs on the CALLER before the brief reaches the planner, and the candidate
+# pool is built from that scope alone.
+# ---------------------------------------------------------------------------
+
+@app.post("/team/build", response_model=TeamProposal)
+def build_team_route(
+    body: TeamBuildRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamProposal:
+    """Turn a project brief into a proposed team, drawn only from people the
+    caller is already authorized to see.
+
+    The model converts the brief into roles and required skills. It does not
+    choose people, does not score them, and produces no statistic: every
+    percentage in the response is computed in app/team_builder.py from
+    database rows. The plan it returns has no scope field, so a brief cannot
+    widen the candidate pool however it is phrased — HR in work mode builds
+    from the organization, a manager builds from their reporting line, and
+    `scope` in the response says which.
+
+    Stateless. `assignments` is how Replace works: re-post the same brief
+    with {role_index: employee_id} and coverage, gaps and concentration
+    risks are all recalculated against the substituted team.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    try:
+        return build_team(
+            db, user, body.brief, mode,
+            constraints_text=body.constraints,
+            assignments=body.assignments,
+            plan_input=body.plan,
+        )
+    except TeamBuildUnavailable as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Find the Right Team — which EXISTING team to go and ask.
+#
+# A different question from POST /team/build, and so a different gate. This
+# route ranks org units behind is_record_visible, the employee-discovery
+# rule that /search and the find_experts tool already aggregate behind for
+# every caller. resolve_scope is deliberately NOT used: it confines a
+# manager to their own reporting line, which would make "which other team
+# should I talk to" answerable only with "one of yours".
+# ---------------------------------------------------------------------------
+
+@app.post("/team/find", response_model=TeamRecommendationResult)
+def find_team_route(
+    body: TeamFindRequest,
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> TeamRecommendationResult:
+    """Rank existing teams and departments for a technical question.
+
+    Creates nothing and changes nothing. The model turns the question into
+    skills and does no more than that — it never sees an employee row, never
+    picks a unit, and produces no statistic. Every count comes from
+    employees this caller is permitted to discover, filtered before any
+    aggregation, so a headcount cannot disclose somebody they cannot see.
+
+    Contact details are the unit head's name, title and work_email, all
+    universally-visible BASE_FIELDS.
+    """
+    mode = resolve_view_mode(user.role, view_mode)
+    return find_teams(db, user, body.query, mode)
 
 
 # ---------------------------------------------------------------------------
