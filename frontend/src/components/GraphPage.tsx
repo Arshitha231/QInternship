@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { getPerson } from "../api";
+import type { FocusHistory } from "../hooks";
 import type { Identity, PersonDetail, ViewMode } from "../types";
 import { DepartmentGraph } from "./graphs/DepartmentGraph";
 import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
 import { CommunityPage } from "./CommunityPage";
+import { ChevronLeft, ChevronRight, Home } from "../icons";
 import { avatarStyle } from "../avatarHue";
 
 type GraphKind = "department" | "team" | "skills" | "community";
@@ -35,16 +37,19 @@ function initials(name: string): string {
 export function GraphPage({
   identity,
   viewMode,
-  focusId,
-  onFocusChange,
+  focus,
   onOpenProfile,
 }: {
   identity: Identity;
   viewMode: ViewMode;
-  focusId: string;
-  onFocusChange: (id: string) => void;
+  // The focus person AND the trail behind them -- one object rather than a
+  // value plus a setter, because every graph below re-centres by calling
+  // through it and the history has to see those navigations to be a history.
+  focus: FocusHistory;
   onOpenProfile: (id: string, name: string) => void;
 }) {
+  const { focusId } = focus;
+  const onFocusChange = focus.go;
   const [kind, setKind] = useState<GraphKind>("department");
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
@@ -52,11 +57,17 @@ export function GraphPage({
     let cancelled = false;
     setFocusPerson(undefined);
     getPerson(identity, focusId, viewMode).then((p) => {
-      if (!cancelled) setFocusPerson(p);
+      if (cancelled) return;
+      setFocusPerson(p);
+      // The trail records ids; names only exist after this fetch. Handing
+      // it back is what lets Back say "Back to Priya Sharma" rather than
+      // just "Back".
+      if (p) focus.rememberName(p.id, p.full_name);
     });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity, viewMode, focusId]);
 
   const name = focusPerson?.full_name ?? "…";
@@ -70,6 +81,41 @@ export function GraphPage({
           -- the graph is the point of this page, so the chrome around it
           is now a single line. */}
       <div className="graph-toolbar">
+        {/* Retrace controls sit with the focus person, not with the zoom
+            controls on the canvas: these move you between PEOPLE, and the
+            +/-/fit cluster moves you around one drawing. Two different
+            kinds of "where am I", kept visually apart so neither is
+            mistaken for the other. */}
+        <div className="graph-history" role="group" aria-label="Graph navigation">
+          <button
+            className="graph-history-btn"
+            onClick={focus.back}
+            disabled={!focus.canGoBack}
+            title={focus.backLabel ? `Back to ${focus.backLabel}` : "Back"}
+            aria-label={focus.backLabel ? `Back to ${focus.backLabel}` : "Back"}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            className="graph-history-btn"
+            onClick={focus.forward}
+            disabled={!focus.canGoForward}
+            title={focus.forwardLabel ? `Forward to ${focus.forwardLabel}` : "Forward"}
+            aria-label={focus.forwardLabel ? `Forward to ${focus.forwardLabel}` : "Forward"}
+          >
+            <ChevronRight size={16} />
+          </button>
+          <button
+            className="graph-history-btn graph-history-home"
+            onClick={focus.home}
+            disabled={focus.atHome}
+            title={focus.atHome ? "Already centred on you" : "Recentre on me"}
+            aria-label={focus.atHome ? "Already centred on you" : "Recentre on me"}
+          >
+            <Home size={15} />
+          </button>
+        </div>
+
         <div className="graph-focus-who">
           <span className="avatar" style={avatarStyle(name)} aria-hidden="true">{focusPerson ? initials(name) : ""}</span>
           <div className="graph-focus-text">

@@ -671,6 +671,31 @@ button { font: inherit; }
   background: var(--white); border: 1px solid var(--border);
   border-radius: var(--radius-card); padding: 10px 14px;
 }
+/* Retrace controls: back / forward through the people you have centred on,
+   and home back to yourself. Segmented into one unit so they read as one
+   control rather than three loose buttons, and deliberately NOT styled like
+   the canvas's zoom cluster -- these move between people, those move around
+   one drawing, and conflating them is how you get someone pressing Home
+   expecting the view to reset. */
+.graph-history {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--white); overflow: hidden;
+}
+.graph-history-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 28px; padding: 0;
+  background: none; border: 0; color: var(--muted); cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.graph-history-btn + .graph-history-btn { border-left: 1px solid var(--border); }
+.graph-history-btn:hover:not(:disabled) { background: var(--purple-100); color: var(--purple-800); }
+/* Disabled, not hidden: a control that vanishes when it has nothing to do
+   makes the row jump and leaves you unsure it was ever there. */
+.graph-history-btn:disabled { opacity: .35; cursor: default; }
+.graph-history-home { color: var(--purple); }
+@media (prefers-reduced-motion: reduce) { .graph-history-btn { transition: none; } }
+
 .graph-focus-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .graph-focus-who .avatar { width: 34px; height: 34px; font-size: var(--fs-sm); flex-shrink: 0; }
 .graph-focus-text { min-width: 0; }
