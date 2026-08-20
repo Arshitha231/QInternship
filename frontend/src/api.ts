@@ -1,11 +1,11 @@
 import type {
   AskHistoryTurn, AskResponse, AuthorizationRecordOut, BulkResultRow, CommunityLinkOut,
   ContinuityOverview, DashboardOverview, DocSubjectMatchOut, EmployeeContinuityDetail,
-  EngagementExposure, HrReviewQueueItem, Identity, NotificationOut, OfficeOut, OrgChainNode,
+  EngagementExposure, HrReviewQueueItem, Identity, InsightReport, NotificationOut, OfficeOut, OrgChainNode,
   OrgUnitOption, OrgUnitOut, PersonDetail, PersonSummary, ProjectCoverage, ProposedChangeGroup,
   ReminderResult, SkillDetail, SkillSupplyDemand, SuggestedOfficialLinkOut, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
-  UploadedDocSummary, ViewMode, WorkforceInsight,
+  UploadedDocSummary, ViewMode,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -948,8 +948,11 @@ export function getProjectCoverage(
   return request<ProjectCoverage[]>(`/analytics/projects?${scopeQuery(viewMode, scope)}`, identity, { signal });
 }
 
+// Returns the findings AND the narrative over them in one call: the summary
+// is only meaningful against the exact list it was written over, and two
+// calls would let a re-render pair one scope's prose with another's cards.
 export function getWorkforceInsights(
   identity: Identity, viewMode: ViewMode, scope: DashboardScopeParams, signal?: AbortSignal,
-): Promise<WorkforceInsight[]> {
-  return request<WorkforceInsight[]>(`/analytics/insights?${scopeQuery(viewMode, scope)}`, identity, { signal });
+): Promise<InsightReport> {
+  return request<InsightReport>(`/analytics/insights?${scopeQuery(viewMode, scope)}`, identity, { signal });
 }

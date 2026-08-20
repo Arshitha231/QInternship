@@ -2165,3 +2165,22 @@ button.chart-legend-btn:hover { background: var(--surface-sunk); }
   .skill-modal { animation: none; }
   .donut-slice { transition: none; }
 }
+
+/* ---------- insight narrative ----------
+   Sits above the finding cards because its job is telling you which card to
+   read first. Deliberately styled as a quiet lead-in rather than a hero
+   banner: it summarises the findings, it is not a finding. */
+.insight-summary {
+  display: flex; gap: 12px; padding: 14px 15px; border-radius: var(--radius-card);
+  background: var(--purple-100); border: 1px solid transparent;
+}
+.insight-summary-mark { color: var(--purple-800); flex: none; padding-top: 2px; }
+.insight-summary-text {
+  margin: 0; font-size: var(--fs-md); line-height: 1.55; color: var(--ink);
+}
+/* Provenance on the label, not in a tooltip: a summary a model wrote and
+   one a format string wrote are different things to trust, and the reader
+   should not have to hover to find out which they got. */
+.insight-summary-source {
+  margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: 1.45;
+}

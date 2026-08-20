@@ -5,8 +5,8 @@ import {
   type DashboardScopeParams,
 } from "../api";
 import type {
-  DashboardOverview, Identity, OrgUnitOption, ProjectCoverage, ReminderResult, SkillSupplyDemand,
-  TrainingAnalytics, TrainingPersonRow, TrainingRoster, ViewMode, WorkforceInsight,
+  DashboardOverview, Identity, InsightReport, OrgUnitOption, ProjectCoverage, ReminderResult,
+  SkillSupplyDemand, TrainingAnalytics, TrainingPersonRow, TrainingRoster, ViewMode,
 } from "../types";
 import {
   AlertCircle, Award, Briefcase, Check, ChevronDown, Clock, GraduationCap, Network,
@@ -78,7 +78,7 @@ export function DashboardPage({
   const [skills, setSkills] = useState<SkillSupplyDemand[] | null>(null);
   const [training, setTraining] = useState<TrainingAnalytics | null>(null);
   const [projects, setProjects] = useState<ProjectCoverage[] | null>(null);
-  const [insights, setInsights] = useState<WorkforceInsight[] | null>(null);
+  const [insights, setInsights] = useState<InsightReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [drill, setDrill] = useState<Drill>({ kind: "none" });
@@ -1000,7 +1000,7 @@ function ProjectCoverageCard({ projects }: { projects: ProjectCoverage[] | null 
 function InsightsCard({
   insights, isHr, onOpenSkill, onGoToTraining,
 }: {
-  insights: WorkforceInsight[] | null;
+  insights: InsightReport | null;
   isHr: boolean;
   onOpenSkill: (id: number) => void;
   onGoToTraining: () => void;
@@ -1009,14 +1009,17 @@ function InsightsCard({
     return <div className="card"><div className="skel skel-card" style={{ height: 200 }} /></div>;
   }
 
+  const { summary, insights: items } = insights;
+
   return (
     <section className="card dashboard-card">
       <div className="card-head">
         <div>
           <h2>{isHr ? "Workforce risk & insights" : "Team development"}</h2>
-          {/* Said plainly rather than dressed up as AI: every item below is
-              a rule over data already in this directory, and the counts are
-              printed so the claim can be checked. */}
+          {/* Said plainly rather than dressed up as AI: every FINDING below
+              is a rule over data already in this directory, and the counts
+              are printed so the claim can be checked. The summary above them
+              is the one part a model touches, and it says so. */}
           <p className="dashboard-card-sub">
             Derived from this directory's own skills, projects and training records — each item states
             the figures behind it
@@ -1024,14 +1027,30 @@ function InsightsCard({
         </div>
       </div>
 
-      {insights.length === 0 ? (
+      {/* The narrative sits above the cards because its whole job is
+          telling you which card to read first. Its provenance is on the
+          label, not buried in a tooltip: a summary a model wrote and one a
+          format string wrote are different things to trust. */}
+      <div className="insight-summary">
+        <span className="insight-summary-mark" aria-hidden="true"><Sparkles /></span>
+        <div>
+          <p className="insight-summary-text">{summary.text}</p>
+          <p className="insight-summary-source">
+            {summary.source === "model"
+              ? "Written by a model over the findings below — it sees only these findings, never employee records, and every figure it used was checked back against them."
+              : "Assembled from the findings below. No model was involved."}
+          </p>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
         <p className="muted">
           Nothing crosses a threshold in this scope. That is the finding — no items are padded in here to
           fill the section.
         </p>
       ) : (
         <ul className="insight-list">
-          {insights.map((insight, i) => (
+          {items.map((insight, i) => (
             <li key={`${insight.kind}-${i}`} className={`insight insight-${insight.severity}`}>
               <span className="insight-icon" aria-hidden="true">{INSIGHT_ICON[insight.kind]}</span>
               <div className="insight-body">

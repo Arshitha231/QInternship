@@ -300,6 +300,26 @@ def _scope_out(db: Session, scope: Scope) -> DashboardScope:
     )
 
 
+def scope_for(
+    db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work", *,
+    org_unit_id: int | None = None, manager_id: str | None = None,
+) -> DashboardScope:
+    """The resolved scope on its own, with none of the analysis.
+
+    For callers that need to say WHOSE data something is without paying for
+    a full pass over it — the insights narrative, which needs the scope
+    label and headcount to write a sentence and nothing else. Raises
+    DashboardForbidden exactly as every other entry point here does, so a
+    caller cannot use it as a cheaper way past the gate.
+
+    No audit row: this reads no employee data beyond the scope resolution
+    every other public function in this module already writes a row for, and
+    a second entry for the same request would double-count.
+    """
+    return _scope_out(db, resolve_scope(db, caller, view_mode,
+                                        org_unit_id=org_unit_id, manager_id=manager_id))
+
+
 def org_unit_options(db: Session, caller: AuthenticatedUser, view_mode: ViewMode = "work") -> list[OrgUnitOption]:
     """The department selector's contents: every unit the caller may scope
     to, with the headcount each one resolves to.

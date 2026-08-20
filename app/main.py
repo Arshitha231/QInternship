@@ -16,6 +16,7 @@ from app.analytics import insights as insights_service
 from app.analytics import org_unit_options as org_unit_options_service
 from app.analytics import overview as dashboard_overview_service
 from app.analytics import project_coverage as project_coverage_service
+from app.analytics import scope_for as dashboard_scope_service
 from app.analytics import send_reminders as send_reminders_service
 from app.analytics import skill_detail as skill_detail_service
 from app.analytics import skill_supply_demand as skill_supply_demand_service
@@ -45,6 +46,7 @@ from app.continuity import reject_authorization_record as reject_authorization_r
 from app.continuity import submit_authorization_record as submit_authorization_record_service
 from app.db import engine, get_db
 from app.demo_auth import DemoLoginDenied, DemoLoginDisabled, login as demo_login
+from app.insight_narrative import narrate as narrate_insights
 from app.doc_extraction import UnsupportedDocument, process_document, store_document
 from app.models import DocSubjectMatch, Employee, Office, OrgUnit, TrainingCourse
 from app.models.enums import CourseStatus, SkillCategory, SkillLevel, display_status
@@ -100,6 +102,7 @@ from app.schemas import (
     EditProposalRequest,
     EmployeeContinuityDetail,
     EngagementExposure,
+    InsightReport,
     OrgUnitOption,
     ProjectCoverage,
     ReminderResult,
@@ -1500,7 +1503,7 @@ def analytics_project_coverage_route(
         raise HTTPException(status_code=403, detail=str(e))
 
 
-@app.get("/analytics/insights", response_model=list[WorkforceInsight])
+@app.get("/analytics/insights", response_model=InsightReport)
 def analytics_insights_route(
     org_unit_id: int | None = Query(None),
     manager_id: str | None = Query(None),
@@ -1508,18 +1511,35 @@ def analytics_insights_route(
     view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
-) -> list[WorkforceInsight]:
-    """Risk and development signals for the scope. Rule-derived and
-    deterministic — see app/analytics.py's `insights` for why this section
-    is not handed to a model. Returns fewer items when less crosses a
-    threshold rather than padding the list."""
+) -> InsightReport:
+    """Risk and development signals for the scope, plus a short narrative
+    over them.
+
+    The FINDINGS are rule-derived and deterministic — see app/analytics.py's
+    `insights`, which never calls a model and states the counts behind every
+    claim. The SUMMARY is the one place a model touches this feature, and it
+    only ever orders and connects findings that are already computed: it
+    sees no employee rows, and every numeral it writes is checked back
+    against the findings before the text is accepted (app/insight_narrative.py).
+    `summary.source` says whether the prose came from the model or from the
+    deterministic template that runs when it can't or shouldn't.
+    """
     try:
-        return insights_service(
+        found = insights_service(
             db, user, _dashboard_view_mode(user, view_mode),
             org_unit_id=org_unit_id, manager_id=manager_id, due_soon_days=due_soon_days,
         )
+        # The narrative needs the scope's label and headcount to write a
+        # sentence. Resolved through the same gate the findings went
+        # through, so the prose can never describe a different scope than
+        # the cards under it.
+        scope = dashboard_scope_service(
+            db, user, _dashboard_view_mode(user, view_mode),
+            org_unit_id=org_unit_id, manager_id=manager_id,
+        )
     except DashboardForbidden as e:
         raise HTTPException(status_code=403, detail=str(e))
+    return InsightReport(summary=narrate_insights(found, scope), insights=found)
 
 
 # ---------------------------------------------------------------------------

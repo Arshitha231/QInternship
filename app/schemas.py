@@ -1203,6 +1203,41 @@ class WorkforceInsight(BaseModel):
     recommendation: str = ""
 
 
+class InsightNarrative(BaseModel):
+    """The dashboard's opening paragraph — see app/insight_narrative.py.
+
+    `source` is not decoration. "model" means a language model ordered the
+    already-computed findings into prose and every numeral it wrote was
+    checked back against those findings; "derived" means a format string
+    assembled the same facts, which is what runs with no model configured,
+    on a failed call, and on a failed check. A demo screenshot should never
+    be able to pass one off as the other.
+
+    There is no third state: a summary is always returned, because the
+    template always succeeds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    source: Literal["model", "derived"]
+
+
+class InsightReport(BaseModel):
+    """GET /analytics/insights.
+
+    The narrative and the findings travel together rather than as two calls:
+    the summary is only meaningful against the exact list it was written
+    over, and fetching them separately would let a re-render pair one
+    scope's prose with another scope's cards.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: InsightNarrative
+    insights: list[WorkforceInsight]
+
+
 class DashboardOverview(BaseModel):
     """The headline row plus the rollups the sections below expand on.
 

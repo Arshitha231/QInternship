@@ -682,6 +682,22 @@ export interface WorkforceInsight {
   recommendation: string;
 }
 
+// The dashboard's opening paragraph. `source` is not decoration: "model"
+// means a language model ordered the already-computed findings into prose
+// and every numeral it wrote was checked back against them; "derived" means
+// a format string assembled the same facts, which is what runs with no
+// model configured, on a failed call, and on a failed check. Rendered as
+// provenance so a screenshot can never pass one off as the other.
+export interface InsightNarrative {
+  text: string;
+  source: "model" | "derived";
+}
+
+export interface InsightReport {
+  summary: InsightNarrative;
+  insights: WorkforceInsight[];
+}
+
 export interface DashboardOverview {
   scope: DashboardScope;
   headcount: number;
