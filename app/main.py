@@ -77,6 +77,13 @@ from app.people import get_person as get_person_service
 from app.people import update_own_bio as update_own_bio_service
 from app.people import update_own_name_pronunciation as update_own_name_pronunciation_service
 from app.permissions import resolve_view_mode
+from app.assistant_conversations import (
+    ConversationNotFound,
+    append_turn,
+    get_most_recent_conversation,
+    load_history,
+    open_or_continue,
+)
 from app.project_requirements import RequirementNotesNotAccessible
 from app.project_requirements import add_requirement_notes as add_requirement_notes_service
 from app.project_requirements import get_requirement_notes as get_requirement_notes_service
@@ -332,6 +339,9 @@ def unified_search_route(
         None, description='"work" or "employee" — see GET /people. Applies to the '
                           'assisted path too, so an hr/it caller in employee mode gets '
                           'employee-mode data whether they searched or asked a question.'),
+    conversation_id: int | None = Query(
+        None, description="Continues the caller's own \"search\" conversation. Omit to open a new one "
+                          "(still returned in the response) — see AskRequest's docstring for the same rule."),
     db: Session = Depends(get_db),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
@@ -340,6 +350,11 @@ def unified_search_route(
     tool-calling layer /ask uses) — see app.unified_search for the actual
     router. /people and /ask both stay in place unchanged underneath this;
     nothing here duplicates their retrieval or permission logic.
+
+    An assisted-mode answer opens/continues a "search" surface conversation
+    and records this turn to it, same as POST /ask — a direct-mode answer
+    (no model call at all) has no assistant turn to record, so it never
+    touches conversation_id or gains one in its response.
 
     No response_model here (the shape is a discriminated union, direct vs
     assisted) — so results/citations are dumped with exclude_unset by hand
@@ -352,12 +367,16 @@ def unified_search_route(
     just can't see it", the exact boundary-leak /people's flag exists to
     prevent.
     """
-    result = unified_search(
-        db, user, q=q,
-        filters={"skill": skill, "level": level, "org_unit": org_unit,
-                 "office": office, "language": language, "available": available},
-        view_mode=resolve_view_mode(user.role, view_mode),
-    )
+    try:
+        result = unified_search(
+            db, user, q=q,
+            filters={"skill": skill, "level": level, "org_unit": org_unit,
+                     "office": office, "language": language, "available": available},
+            view_mode=resolve_view_mode(user.role, view_mode),
+            conversation_id=conversation_id,
+        )
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     result["results"] = [p.model_dump(exclude_unset=True) for p in result["results"]]
     if result.get("overview") is not None:
         result["overview"]["citations"] = [c.model_dump(exclude_unset=True) for c in result["overview"]["citations"]]
@@ -2243,11 +2262,56 @@ def ask(
     result here comes from the same permission-filtered service functions
     the structured endpoints above use — nothing bypasses the pipeline.
 
-    body.history carries this browser session's prior turns as plans
-    (tool + arguments), never results -- see schemas.HistoryTurn. Held by
-    the client for follow-up chat; nothing here persists it server-side."""
-    return answer_service(
-        db, user, body.message, resolve_view_mode(user.role, body.view_mode), body.history)
+    Every call opens or continues a "search" surface conversation (see
+    app.assistant_conversations) and records this turn to it — see
+    AskRequest's own docstring for the two ways a turn gets its PRIOR
+    context (server-side store vs. body.history), a decision this route
+    makes, not answer_service() itself (its signature is unchanged, still
+    taking a plain history list either way)."""
+    mode = resolve_view_mode(user.role, body.view_mode)
+    try:
+        conversation = open_or_continue(db, user, "search", body.conversation_id)
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    history = load_history(db, conversation) if body.conversation_id is not None else body.history
+    result = answer_service(db, user, body.message, mode, history)
+
+    append_turn(
+        db, conversation, message=body.message,
+        tool_call=result.get("tool_call"), arguments=result.get("arguments"),
+        assistant_text=result.get("message") if result.get("tool_call") is None else None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
+
+
+@app.get("/conversations/{surface}")
+def get_conversation_route(
+    surface: str,
+    project_id: int | None = Query(None, description="Required for surface=\"prd\" — which project's thread."),
+    view_mode: str | None = Query(None, description='"work" or "employee" — see GET /people.'),
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """The caller's most recent conversation on a surface, with its turns
+    — how a page reload rehydrates. "search" is never scoped to a project;
+    "prd" always is (project_id selects which project's thread, so HR
+    working on project B never rehydrates project A's), and is HR + work
+    mode only, the same gate as every other PRD-feature route."""
+    if surface not in ("search", "prd"):
+        raise HTTPException(status_code=404, detail="Unknown surface")
+    mode = resolve_view_mode(user.role, view_mode)
+    if surface == "prd" and (user.role != "hr" or mode != "work"):
+        raise HTTPException(status_code=403, detail="The PRD conversation surface is an HR action in work mode")
+
+    convo = get_most_recent_conversation(db, user, surface, project_id if surface == "prd" else None)
+    if convo is None:
+        return {"conversation_id": None, "turns": []}
+    return {
+        "conversation_id": convo.id,
+        "turns": [turn.model_dump() for turn in load_history(db, convo)],
+    }
 
 
 # Built frontend (frontend/dist, produced by the CI/CD deploy job's frontend

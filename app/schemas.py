@@ -425,10 +425,26 @@ class AskRequest(BaseModel):
     # "work" | "employee". Resolved server-side by resolve_view_mode, so an
     # employee-role caller sending "work" is still answered in employee mode.
     view_mode: str | None = None
-    # Held client-side for the length of the browser session, not
-    # persisted server-side -- follow-up chat (phase 1), not saved
-    # sessions (phase 2). Bounded to the last few turns by
-    # tool_calling.MAX_HISTORY_TURNS regardless of how long the list is.
+    # Two ways a turn gets its prior context, not one -- see
+    # app.assistant_conversations.open_or_continue for the exact rule:
+    #
+    #   conversation_id given: this turn's history comes from the
+    #   server-side store (app.models.AssistantTurn rows on that
+    #   conversation), and `history` below is ignored even if the client
+    #   still sends one. conversation_id must already be this caller's own
+    #   conversation -- a 404 otherwise, never a 403.
+    #
+    #   conversation_id absent: the pre-persistence path, kept working
+    #   exactly as it always has -- `history` below is what's used for
+    #   THIS turn. A conversation is still opened and this turn is still
+    #   recorded to it server-side either way (its id comes back on the
+    #   response), so an old client that never learns about
+    #   conversation_id keeps working unmodified while still gaining
+    #   persistence for free.
+    #
+    # Bounded to the last few turns by tool_calling.MAX_HISTORY_TURNS
+    # regardless of which path supplied them or how long the list is.
+    conversation_id: int | None = None
     history: list[HistoryTurn] = Field(default_factory=list)
 
 

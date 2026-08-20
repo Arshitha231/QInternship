@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.assistant_conversations import append_turn, open_or_continue
 from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
@@ -228,13 +229,13 @@ assert set(_TOOL_REASONS) == {t["function"]["name"] for t in TOOLS}, (
 
 def unified_search(
     db: Session, caller: AuthenticatedUser, *, q: str | None, filters: dict[str, Any],
-    view_mode: ViewMode = "work",
+    view_mode: ViewMode = "work", conversation_id: int | None = None,
 ) -> dict:
     text = (q or "").strip()
     clean_filters = {k: v for k, v in filters.items() if v is not None}
 
     if text and _wants_assistant(db, text):
-        return _assisted(db, caller, text, clean_filters, view_mode)
+        return _assisted(db, caller, text, clean_filters, view_mode, conversation_id)
 
     # The Filters panel is free-text inputs, not dropdowns fed by the real
     # vocabulary, so "bangalore" and "cloud operations team" arrive exactly
@@ -311,14 +312,26 @@ def unified_search(
 def _assisted(
     db: Session, caller: AuthenticatedUser, text: str,
     clean_filters: dict[str, Any] | None = None, view_mode: ViewMode = "work",
+    conversation_id: int | None = None,
 ) -> dict:
+    # Every assisted-mode answer opens/continues a "search" surface
+    # conversation and records this turn to it -- direct mode (no model
+    # call) never reaches this function at all, so it never touches
+    # conversation persistence. conversation_id validation (must already
+    # be this caller's own) raises ConversationNotFound, left to propagate
+    # to the route -- same 404-not-403 shape POST /ask uses.
+    conversation = open_or_continue(db, caller, "search", conversation_id)
+
     started = time.monotonic()
     turn = resolve_intent(text, db)
     if turn.tool_call is None:
+        answer_text = turn.message or OUT_OF_SCOPE_MESSAGE
+        append_turn(db, conversation, message=text, tool_call=None, arguments=None, assistant_text=answer_text)
         return {
             "mode": "assisted",
             "results": [],
-            "overview": {"answer": turn.message or OUT_OF_SCOPE_MESSAGE, "citations": [], "trace": []},
+            "overview": {"answer": answer_text, "citations": [], "trace": []},
+            "conversation_id": conversation.id,
         }
     # UI filter chips share a vocabulary with find_people's own arguments —
     # without this they narrowed the direct path (above) but were silently
@@ -346,7 +359,18 @@ def _assisted(
         raw = execute_with_retry(db, caller, turn.tool_call, text, view_mode)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     reason = _TOOL_REASONS.get(raw["tool_call"], "Matched a directory function.")
-    return _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
+    result = _build_assisted(db, caller, raw, elapsed_ms, reason, text, view_mode)
+    # assistant_text stays None here even though raw["message"]/the
+    # overview answer may be set -- HistoryTurn's own discipline (see its
+    # docstring) is that a turn WITH a tool call never stores its own
+    # answer text, only the plan, same rule POST /ask's turn-recording
+    # already follows.
+    append_turn(
+        db, conversation, message=text, tool_call=raw.get("tool_call"),
+        arguments=raw.get("arguments"), assistant_text=None,
+    )
+    result["conversation_id"] = conversation.id
+    return result
 
 
 def _build_assisted(
