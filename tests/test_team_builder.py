@@ -583,12 +583,198 @@ def test_replacing_a_candidate_recalculates_coverage(fx, db_session, no_model):
     assert swapped.coverage.coverage_pct == 42
 
 
+def test_replacing_does_not_restructure_the_team(fx, db_session):
+    """The regression this exists for: build_team used to re-plan from the
+    brief on every call, so a Replace click also re-decided how many roles
+    the project had. Observed live -- a 3-role team came back as a 2-role
+    team, dropping a role nobody had touched.
+
+    Stubbed here as a planner that returns a DIFFERENT shape each call,
+    which is what a language model is. Echoing the plan back must pin it.
+    """
+    from app.schemas import TeamPlanInput, TeamRoleInput
+
+    calls = {"n": 0}
+    real_plan_team = build_team.__globals__["plan_team"]
+
+    def unstable_plan_team(db, brief, extra=""):
+        calls["n"] += 1
+        plan = real_plan_team(db, brief, extra)
+        # Second call onwards, pretend the model dropped a role.
+        return plan if calls["n"] == 1 else TeamPlan(
+            project_type=plan.project_type, roles=plan.roles[:1],
+            constraints=plan.constraints, source="derived")
+
+    build_team.__globals__["plan_team"] = unstable_plan_team
+    try:
+        brief = f"Team needing {NAME} Alpha and {NAME} Beta and {NAME} Gamma"
+        first = build_team(db_session, fx.manager, brief, narrate=False)
+        assert len(first.roles) >= 2, "fixture should plan more than one role"
+
+        echoed = TeamPlanInput(
+            project_type=first.project_type,
+            roles=[TeamRoleInput(role=r.role, required_skills=r.required_skills)
+                   for r in first.roles],
+        )
+        again = build_team(db_session, fx.manager, brief, plan_input=echoed,
+                           assignments={0: fx.b.id}, narrate=False)
+
+        assert [r.role for r in again.roles] == [r.role for r in first.roles]
+        assert [r.required_skills for r in again.roles] == [r.required_skills for r in first.roles]
+    finally:
+        build_team.__globals__["plan_team"] = real_plan_team
+
+
+def test_an_echoed_plan_cannot_smuggle_an_unreal_skill(fx, db_session):
+    """The echoed plan is client-supplied, so it gets the model's treatment:
+    every skill re-resolved against the real table."""
+    from app.schemas import TeamPlanInput, TeamRoleInput
+
+    proposal = build_team(
+        db_session, fx.manager, f"Team needing {NAME} Alpha and {NAME} Beta",
+        plan_input=TeamPlanInput(
+            project_type="Injected",
+            roles=[TeamRoleInput(role="Anything", required_skills=["Not A Real Skill"])],
+        ),
+        narrate=False)
+    # The invented skill is dropped, the role with it goes too, and the
+    # planner falls back to the brief rather than staffing nothing.
+    for role in proposal.roles:
+        assert "Not A Real Skill" not in role.required_skills
+
+
+def test_an_echoed_plan_cannot_widen_the_pool(fx, db_session):
+    """It carries roles and skills. There is no field for a person."""
+    from app.schemas import TeamPlanInput
+    forbidden = {"scope", "org_unit", "org_unit_id", "employee_ids", "manager_id",
+                 "department", "view_mode", "assignments"}
+    assert not (set(TeamPlanInput.model_fields) & forbidden)
+
+    proposal = build_team(
+        db_session, fx.manager, f"Team needing {NAME} Secret",
+        plan_input=TeamPlanInput(
+            project_type="Secret work",
+            roles=[{"role": "Secret Specialist", "required_skills": [f"{NAME} Secret"]}],
+        ),
+        narrate=False)
+    for role in proposal.roles:
+        assert role.candidate is None or role.candidate.employee_id != fx.outsider.id
+
+
 def test_a_pinned_person_is_not_also_offered_as_their_own_alternative(fx, db_session, no_model):
     proposal = build_team(db_session, fx.manager, f"Team needing {NAME} Alpha and {NAME} Beta",
                           assignments={0: fx.b.id}, narrate=False)
     for role in proposal.roles:
         if role.candidate is not None:
             assert role.candidate.employee_id not in {a.employee_id for a in role.alternatives}
+
+
+# ---------------------------------------------------------------------------
+# Narration.
+#
+# These exist because they were missing. Every other test in this file passes
+# narrate=False, so the narration path shipped untested -- and it was broken:
+# _narrate handed neutral_scope_label a scope LABEL where it wanted the Scope,
+# which is an AttributeError on the first real call and a 500 in the browser.
+# Caught by clicking the button, which is not a substitute for a test.
+# ---------------------------------------------------------------------------
+
+def test_building_with_narration_does_not_blow_up(fx, db_session):
+    proposal = build_team(db_session, fx.manager,
+                          f"Team needing {NAME} Alpha and {NAME} Beta", narrate=True)
+    assert proposal.narrative
+    assert proposal.narrative_source == "derived"  # no model in tests
+
+
+def test_the_derived_narrative_states_the_computed_figures(fx, db_session):
+    proposal = build_team(db_session, fx.manager,
+                          f"Team needing {NAME} Alpha and {NAME} Beta", narrate=True)
+    assert f"{proposal.coverage.coverage_pct}%" in proposal.narrative
+
+
+class _FakeCompletions:
+    """Captures what would have been sent to Azure OpenAI."""
+
+    def __init__(self, sink: dict, reply: str):
+        self.sink = sink
+        self.reply = reply
+
+    def create(self, **kwargs):
+        self.sink["messages"] = kwargs.get("messages", [])
+        message = SimpleNamespace(content=self.reply, tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _fake_client(sink: dict, reply: str):
+    completions = _FakeCompletions(sink, reply)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+@pytest.fixture
+def model_narration(monkeypatch):
+    """Drive the REAL narration path with a stubbed client.
+
+    Necessary, not belt-and-braces: _narrate returns the derived summary
+    before touching the prompt whenever _mode() != "real", so the whole
+    model branch -- including the call that was broken -- is unreachable
+    under the default no_model fixture. The first version of these tests
+    passed with the bug deliberately reintroduced, which is how this was
+    found.
+    """
+    sink: dict = {}
+
+    def install(reply: str):
+        monkeypatch.setattr("app.tool_calling._mode", lambda: "real")
+        monkeypatch.setattr("app.tool_calling._get_openai_client",
+                            lambda: _fake_client(sink, reply))
+        return sink
+
+    return install
+
+
+def test_the_model_narration_path_actually_runs(fx, db_session, model_narration):
+    # Numeral-free on purpose: a figure the facts do not carry is discarded
+    # by grounding, which would make this test fail for the wrong reason and
+    # tell us nothing about whether the path ran. The discard case is its own
+    # test below.
+    sink = model_narration("The team covers most of what the project needs.")
+    proposal = build_team(db_session, fx.manager,
+                          f"Team needing {NAME} Alpha and {NAME} Beta", narrate=True)
+    assert sink["messages"], "the model was never called -- this test proves nothing"
+    assert proposal.narrative_source == "model"
+    assert proposal.narrative == "The team covers most of what the project needs."
+
+
+def test_narration_puts_no_employee_name_in_the_prompt(fx, db_session, model_narration):
+    """app/analytics.py labels a manager's scope "<their name>'s team".
+    neutral_scope_label keeps that out of the model's context -- but only if
+    it is handed the Scope rather than the label, which is precisely what
+    was wrong. Asserted against what the client actually received."""
+    from app.analytics import resolve_scope
+    assert fx.boss.full_name in resolve_scope(db_session, fx.manager, "work").label
+
+    sink = model_narration("Two roles filled.")
+    build_team(db_session, fx.manager, f"Team needing {NAME} Alpha and {NAME} Beta",
+               narrate=True)
+    prompt = " ".join(m["content"] for m in sink["messages"])
+    assert fx.boss.full_name not in prompt
+    assert "the team in scope" in prompt
+
+
+def test_an_ungrounded_narrative_is_discarded(fx, db_session, model_narration):
+    """A numeral the facts do not contain means the whole text is dropped
+    for the deterministic one -- app/grounding.py's contract."""
+    model_narration("The team is 93% ready and has 47 engineers.")
+    proposal = build_team(db_session, fx.manager,
+                          f"Team needing {NAME} Alpha and {NAME} Beta", narrate=True)
+    assert proposal.narrative_source == "derived"
+    assert "93" not in proposal.narrative
+
+
+def test_an_empty_proposal_still_narrates_without_error(fx, db_session):
+    proposal = build_team(db_session, fx.manager, "asdfghjkl", narrate=True)
+    assert proposal.roles == []
+    assert proposal.narrative == ""
 
 
 # ---------------------------------------------------------------------------
