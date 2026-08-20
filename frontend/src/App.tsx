@@ -358,7 +358,12 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             <div data-help="filters">
               <Filters filters={filters} onChange={setFilters} />
             </div>
-            <div data-help="results">
+            <div
+              data-help="results"
+              className={`assistant-thread${
+                !loading && !error && response?.mode === "assisted" ? " assistant-thread--assisted" : ""
+              }`}
+            >
             <UnifiedResults
               loading={loading}
               error={error}
@@ -374,20 +379,45 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               onJumpToCard={jumpToCard}
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
+              afterOverview={
+                !loading && !error && response?.mode === "assisted" ? (
+                  <AskChat
+                    key={debouncedQuery}
+                    identity={identity}
+                    viewMode={viewMode}
+                    compact
+                    emptyResults={response.results.length === 0}
+                    seedHistory={(() => {
+                      const steps = response.overview?.trace ?? [];
+                      const last = steps[steps.length - 1];
+                      if (!last?.tool) return [];
+                      return [{
+                        message: debouncedQuery,
+                        tool_call: last.tool,
+                        arguments: last.args ?? {},
+                        assistant_text: null,
+                      }];
+                    })()}
+                    onSelect={(id, name) => {
+                      setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
+                      resetProfile(id, name);
+                      setMode("profile");
+                      setQuery("");
+                    }}
+                  />
+                ) : null
+              }
             />
-            {/* Available under every search, direct or assisted -- a bare
-                name/skill match still deserves a way to ask a follow-up
-                ("which of those are in Bangalore?") without retyping the
-                whole thing as a question. This costs nothing extra for a
-                direct search: the model is only ever called once the box
-                is actually used, so a plain lookup stays exactly as free
-                as it is today (see unified_search.py's
-                test_direct_mode_never_calls_the_model — untouched by
-                this). Remounts (key=debouncedQuery) on a brand new
-                question, so an old conversation never appears to answer
-                a different one. */}
-            {!loading && !error && response !== null && (
-              <AskChat key={debouncedQuery} identity={identity} viewMode={viewMode} onSelect={(id, name) => {
+            {/* Direct mode only — assisted mounts AskChat under the overview
+                via afterOverview so follow-ups sit next to the answer, not
+                under a long people grid. */}
+            {!loading && !error && response !== null && response.mode === "direct" && (
+              <AskChat
+                key={debouncedQuery}
+                identity={identity}
+                viewMode={viewMode}
+                emptyResults={response.results.length === 0}
+                onSelect={(id, name) => {
                 setSavedSearch({ query: debouncedQuery, filters: debouncedFilters });
                 resetProfile(id, name);
                 setMode("profile");

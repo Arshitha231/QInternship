@@ -1068,6 +1068,255 @@ button { font: inherit; }
 
 .overview-note { font-size: var(--fs-sm); color: var(--muted); margin: 0 0 12px; font-style: italic; }
 
+/* ---------- Agent gallery (empty search) ---------- */
+.agent-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  max-width: 920px;
+  margin: 4px auto 0;
+  animation: rise var(--dur-3) var(--ease-out) both;
+}
+.agent-gallery__intro { display: flex; flex-direction: column; gap: 6px; max-width: 54ch; }
+.agent-gallery__kicker {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--purple-800);
+}
+.agent-gallery__title {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  line-height: 1.2;
+}
+.agent-gallery__sub {
+  margin: 0;
+  font-size: var(--fs-body);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.agent-gallery__section { display: flex; flex-direction: column; gap: 10px; }
+.agent-gallery__section-label {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.agent-gallery__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.agent-gallery__grid--new {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+  padding: 16px 16px 14px;
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-1) var(--ease-spring), border-color var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-1) var(--ease-out);
+  animation: rise var(--dur-3) var(--ease-out) both;
+  min-height: 148px;
+}
+.agent-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--purple);
+  box-shadow: var(--shadow-md);
+}
+.agent-card:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+}
+.agent-card--new {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--purple-100) 70%, var(--white)), var(--white));
+  border-color: color-mix(in srgb, var(--purple) 22%, var(--border));
+}
+.agent-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--page);
+  color: var(--purple-800);
+  border: 1px solid var(--border);
+}
+.agent-card--new .agent-card__icon {
+  background: var(--white);
+  border-color: color-mix(in srgb, var(--purple) 28%, var(--border));
+}
+.agent-card__body { display: flex; flex-direction: column; gap: 5px; min-width: 0; width: 100%; }
+.agent-card__title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.agent-card__blurb {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.4;
+}
+.agent-card__example {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--purple-800);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (max-width: 720px) {
+  .agent-gallery { gap: 18px; }
+  .agent-gallery__grid,
+  .agent-gallery__grid--new { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-gallery, .agent-card { animation: none; }
+  .agent-card:hover { transform: none; }
+}
+
+/* One continuous assistant surface: answer panel (overview + ask) then
+   people evidence underneath. */
+.assistant-thread--assisted {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-sm);
+  padding: 0 0 14px;
+  overflow: hidden;
+}
+
+/* Overview + follow-up share one lavender panel so ask isn't a second widget. */
+.assisted-answer {
+  background: var(--purple-100);
+  padding: 16px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--purple) 12%, var(--border));
+}
+.assistant-thread--assisted .assisted-answer .ai-overview {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.assistant-thread--assisted .assisted-answer .ask-followup--compact {
+  margin: 0;
+  padding: 0;
+  border: none;
+  gap: 10px;
+}
+.assistant-thread--assisted .assisted-answer .ask-input-row {
+  gap: 8px;
+}
+.assistant-thread--assisted .assisted-answer .ask-input-row input {
+  background: color-mix(in srgb, var(--white) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--purple) 16%, var(--border));
+  box-shadow: none;
+  padding: 10px 13px;
+}
+.assistant-thread--assisted .assisted-answer .ask-input-row input::placeholder {
+  color: color-mix(in srgb, var(--purple-800) 45%, var(--muted));
+}
+.assistant-thread--assisted .assisted-answer .ask-input-row input:focus {
+  background: var(--white);
+  border-color: var(--purple);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple) 18%, transparent);
+}
+.assistant-thread--assisted .assisted-answer .ask-input-row .btn-primary {
+  background: color-mix(in srgb, var(--purple) 88%, var(--purple-800));
+  border-color: transparent;
+  box-shadow: none;
+  padding-inline: 14px;
+}
+.assistant-thread--assisted .assisted-answer .ask-turns {
+  margin-top: 2px;
+}
+.assistant-thread--assisted .assisted-answer .ask-turn {
+  background: color-mix(in srgb, var(--white) 70%, transparent);
+  border-color: color-mix(in srgb, var(--purple) 14%, var(--border));
+}
+.assistant-thread--assisted .search-empty-state {
+  margin: 0;
+  padding: 14px 20px 4px;
+  gap: 12px;
+}
+.assistant-thread--assisted .search-empty-state__body {
+  max-width: 58ch;
+}
+.assistant-thread--assisted .result-count {
+  margin: 14px 20px 10px;
+}
+.assistant-thread--assisted .results-grid {
+  padding: 0 20px;
+}
+
+.search-empty-state {
+  margin: -2px 0 6px;
+  padding: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.search-empty-state__body {
+  margin: 0;
+  max-width: 52ch;
+  font-size: var(--fs-body);
+  color: var(--muted);
+  line-height: 1.55;
+}
+.search-empty-state__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.search-empty-state__label {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.search-empty-state__chips {
+  gap: 10px;
+}
+.search-empty-state .ask-example-chip {
+  background: var(--page);
+  border: 1px solid var(--border);
+  color: var(--ink);
+}
+.search-empty-state .ask-example-chip:hover {
+  background: var(--purple-100);
+  border-color: var(--purple);
+  box-shadow: inset 0 0 0 1px var(--purple);
+}
+
 /* Follow-up chat, below the primary result -- same ask-turn/overview-trace
    vocabulary as the single-shot AI Overview above, so a follow-up reads as
    the same assistant continuing, not a visually distinct second one. */
@@ -1078,6 +1327,17 @@ button { font: inherit; }
 .ask-followup .ai-overview-head { margin: 0; }
 .ask-followup .ask-turns { gap: 14px; }
 .ask-followup .ask-turn .results-grid { margin-top: 12px; }
+.ask-followup--compact .ask-input-row input {
+  background: var(--page);
+}
+
+@media (max-width: 720px) {
+  .assistant-thread--assisted .assisted-answer,
+  .assistant-thread--assisted .search-empty-state {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
 
 @keyframes card-flash { 0% { box-shadow: 0 0 0 3px var(--purple); } 100% { box-shadow: none; } }
 .result-card.flash { animation: card-flash 1.1s ease; }

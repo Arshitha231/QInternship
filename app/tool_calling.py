@@ -42,6 +42,7 @@ from app.chain_budgets import DEFAULT_PLAN_CLASS, ChainBudget, budget_for
 from app.directory_tools import find_mentor, find_project_owner, skill_gap, skill_scarcity
 from app.models import AuditLog
 from app.models import Employee
+from app.agent_tools import brief_person, find_coverage, find_escalation, find_skill_trainees, recommend_training
 from app.org_chart import get_org_chain, resolve_person
 from app.schemas import AmbiguousPersonMatch, PersonChoice, UnknownPerson
 from app.people import (
@@ -347,6 +348,99 @@ TOOLS = [
         },
     }},
     {"type": "function", "function": {
+        "name": "find_coverage",
+        "description": (
+            "Who is covering for a named person (or 'self') — their listed delegate, "
+            "or manager if they are away with no delegate. Use for 'who's covering for X', "
+            "'who is X's backup', 'who's the delegate for X'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "A person's name, or 'self'."},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["person"],
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "find_escalation",
+        "description": (
+            "Who to escalate to first for a named person or a named project/system. "
+            "Walks the reporting chain, preferring someone available (uses a manager's "
+            "delegate when that manager is away). Use for 'escalation path for X', "
+            "'who should I escalate the Billing API to', 'who do I page if X is stuck'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "Optional person name, or 'self'."},
+                "project": {"type": "string", "description": "Optional project/system/policy name."},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "recommend_training",
+        "description": (
+            "Outstanding required training courses for a person (default: the caller). "
+            "Use for 'what training should I take', 'what courses is X missing', "
+            "'recommend training for me'. Not for org skill upskilling — use "
+            "find_skill_trainees for 'who should be trained on Terraform'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "A person's name, or 'self' (default)."},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "find_skill_trainees",
+        "description": (
+            "Who should learn named skills next based on related project work — "
+            "people on adjacent tech (e.g. AWS/Kubernetes for Terraform) who are "
+            "NOT already Working/Expert on the skill. Career upskill ranking, not "
+            "compliance courses (use recommend_training) and not mentors (use "
+            "find_mentor). Use for 'who should be trained on/for X', "
+            "'who should learn Terraform next'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skills": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One or more skill names.",
+                },
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["skills"],
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
+        "name": "brief_person",
+        "description": (
+            "A short profile brief for a named person: role, team, availability, "
+            "manager, and who sits above them. Use for 'brief me on X', "
+            "'give me a quick brief on X', 'tell me about X's profile'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "A person's name, or 'self'."},
+                "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
+            },
+            "required": ["person"],
+            "additionalProperties": False,
+        },
+    }},
+    {"type": "function", "function": {
         "name": "get_people_with_projects",
         "description": (
             "Recent project history for SEVERAL people at once, given their ids -- the second "
@@ -381,8 +475,9 @@ SYSTEM_PROMPT = f"""You are the internal employee directory assistant for Quadra
 
 You may ONLY answer by calling one of the provided functions: find_people, get_person, \
 get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity, search_people, \
-find_experts, get_people_with_projects. Together they cover people, teams, skills, and \
-projects — nothing else.
+find_experts, find_coverage, find_escalation, recommend_training, find_skill_trainees, brief_person, \
+get_people_with_projects. Together they cover people, teams, skills, projects, coverage, \
+escalation, and training — nothing else.
 
 Use search_people ONLY when find_people's own parameters genuinely cannot express the \
 request — multiple values for the same field ("Bangalore or Singapore"), a field \
@@ -496,7 +591,15 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
     ("who does Sean Wilson report to", "find_people", {"name": "Sean Wilson"}),
     ("who does Priya Brown report to?", "find_people", {"name": "Priya Brown"}),
     ("list Jordan Reyes's direct reports", "find_people", {"name": "Jordan Reyes"}),
-    ("who's covering for Alex Kim while they're away", "find_people", {"name": "Alex Kim"}),
+    ("who's covering for Alex Kim while they're away", "find_coverage", {"person": "Alex Kim"}),
+    ("who is the backup for Sean Wilson", "find_coverage", {"person": "Sean Wilson"}),
+    ("escalation path for the Billing API", "find_escalation", {"project": "Billing API"}),
+    ("who should I escalate to if Diego Hernandez is stuck",
+     "find_escalation", {"person": "Diego Hernandez"}),
+    ("what training should I take next", "recommend_training", {"person": "self"}),
+    ("what courses is Priya Kelly missing", "recommend_training", {"person": "Priya Kelly"}),
+    ("brief me on Diego Hernandez", "brief_person", {"person": "Diego Hernandez"}),
+    ("give me a quick brief on Katherine Byrne", "brief_person", {"person": "Katherine Byrne"}),
     ("show me my own project history", "get_person", {"person_id": "self"}),
     ("what skills do I have on file", "get_person", {"person_id": "self"}),
     ("pull up my profile", "get_person", {"person_id": "self"}),
@@ -559,6 +662,8 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
          [{"field": "languages", "op": "contains", "value": "French"}],
          [{"field": "office", "op": "eq", "value": "Bangalore"}],
      ]}),
+    ("who should be trained next for terraform / kubernetes", "find_skill_trainees",
+     {"skills": ["Terraform", "Kubernetes"]}),
     # Tenure ranking: order_by="hire_date", direction carries the meaning
     # ("asc" = earliest hire first = most experience; "desc" = latest hire
     # first = most recent). A factual date sort, not the "who's the best"
@@ -876,6 +981,12 @@ _NOT_IN_A_NAME = frozenset({
     "who", "whom", "whose", "what", "which", "when", "where", "why", "how",
     "does", "do", "did", "is", "are", "was", "were", "can", "could", "should",
     "find", "list", "show", "tell", "give", "and", "or", "that", "than", "with",
+    # Extra “not a person” tokens to avoid greedy relationship extraction
+    # treating object-y phrases as a name subject (e.g. “the owner of the
+    # Billing API”). Do not add short tokens that appear inside real project
+    # names (“Billing API”) — project-owner routing uses the same check.
+    "owner", "responsible", "pipeline", "project", "system", "function", "policy",
+    "dashboard", "dashboards",
 })
 _MAX_NAME_WORDS = 5
 
@@ -956,6 +1067,129 @@ def _extract_relationship_subject(message: str) -> str | None:
         name = peeled
     name = _clean_extracted_name(name)
     if not name or not _is_clean_subject(name):
+        return None
+    return name
+
+
+_COVER_PATTERN = re.compile(
+    r"(?:who(?:'s| is|s)?\s+covering\s+for|who\s+covers|backup\s+for|delegate\s+for|"
+    r"who(?:'s| is)?\s+the\s+backup\s+for|who(?:'s| is)?\s+(?:the\s+)?cover\s+for)\s+"
+    r"(?P<name>.+?)(?:\s+while\b.*)?[\s?.!]*$",
+    re.IGNORECASE,
+)
+_ESCALATE_PATTERN = re.compile(
+    r"(?:escalation\s+path\s+for|who\s+should\s+i\s+escalat\w*\s+(?:to\s+)?(?:for\s+)?|"
+    r"who\s+do\s+i\s+(?:page|call|escalat\w*)\s+(?:for|if)|escalate\s+(?:the\s+)?)"
+    r"(?P<body>.+?)[\s?.!]*$",
+    re.IGNORECASE,
+)
+_TRAINING_PATTERN = re.compile(
+    r"(?:what\s+training\s+should\s+(?P<who1>i|\S.+?)\s+(?:take|do|complete)|"
+    r"what\s+courses?\s+(?:is|are)\s+(?P<who2>i|\S.+?)\s+missing|"
+    r"recommend\s+training\s+for\s+(?P<who3>me|\S.+?)|"
+    r"(?P<self>what\s+(?:training|courses?)\s+should\s+i\b))",
+    re.IGNORECASE,
+)
+_BRIEF_PATTERN = re.compile(
+    r"^(?:brief\s+me\s+on|give\s+me\s+a\s+(?:quick\s+)?brief\s+on|"
+    r"tell\s+me\s+about|profile\s+brief\s+(?:for|on))\s+(?P<name>.+?)[\s?.!]*$",
+    re.IGNORECASE,
+)
+# "Who should be trained next for Terraform?" / "who should learn Terraform
+# next" — org skill upskilling from related project work, not compliance
+# courses (recommend_training) and not people already Learning the skill.
+_SKILL_TRAINING_PATTERN = re.compile(
+    r"\bwho(?:'s|\s+is|\s+should|\s+needs\s+to)?\s+(?:be\s+)?(?:trained|training)\b"
+    r"|\bwho\s+needs\s+training\b"
+    r"|\bwho\s+should\s+learn\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_coverage_subject(message: str) -> str | None:
+    m = _COVER_PATTERN.search(message.strip())
+    if not m:
+        return None
+    name = _clean_extracted_name(m.group("name"))
+    if not name or not _is_clean_subject(name):
+        return None
+    return name
+
+
+def _extract_escalation_args(message: str) -> dict | None:
+    text = message.lower()
+    if not re.search(r"escalat|who should i (?:page|call|contact)|who do i (?:page|call)", text):
+        return None
+    m = _ESCALATE_PATTERN.search(message.strip())
+    body = _clean_extracted_name(m.group("body")) if m else ""
+    # "if X is stuck" → person X
+    if_m = re.search(r"\bif\s+(.+?)\s+is\s+(?:stuck|away|unavailable)", message, re.IGNORECASE)
+    if if_m:
+        name = _clean_extracted_name(if_m.group(1))
+        if name and _is_clean_subject(name):
+            return {"person": name}
+    if body and _is_clean_subject(body):
+        body = re.sub(r"^(?:the\s+)", "", body, flags=re.IGNORECASE).strip()
+        # Prefer project for known system-ish tokens; otherwise person.
+        if any(tok in body.lower() for tok in ("api", "system", "pipeline", "ledger", "billing", "project")):
+            return {"project": body}
+        return {"person": body}
+    # Bare "escalation path" / "who should I escalate to" → self
+    if re.search(r"\bescalat", text):
+        return {"person": "self"}
+    return None
+
+
+def _extract_skill_training_skills(message: str) -> list[str] | None:
+    if not _SKILL_TRAINING_PATTERN.search(message):
+        return None
+    m = re.search(r"\b(?:for|on|in)\s+(.+?)(?:\?|$)", message.strip(), re.IGNORECASE)
+    if not m:
+        m = re.search(
+            r"\blearn\s+(.+?)(?:\s+next)?(?:\?|$)", message.strip(), re.IGNORECASE,
+        )
+    if not m:
+        return None
+    tail = m.group(1).strip(" ?.!")
+    # Drop trailing "next" left over from "learn Terraform next"
+    tail = re.sub(r"\s+next$", "", tail, flags=re.IGNORECASE).strip()
+    parts = re.split(r"\s*/\s*|\s+and\s+|\s+or\s+|,\s*", tail, flags=re.IGNORECASE)
+    skills = [p.strip() for p in parts if p.strip() and _is_clean_subject(p.strip())]
+    return skills or None
+
+
+def _extract_training_subject(message: str) -> str | None:
+    text = message.lower()
+    if not re.search(r"\b(training|courses?)\b", text):
+        return None
+    if not re.search(r"should|missing|recommend|outstanding|next", text):
+        return None
+    m = _TRAINING_PATTERN.search(message.strip())
+    if not m:
+        # "what training should I take next" etc. already covered; fallthrough
+        if re.search(r"\b(i|me|my)\b", text):
+            return "self"
+        return None
+    if m.groupdict().get("self"):
+        return "self"
+    who = m.group("who1") or m.group("who2") or m.group("who3")
+    if not who or who.lower() in ("i", "me", "myself"):
+        return "self"
+    name = _clean_extracted_name(who)
+    if name and _is_clean_subject(name):
+        return name
+    return "self"
+
+
+def _extract_brief_subject(message: str) -> str | None:
+    m = _BRIEF_PATTERN.search(message.strip())
+    if not m:
+        return None
+    name = _clean_extracted_name(m.group("name"))
+    if not name or not _is_clean_subject(name):
+        return None
+    # Don't steal "tell me about the Billing API" style project questions.
+    if any(tok in name.lower().split() for tok in ("api", "project", "system", "policy", "pipeline")):
         return None
     return name
 
@@ -1082,6 +1316,26 @@ def _deterministic_resolve(message: str) -> AssistantTurn | None:
     if "mentor" in text:
         skill = text.split(" in ", 1)[-1].strip(" ?.!") if " in " in text else message.strip(" ?.!")
         return AssistantTurn(tool_call=ResolvedToolCall(name="find_mentor", arguments={"skill": skill}))
+    # Coverage / backup / delegate — before generic "report" / problem branches.
+    cover_subject = _extract_coverage_subject(message)
+    if cover_subject:
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_coverage", arguments={"person": cover_subject}))
+    escalation = _extract_escalation_args(message)
+    if escalation is not None:
+        return AssistantTurn(tool_call=ResolvedToolCall(name="find_escalation", arguments=escalation))
+    skill_training = _extract_skill_training_skills(message)
+    if skill_training:
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="find_skill_trainees", arguments={"skills": skill_training}))
+    training_subject = _extract_training_subject(message)
+    if training_subject is not None:
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="recommend_training", arguments={"person": training_subject}))
+    brief_subject = _extract_brief_subject(message)
+    if brief_subject:
+        return AssistantTurn(tool_call=ResolvedToolCall(
+            name="brief_person", arguments={"person": brief_subject}))
     if describes_a_problem(text):
         # The WHOLE message goes through as `problem`, not an extracted
         # keyword: project_search matches the description against what
@@ -1558,19 +1812,21 @@ def names_a_real_person(db: Session, turn: AssistantTurn | None) -> bool:
     confident matches, they are the regex reaching past what it can parse --
     and the model, given the same question, chains correctly.
 
-    Returning False here means "defer to the model", never "answer empty":
-    resolve_intent falls through to _real_resolve exactly as it does for a
-    phrasing the router never matched at all.
-
-    A name matching SEVERAL people is still confident -- "which of the three
-    Michaels did you mean?" is a real answer, and the model cannot do better.
+    Returning False here meant "defer to the model", which for org-chain
+    questions produced unrelated find_people fuzzy matches instead of the
+    get_org_chain UnknownPerson/AmbiguousPersonMatch the caller should see.
     """
     if turn is None or turn.tool_call is None:
         return True
     person = turn.tool_call.arguments.get("person")
     if turn.tool_call.name != "get_org_chain" or not person or person == "self":
         return True
-    return not resolve_person(db, person).is_unknown
+    # If the deterministic router extracted a relationship subject but couldn't
+    # resolve it to a directory employee, don't fall back to generic
+    # find_people (which produces unrelated fuzzy matches). Instead, let
+    # get_org_chain return UnknownPerson/AmbiguousPersonMatch with the correct
+    # "no such person" or "nobody found" wording.
+    return True
 
 
 def resolve_intent(
@@ -1741,6 +1997,22 @@ def execute_tool_call(
         return get_org_chain(db, caller, person_id=resolved_id, **args)
     if name == "find_project_owner":
         return find_project_owner(db, caller, **args)
+    if name == "find_coverage":
+        return find_coverage(db, caller, person=args.get("person", "self"), view_mode=view_mode)
+    if name == "find_escalation":
+        return find_escalation(
+            db, caller,
+            person=args.get("person"),
+            project=args.get("project"),
+            view_mode=view_mode,
+        )
+    if name == "recommend_training":
+        return recommend_training(
+            db, caller, person=args.get("person") or "self", view_mode=view_mode)
+    if name == "find_skill_trainees":
+        return find_skill_trainees(db, caller, skills=args.get("skills") or [], view_mode=view_mode)
+    if name == "brief_person":
+        return brief_person(db, caller, person=args.get("person", "self"), view_mode=view_mode)
     if name == "find_mentor":
         return find_mentor(db, caller, skill=args["skill"], caller_id=caller.id)  # caller_id: never from the model
     if name == "skill_gap":
@@ -2292,6 +2564,47 @@ def execute_chain(
         return final
 
 
+_REFERRING_FOLLOWUP = re.compile(
+    r"\b(those|them|these|which of|any of (?:them|those)|among (?:them|those)|of (?:them|those))\b",
+    re.IGNORECASE,
+)
+_AVAILABLE_FOLLOWUP = re.compile(r"\b(available|free)\b", re.IGNORECASE)
+
+
+def _is_referring_followup(message: str) -> bool:
+    """Follow-ups that only make sense with prior-result context ("which of
+    those are available?"). Deterministic router can't answer these alone;
+    with history we re-run the prior tool instead of last-resort free-text."""
+    return bool(_REFERRING_FOLLOWUP.search(message))
+
+
+def _filter_referring_result(message: str, result: Any) -> Any:
+    if not isinstance(result, list):
+        return result
+    if _AVAILABLE_FOLLOWUP.search(message):
+        return [
+            item for item in result
+            if getattr(item, "availability_status", None) == "available"
+        ]
+    return result
+
+
+def _phrase_or_template(question: str, tool_name: str, arguments: dict, result: Any) -> str | None:
+    """Real-model phrasing when configured; otherwise the same deterministic
+    templates /search assisted mode uses. Lazy-imports _phrase to avoid the
+    tool_calling ↔ unified_search circular import at module load."""
+    phrased = phrase_answer(question, tool_name, arguments, result)
+    if phrased is not None:
+        return phrased
+    try:
+        from app.unified_search import _phrase
+        return _phrase(tool_name, arguments, result)
+    except Exception:
+        # Tests (and any unexpected result shape) must not take down /ask —
+        # leave message None and let the frontend generic fallback cover it.
+        return None
+
+
 def answer(
     db: Session, caller: AuthenticatedUser, message: str, view_mode: ViewMode = "work",
     history: list[HistoryTurn] | None = None,
@@ -2321,6 +2634,39 @@ def answer(
     call -- identity and authorization are still read fresh every time,
     nothing here is carried past what caller and db already are.
     """
+    history = history or []
+
+    # Referring follow-up ("which of those are available?") — re-run the
+    # prior tool with fresh auth, then narrow by availability. Only the
+    # filters we can apply deterministically (available/free) take this
+    # path; "which of those are in Bangalore?" still falls through to the
+    # model with history, since geography isn't a post-filter we own here.
+    if history and _is_referring_followup(message) and _AVAILABLE_FOLLOWUP.search(message):
+        last = next((t for t in reversed(history) if t.tool_call), None)
+        if last is not None and last.tool_call:
+            replay = ResolvedToolCall(
+                name=last.tool_call,
+                arguments=dict(last.arguments or {}),
+                routed_via="followup_replay",
+            )
+            try:
+                result = execute_tool_call(db, caller, replay, view_mode)
+            except (TypeError, ValueError, KeyError):
+                result = None
+            else:
+                result = _filter_referring_result(message, result)
+                _write_audit(db, caller, message, (
+                    len(result) if isinstance(result, list) else (0 if result is None else 1)
+                ), routed_via="followup_replay")
+                raw = {
+                    "message": _phrase_or_template(
+                        message, replay.name, replay.arguments, result),
+                    "tool_call": replay.name,
+                    "arguments": replay.arguments,
+                    "result": result,
+                }
+                return raw
+
     history_messages = _history_messages(db, caller, history, view_mode) if history else None
     turn = resolve_intent(message, db, history_messages)
 
@@ -2334,30 +2680,29 @@ def answer(
         raw = execute_with_retry(db, caller, turn.tool_call, message, view_mode)
 
     # Same phrasing app.unified_search._build_assisted() already applies to
-    # the main search bar's assisted-mode answer -- this endpoint (the
-    # follow-up chat box) called execute_chain/execute_with_retry directly
-    # and returned their raw dict unphrased, so a successful follow-up call
-    # rendered as "N people match." (AskChat.tsx's own generic fallback)
-    # instead of an actual answer to the question asked. No _phrase()
-    # fallback tier here (that helper lives in unified_search.py, which
-    # already imports FROM this module — importing it back would be
-    # circular): when phrase_answer has no real model to ask or its output
-    # fails grounding, raw["message"] stays None and the frontend's own
-    # generic fallback covers it, same as it always has.
+    # the main search bar's assisted-mode answer. Prefer the real model via
+    # phrase_answer; fall back to deterministic _phrase (lazy import) so
+    # mock mode and phrasing failures still return real prose, not null.
     if raw.get("tool_call") is not None:
         arguments = raw.get("arguments") or {}
         result = raw.get("result")
         if raw.get("truncated") is not None:
-            # Phrase the result FIRST and append the budget note (mirrors
-            # _build_assisted): the note describes the chain running out of
-            # steps, not who was found, so it can only ever supplement a
-            # real answer, never stand in for one.
-            phrased = phrase_answer(message, raw["tool_call"], arguments, result)
+            phrased = _phrase_or_template(message, raw["tool_call"], arguments, result)
             if phrased is not None:
                 raw["message"] = f"{phrased} {raw['message']}" if raw.get("message") else phrased
         elif raw.get("message") is None:
-            phrased = phrase_answer(message, raw["tool_call"], arguments, result)
-            if phrased is not None:
+            phrased = _phrase_or_template(message, raw["tool_call"], arguments, result)
+            if raw.get("tool_call") == "get_org_chain" and raw.get("message") is None:
+                if isinstance(result, UnknownPerson):
+                    raw["message"] = f'No active employee matches "{result.query}".'
+                elif isinstance(result, list) and len(result) == 0:
+                    is_up = arguments.get("direction") == "up"
+                    label = "above them" if is_up else "below them"
+                    raw["message"] = (
+                        f"Nobody found {label} in the org chart (or that direction "
+                        "is restricted for your role)."
+                    )
+            if raw.get("message") is None and phrased is not None:
                 raw["message"] = phrased
 
     return raw
