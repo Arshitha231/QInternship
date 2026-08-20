@@ -6,7 +6,8 @@ import { DepartmentGraph } from "./graphs/DepartmentGraph";
 import { TeamGraph } from "./graphs/TeamGraph";
 import { SkillsGraph } from "./graphs/SkillsGraph";
 import { CommunityPage } from "./CommunityPage";
-import { ChevronLeft, ChevronRight, Home } from "../icons";
+import { TeamBuilder, useTeamBuilderState } from "./TeamBuilder";
+import { ChevronLeft, ChevronRight, Home, Sparkles } from "../icons";
 import { avatarStyle } from "../avatarHue";
 
 type GraphKind = "department" | "team" | "skills" | "community";
@@ -51,6 +52,15 @@ export function GraphPage({
   const { focusId } = focus;
   const onFocusChange = focus.go;
   const [kind, setKind] = useState<GraphKind>("department");
+  // Build Team is a MODE, not a fifth tab. The four tabs are all views of
+  // the real organization; this one shows a team that does not exist yet,
+  // and putting it beside them would say the two kinds of picture are the
+  // same kind of thing. The existing hierarchy is untouched underneath --
+  // switching back restores it exactly, including the focus person.
+  const [mode, setMode] = useState<"hierarchy" | "build">("hierarchy");
+  // Held here so a generated team survives a look at the real hierarchy --
+  // see useTeamBuilderState.
+  const teamState = useTeamBuilderState();
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
   useEffect(() => {
@@ -96,9 +106,33 @@ export function GraphPage({
           </div>
         </div>
 
+        <div className="tabs graph-mode" role="tablist" aria-label="Graph mode">
+          <button
+            role="tab"
+            aria-selected={mode === "hierarchy"}
+            className={`tab ${mode === "hierarchy" ? "active" : ""}`}
+            onClick={() => setMode("hierarchy")}
+          >
+            Current Hierarchy
+          </button>
+          <button
+            role="tab"
+            data-help="graph-build-team"
+            aria-selected={mode === "build"}
+            className={`tab tab-ai ${mode === "build" ? "active" : ""}`}
+            onClick={() => setMode("build")}
+          >
+            Build Team <Sparkles size={13} />
+          </button>
+        </div>
+
         <button className="btn" onClick={() => onOpenProfile(focusId, name)}>View profile</button>
       </div>
 
+      {mode === "build" ? (
+        <TeamBuilder identity={identity} viewMode={viewMode} onOpenProfile={onOpenProfile} state={teamState} />
+      ) : (
+      <>
       <div className="graph-viewbar">
         <div className="graph-history" role="group" aria-label="Graph navigation">
           <button
@@ -201,6 +235,8 @@ export function GraphPage({
           viewMode={viewMode}
           onNavigate={(id, personName) => onOpenProfile(id, personName)}
         />
+      )}
+      </>
       )}
     </div>
   );

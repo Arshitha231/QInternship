@@ -1326,6 +1326,7 @@ def build_team_route(
             db, user, body.brief, mode,
             constraints_text=body.constraints,
             assignments=body.assignments,
+            plan_input=body.plan,
         )
     except TeamBuildUnavailable as e:
         raise HTTPException(status_code=403, detail=str(e))

@@ -7,6 +7,8 @@ import type {
   SuggestedSkill, TrainingAnalytics,
   TrainingRoster, UnifiedSearchResponse, UpdateEmployeeChanges, UploadDocResult,
   UploadedDocSummary, ViewMode, WorkforceReport,
+  TeamPlanInput,
+  TeamProposal,
 } from "./types";
 
 // Defaults to the local backend for normal dev. Override with
@@ -990,6 +992,40 @@ export function generateWorkforceReport(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
+    signal,
+  });
+}
+
+// --- AI Team Builder (app/team_builder.py) --------------------------------
+//
+// Scope is resolved server-side from the caller before the brief reaches the
+// planner, so there is nothing to send here but the brief. `assignments` is
+// how Replace works: re-post with {roleIndex: employeeId} and the server
+// recalculates coverage, gaps and risks against the substituted team. There
+// is no proposal state on the server between calls.
+export function buildTeam(
+  identity: Identity,
+  viewMode: ViewMode,
+  brief: string,
+  opts: {
+    constraints?: string;
+    assignments?: Record<number, string>;
+    // Echo the previous response's plan on a rebuild. Without it the server
+    // re-plans from the brief, and the planner is a language model -- a
+    // Replace click would also re-decide how many roles the project has.
+    plan?: TeamPlanInput;
+  } = {},
+  signal?: AbortSignal,
+): Promise<TeamProposal> {
+  return request<TeamProposal>(`/team/build?view_mode=${viewMode}`, identity, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      brief,
+      constraints: opts.constraints ?? "",
+      assignments: opts.assignments ?? {},
+      plan: opts.plan ?? null,
+    }),
     signal,
   });
 }

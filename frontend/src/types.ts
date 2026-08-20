@@ -814,3 +814,101 @@ export interface WorkforceReport {
   recommendations: ReportSection;
   evidence: ReportEvidence[];
 }
+
+// --- AI Team Builder (app/team_builder.py) --------------------------------
+//
+// Everything numeric here is computed server-side from database rows. The
+// model contributes the role/skill breakdown and (optionally) `narrative`,
+// whose numerals are checked against the computed facts before it is kept.
+
+export interface CandidateSkill {
+  skill: string;
+  level: "Expert" | "Working" | "Learning";
+  // false for skills the person brings that the role did not ask for --
+  // shown as context, never part of match_pct.
+  required: boolean;
+}
+
+export interface CandidateMatch {
+  employee_id: string;
+  full_name: string;
+  job_title: string;
+  org_unit: string;
+  // Displayed, never ranked on: the column is 99% one value, see the
+  // module docstring in app/team_builder.py.
+  availability_status: string;
+  match_pct: number;
+  matched_skills: CandidateSkill[];
+  missing_skills: string[];
+  relevant_projects: string[];
+  explanation: string[];
+}
+
+export interface ProposedRole {
+  role: string;
+  required_skills: string[];
+  // null when nobody in the authorized pool holds any of the role's skills.
+  candidate: CandidateMatch | null;
+  alternatives: CandidateMatch[];
+}
+
+export interface TeamCoverageSkill {
+  skill: string;
+  best_level: "Expert" | "Working" | "Learning" | null;
+  holder_count: number;
+  holders: string[];
+}
+
+export interface TeamConcentrationRisk {
+  skill: string;
+  employee_id: string;
+  full_name: string;
+  share_pct: number;
+  holder_count: number;
+}
+
+export interface TeamCoverage {
+  coverage_pct: number;
+  skills: TeamCoverageSkill[];
+  // A skill held only at Learning counts toward coverage_pct at partial
+  // weight but is NOT listed as covered -- "we have some exposure" and
+  // "somebody here can do this" are different statements.
+  covered: string[];
+  missing: string[];
+  level_counts: Record<string, number>;
+  risks: TeamConcentrationRisk[];
+}
+
+export interface TeamConstraintsOut {
+  prefer_expert: boolean;
+  minimize_concentration: boolean;
+  max_per_department: number | null;
+  prefer_experience_with: string[];
+  applied: boolean;
+}
+
+export interface TeamRoleInput {
+  role: string;
+  required_skills: string[];
+}
+
+/** The plan echoed back on a rebuild, so Replace re-staffs the SAME team
+ *  rather than re-planning it. Carries roles and skills only — it cannot
+ *  name a person or a scope, and every skill is re-resolved server-side. */
+export interface TeamPlanInput {
+  project_type: string;
+  roles: TeamRoleInput[];
+}
+
+export interface TeamProposal {
+  scope: DashboardScope;
+  project_type: string;
+  roles: ProposedRole[];
+  coverage: TeamCoverage;
+  constraints: TeamConstraintsOut;
+  unrecognised_skills: string[];
+  plan_source: "model" | "derived";
+  narrative: string;
+  narrative_source: "model" | "derived";
+  candidate_pool_size: number;
+}

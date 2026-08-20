@@ -1638,6 +1638,31 @@ class TeamProposal(BaseModel):
     candidate_pool_size: int = 0
 
 
+class TeamRoleInput(BaseModel):
+    """One role handed back to the server to re-staff without re-planning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=80)
+    required_skills: list[str] = Field(default_factory=list, max_length=6)
+
+
+class TeamPlanInput(BaseModel):
+    """A plan the client already has, sent back so a rebuild reuses it.
+
+    Deliberately carries roles and skills and NOTHING else. It cannot name
+    an employee, a department or a scope — re-staffing still draws from
+    resolve_scope(caller), and every skill here is re-resolved against the
+    real `skills` table exactly as the model's output is. A client cannot
+    reach anyone through this field that it could not reach without it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_type: str = Field(default="Project team", max_length=80)
+    roles: list[TeamRoleInput] = Field(default_factory=list, max_length=8)
+
+
 class TeamBuildRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1648,3 +1673,12 @@ class TeamBuildRequest(BaseModel):
     #: brief with these set is how Replace recalculates coverage — the server
     #: keeps no proposal state between calls.
     assignments: dict[int, str] = Field(default_factory=dict)
+    #: The plan from the previous response, echoed back on a rebuild.
+    #:
+    #: Required for Replace to mean anything. Without it the server re-plans
+    #: from the brief on every call, and the planner is a language model:
+    #: replacing one person also silently re-decides how many roles the
+    #: project has. Observed live — a 3-role team became a 2-role team on a
+    #: Replace click, dropping a role nobody touched. Sending the plan back
+    #: keeps the server stateless AND the team stable.
+    plan: TeamPlanInput | None = None

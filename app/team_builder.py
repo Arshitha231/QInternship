@@ -57,7 +57,7 @@ from sqlalchemy.orm import Session
 # reimplemented: it is the one function that turns a Scope into the
 # DashboardScope every dashboard response carries, and a second copy here
 # would be a second place for "whose data is this" to drift.
-from app.analytics import DashboardForbidden, _scope_out, resolve_scope
+from app.analytics import DashboardForbidden, Scope, _scope_out, resolve_scope
 from app.auth import AuthenticatedUser
 from app.grounding import is_grounded, neutral_scope_label
 from app.models import (
@@ -80,6 +80,7 @@ from app.schemas import (
     TeamConstraintsOut,
     TeamCoverage,
     TeamCoverageSkill,
+    TeamPlanInput,
     TeamProposal,
 )
 
@@ -942,7 +943,7 @@ def _derived_summary(plan: TeamPlan, coverage: TeamCoverage,
 
 
 def _narrate(plan: TeamPlan, coverage: TeamCoverage, assigned: list[CandidateMatch],
-             scope_label: str) -> tuple[str, str]:
+             scope: Scope) -> tuple[str, str]:
     """Returns (text, source). Falls back to the derived summary whenever
     the model writes a numeral that is not in the facts."""
     from openai import OpenAIError
@@ -953,7 +954,10 @@ def _narrate(plan: TeamPlan, coverage: TeamCoverage, assigned: list[CandidateMat
     if _mode() != "real":
         return derived, "derived"
 
-    facts = _fact_text(plan, coverage, assigned, neutral_scope_label(scope_label))
+    # The Scope object, not its label: neutral_scope_label rewrites a
+    # manager's "<name>'s team" so no employee name enters the prompt, and it
+    # needs scope.kind to know that a rewrite is called for.
+    facts = _fact_text(plan, coverage, assigned, neutral_scope_label(scope))
     try:
         client = _get_openai_client()
         response = client.chat.completions.create(
@@ -985,6 +989,7 @@ def build_team(
     *,
     constraints_text: str = "",
     assignments: dict[int, str] | None = None,
+    plan_input: "TeamPlanInput | None" = None,
     narrate: bool = True,
 ) -> TeamProposal:
     """Brief in, proposed team out.
@@ -1000,7 +1005,20 @@ def build_team(
         raise TeamBuildUnavailable(str(e)) from e
 
     pool = load_pool(db, scope.employee_ids)
-    plan = plan_team(db, brief, constraints_text)
+    # A plan echoed back by the client is reused rather than re-derived. It
+    # goes through the SAME validation the model's output does -- every
+    # skill re-resolved against the `skills` table -- so it is no more
+    # trusted than the model is, and it cannot carry anything but roles and
+    # skills. See TeamPlanInput for why Replace needs this.
+    plan = (
+        _plan_from_args(db, f"{brief}\n{constraints_text}", {
+            "project_type": plan_input.project_type,
+            "roles": [{"role": r.role, "required_skills": r.required_skills}
+                      for r in plan_input.roles],
+        })
+        if plan_input is not None and plan_input.roles
+        else None
+    ) or plan_team(db, brief, constraints_text)
 
     if not plan.roles:
         return TeamProposal(
@@ -1019,7 +1037,7 @@ def build_team(
 
     narrative, narrative_source = ("", "derived")
     if narrate:
-        narrative, narrative_source = _narrate(plan, coverage, assigned, scope.label)
+        narrative, narrative_source = _narrate(plan, coverage, assigned, scope)
 
     return TeamProposal(
         scope=_scope_out(db, scope),
