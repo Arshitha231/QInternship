@@ -666,11 +666,29 @@ button { font: inherit; }
 
 /* Single toolbar row: who / which view / profile link. Wraps to stacked
    rows only when there genuinely isn't width for one line. */
+/* Row 1: who is centred, and the way out to their profile. A statement
+   about the data. */
 .graph-toolbar {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap;
   background: var(--white); border: 1px solid var(--border);
   border-radius: var(--radius-card); padding: 10px 14px;
 }
+
+/* Row 2: the controls. Retrace on the left, the four views next to it, in
+   one horizontal strip -- both answer "take me somewhere else", so they
+   belong to each other rather than to the person above. Left-aligned as one
+   group: centring the tabs would leave the retrace buttons stranded. */
+.graph-viewbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 6px 10px;
+}
+/* .graph-tabs carries `margin: auto` from the old single-row layout, where
+   it needed to centre itself between the person and the View-profile
+   button. In this row that pushes the tabs to the middle and strands the
+   retrace group at the far left, which is the opposite of grouping them. */
+.graph-viewbar .graph-tabs { border: 0; padding: 0; margin-left: 0; margin-right: 0; }
 /* Retrace controls: back / forward through the people you have centred on,
    and home back to yourself. Segmented into one unit so they read as one
    control rather than three loose buttons, and deliberately NOT styled like
