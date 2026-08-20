@@ -79,6 +79,20 @@ export function NodeBox({
 export interface TreeGroup {
   parentId: string;
   childIds: string[];
+  /** How to get from the parent to the children.
+   *
+   *  "direct" (the default) assumes the children sit immediately below the
+   *  parent, so a vertical drop between them crosses nothing.
+   *
+   *  "gutter" is for when they do not. Team's opened sub-team gets its own
+   *  band UNDER the whole roster, while the member it belongs to stays in
+   *  the grid above -- so a direct drop runs from a card in the middle of
+   *  the grid straight down through every card beneath it (measured: 42
+   *  crossings on an 18-person roster). Routing out to the left of
+   *  everything and down instead keeps the relationship visible and crosses
+   *  nothing. The caller picks, because the caller is what knows whether
+   *  its own layout put anything in between. */
+  route?: "direct" | "gutter";
 }
 
 // Card footprint including its gap, in layout px -- must match .tree-node's
@@ -86,6 +100,15 @@ export interface TreeGroup {
 // long row (wrapWidth, below) and for placing a wrapped row's connector
 // gutter clear of the cards (useTreeConnectors).
 const CARD_PITCH = 154 + 18;
+
+// Fallback step below a parent's bottom edge when there is nothing beneath
+// it to measure a gap against. The measured path (see `laneY`) is preferred
+// wherever possible: a fixed drop is only safe if every card in the row is
+// the same height, and they are not -- a two-line job title makes one card
+// taller than its neighbours, so a constant that clears the gap under one
+// card lands inside the row below another. That is exactly how the first
+// version of this put its horizontal run straight through a row of cards.
+const LANE_DROP = 14;
 
 /** An element's position relative to `ancestor`, in LAYOUT pixels.
  *
@@ -164,6 +187,7 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
       parentId: string,
       childIds: string[],
       paths: { id: string; d: string }[],
+      route: "direct" | "gutter" = "direct",
     ) {
       const p = nodeRefs.current.get(parentId);
       if (!p) return;
@@ -206,17 +230,72 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
       // exactly what happened. Rows after the first therefore leave the bus
       // sideways and drop down a gutter to the left of every card in the
       // group, where there is nothing to cross.
-      const leftMost = Math.min(...items.map((it) => it.cx));
+      const leftMost = Math.min(...items.map((it) => it.cx), px);
       const gutterX = leftMost - CARD_PITCH / 2;
+
+      // Where a detached connector may run horizontally: below every card in
+      // the parent's own row, above every card in the next one. Measured
+      // from the registered nodes rather than assumed from a constant,
+      // because rows are ragged -- cards differ in height with the length of
+      // a job title, so the gap under the parent is not the gap under its
+      // neighbour.
+      // A detached route needs TWO clear horizontal lanes, and both have to
+      // be measured against everything on screen rather than against the
+      // parent alone:
+      //
+      //   laneY   just below the parent's own row, to get out to the gutter.
+      //   busY    just above the children, to come back in. Computing this
+      //           one from the parent's bottom (as the direct route does,
+      //           correctly, since nothing is in between there) put it in
+      //           the middle of the roster -- the parent is far above, so
+      //           the midpoint between them lands on whatever is stacked in
+      //           between rather than in a gap.
+      let laneY = py + LANE_DROP;
+      let detachedBusY: number | null = null;
+      if (route === "gutter") {
+        const parentTop = po.y;
+        const childTop = Math.min(...items.map((it) => it.cy));
+        let rowBottom = py;
+        let nextTop = Infinity;
+        let aboveBottom = -Infinity;
+        for (const el of nodeRefs.current.values()) {
+          const o = offsetWithin(el, wrap);
+          const top = o.y;
+          const bottom = o.y + el.offsetHeight;
+          // Same row as the parent: within a few px of its top edge.
+          if (Math.abs(top - parentTop) < 4) rowBottom = Math.max(rowBottom, bottom);
+          else if (top > py) nextTop = Math.min(nextTop, top);
+          // Anything that ends above the children, wherever it sits.
+          if (bottom <= childTop - 1) aboveBottom = Math.max(aboveBottom, bottom);
+        }
+        laneY = nextTop === Infinity ? rowBottom + LANE_DROP : (rowBottom + nextTop) / 2;
+        detachedBusY = aboveBottom === -Infinity
+          ? childTop - LANE_DROP
+          : (aboveBottom + childTop) / 2;
+      }
 
       let prevBottom = py;
       let prevBusY: number | null = null;
       for (const key of rowKeys) {
         const rowItems = rows.get(key)!;
-        const busY = (prevBottom + key) / 2;
+        // The bus this row is actually drawn against. For a detached first
+        // row that is the measured lane above the children, NOT the midpoint
+        // to the far-away parent -- and it has to be the same value the next
+        // wrapped row starts from, which is why prevBusY is assigned from
+        // here rather than from the raw midpoint. Recording the raw one left
+        // a second row of children leaving the bus at a y the first row had
+        // already moved off, dragging it back across the roster.
+        const busY: number = prevBusY === null && detachedBusY !== null
+          ? detachedBusY
+          : (prevBottom + key) / 2;
         for (const it of rowItems) {
           let d: string;
-          if (prevBusY === null) {
+          if (route === "gutter" && prevBusY === null) {
+            // Detached children. Step down into the lane below the
+            // parent's own row, out to the gutter left of everything, down
+            // past whatever sits between, and back in along this row's bus.
+            d = `M ${px} ${py} V ${laneY} H ${gutterX} V ${busY} H ${it.cx} V ${it.cy}`;
+          } else if (prevBusY === null) {
             // First row: straight down from the parent, then out along the
             // bus. A child already centred under the parent needs no elbow
             // at all -- the H segment would be zero-length and the bus just
@@ -241,7 +320,7 @@ export function useTreeConnectors(groups: TreeGroup[], deps: unknown[]) {
       const wrap = wrapRef.current;
       if (!wrap) return;
       const paths: { id: string; d: string }[] = [];
-      for (const g of groups) computeGroup(wrap, g.parentId, g.childIds, paths);
+      for (const g of groups) computeGroup(wrap, g.parentId, g.childIds, paths, g.route);
       setLinePaths(paths);
       setSvgSize({ width: wrap.scrollWidth, height: wrap.scrollHeight });
     }
