@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMyCapabilities, getPerson } from "../api";
+import { getPerson } from "../api";
 import type { FocusHistory } from "../hooks";
 import type { Identity, PersonDetail, ViewMode } from "../types";
 import { DepartmentGraph } from "./graphs/DepartmentGraph";
@@ -41,6 +41,7 @@ export function GraphPage({
   viewMode,
   focus,
   onOpenProfile,
+  canBuildTeam,
 }: {
   identity: Identity;
   viewMode: ViewMode;
@@ -49,6 +50,10 @@ export function GraphPage({
   // through it and the history has to see those navigations to be a history.
   focus: FocusHistory;
   onOpenProfile: (id: string, name: string) => void;
+  /** Whether to OFFER Build Team. Resolved once in App, because the guided
+   *  tour needs the same answer — a step whose target is hidden is a dead
+   *  step, and two independent probes could disagree. */
+  canBuildTeam: boolean;
 }) {
   const { focusId } = focus;
   const onFocusChange = focus.go;
@@ -63,33 +68,12 @@ export function GraphPage({
   // see useTeamBuilderState.
   const teamState = useTeamBuilderState();
   const finderState = useTeamFinderState();
-  // Whether to OFFER Build Team. null while unknown.
-  //
-  // Asked of the server rather than derived from identity.role, which is
-  // what the Dashboard tab does and what this cannot: a "manager" claim
-  // with nobody reporting to them has no team to build from, and the role
-  // alone cannot tell. PersonSummary.has_reports would answer it but is
-  // deliberately absent in employee view mode -- the only mode a manager
-  // ever gets -- so it is missing for exactly the callers being gated.
-  const [canBuildTeam, setCanBuildTeam] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    setCanBuildTeam(null);
-    getMyCapabilities(identity, viewMode, controller.signal)
-      .then((c) => { if (!cancelled) setCanBuildTeam(c.can_build_team); })
-      // A failed probe hides the tab rather than showing it. The endpoint
-      // 403s anyway, so guessing "yes" only buys an error message later.
-      .catch(() => { if (!cancelled) setCanBuildTeam(false); });
-    return () => { cancelled = true; controller.abort(); };
-  }, [identity, viewMode]);
 
   // Losing access mid-session (HR switching out of work mode) must not
   // leave Build Team on screen. Snapping back to the hierarchy is the one
   // view every caller can always see.
   useEffect(() => {
-    if (canBuildTeam === false && mode === "build") setMode("hierarchy");
+    if (!canBuildTeam && mode === "build") setMode("hierarchy");
   }, [canBuildTeam, mode]);
   const [focusPerson, setFocusPerson] = useState<PersonDetail | null | undefined>(undefined);
 
@@ -194,7 +178,7 @@ export function GraphPage({
       ) : (
       <>
       <div className="graph-viewbar">
-        <div className="graph-history" role="group" aria-label="Graph navigation">
+        <div className="graph-history" role="group" aria-label="Graph navigation" data-help="graph-history">
           <button
             className="graph-history-btn"
             onClick={focus.back}

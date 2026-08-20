@@ -41,7 +41,7 @@ export function AIOverview({
   const [showReasoning, setShowReasoning] = useState(false);
 
   return (
-    <div className="ai-overview">
+    <div className="ai-overview" data-help="ai-overview">
       <div className="ai-overview-head">
         <Sparkles size={14} />
         <span>AI Overview</span>

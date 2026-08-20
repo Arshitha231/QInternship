@@ -516,7 +516,7 @@ function SupplyDemandCard({
   const anyInferred = rows.some((r) => r.demand_basis === "inferred");
 
   return (
-    <section className="card dashboard-card">
+    <section className="card dashboard-card" data-help="dashboard-skills">
       <div className="card-head">
         <div>
           <h2>Skill supply vs demand</h2>
@@ -646,7 +646,7 @@ function TrainingCard({
   const maxUnit = Math.max(1, ...worstUnits.map((u) => u.buckets.incomplete));
 
   return (
-    <section className="card dashboard-card">
+    <section className="card dashboard-card" data-help="dashboard-training">
       <div className="card-head">
         <div>
           <h2>Training &amp; course compliance</h2>
@@ -945,7 +945,7 @@ function ProjectCoverageCard({ projects }: { projects: ProjectCoverage[] | null 
   const rows = showAll ? judged : judged.slice(0, 8);
 
   return (
-    <section className="card dashboard-card">
+    <section className="card dashboard-card" data-help="dashboard-projects">
       <div className="card-head">
         <div>
           <h2>Project coverage &amp; skill risk</h2>
@@ -1041,7 +1041,7 @@ function InsightsCard({
   const { summary, insights: items } = insights;
 
   return (
-    <section className="card dashboard-card">
+    <section className="card dashboard-card" data-help="dashboard-insights">
       <div className="card-head">
         <div>
           <h2>{isHr ? "Workforce risk & insights" : "Team development"}</h2>
