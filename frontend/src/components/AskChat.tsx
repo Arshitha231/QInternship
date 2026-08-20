@@ -21,6 +21,9 @@ import type { AskHistoryTurn, AskStep, FollowUpSuggestion, Identity, PersonSumma
 interface Turn {
   question: string;
   answer: string;
+  /** Loaded from server history rather than answered on this page, so it
+   *  has no result to show -- see turnFromHistory. */
+  replayed?: boolean;
   steps: AskStep[];
   people: PersonSummary[];
   suggestion: FollowUpSuggestion | null;
@@ -48,16 +51,54 @@ function isPersonSummary(value: unknown): value is PersonSummary {
   );
 }
 
+// How many previously-asked questions to show above the composer.
+//
+// Two things make the raw list unusable. The main search bar writes to
+// this SAME conversation (see App.tsx), so every query typed up there
+// lands here too; and re-asking the same thing appends a row each time --
+// a real session had five consecutive "who can do terraform" entries.
+//
+// So: collapse consecutive repeats of the same question, and keep only
+// the last few. The full conversation is still on the server and still
+// what the model replays; this is purely what is worth putting on screen
+// above the box you are about to type into.
+const MAX_REPLAYED = 3;
+
+function recentHistory(turns: AskHistoryTurn[]): AskHistoryTurn[] {
+  const collapsed = turns.filter(
+    (t, i) => i === 0 || t.message.trim() !== turns[i - 1].message.trim(),
+  );
+  return collapsed.slice(-MAX_REPLAYED);
+}
+
 // A rehydrated turn carries only the PLAN it resolved to (see
-// AskHistoryTurn) -- never a stored result or phrased answer, so there is
-// no people list or reasoning trace to replay. assistant_text is the one
-// piece of real prose ever stored, and only for a turn with no tool call
-// (a clarifying question, an out-of-scope reply); a turn that DID call a
-// tool shows only which one, honestly, rather than fabricating an answer
-// the server never actually said on this page.
+// AskHistoryTurn) -- never a stored result or phrased answer. That is a
+// deliberate backend property, not a gap: history stores the question and
+// the tool, and the tool is re-run through the enforce()-gated dispatcher
+// on every new turn, so a stale answer about a person can never sit in
+// history or re-enter the model's context.
+//
+// The consequence is that a rehydrated tool-backed turn HAS no answer to
+// show, and it must not pretend otherwise. It used to render
+// "Resolved via find_people." in the answer slot -- a developer-facing
+// string sitting exactly where a sentence about people belongs, which on
+// a reloaded page turned the whole panel into a list of function names.
+//
+// So a replayed turn is now rendered as what it is: a question asked
+// earlier, with a control to ask it again. Asking again produces a real
+// answer, and does it fast, because the response cache already holds it.
+//
+// assistant_text is the one piece of real prose ever stored, and only for
+// a turn with no tool call (a clarifying question, an out-of-scope reply)
+// -- connective language with no factual claim about a person. Those
+// replay verbatim, because there the stored text IS the whole answer.
 function turnFromHistory(h: AskHistoryTurn): Turn {
-  const answer = h.assistant_text ?? (h.tool_call ? `Resolved via ${h.tool_call}.` : "");
-  return { question: h.message, answer, steps: [], people: [], suggestion: null };
+  return {
+    question: h.message,
+    answer: h.assistant_text ?? "",
+    replayed: h.assistant_text == null,
+    steps: [], people: [], suggestion: null,
+  };
 }
 
 export function AskChat({
@@ -73,7 +114,7 @@ export function AskChat({
     let cancelled = false;
     getConversation(identity, "search", viewMode).then((res) => {
       if (cancelled) return;
-      setTurns(res.turns.map(turnFromHistory));
+      setTurns(recentHistory(res.turns).map(turnFromHistory));
       onConversationId(res.conversation_id);
     });
     return () => {
@@ -87,6 +128,14 @@ export function AskChat({
     const question = input.trim();
     if (!question || loading) return;
     setInput("");
+    await ask(question);
+  }
+
+  /** Re-run a question. Used by the composer and by "Ask again" on a
+   *  replayed turn, which is the only way a rehydrated turn can ever get a
+   *  real answer -- the server deliberately stored none. */
+  async function ask(question: string) {
+    if (loading) return;
     setError(null);
     setLoading(true);
     try {
@@ -99,7 +148,8 @@ export function AskChat({
           ? `${people.length} ${people.length === 1 ? "person matches" : "people match"}.`
           : "Done."
       );
-      setTurns((t) => [...t, { question, answer, steps: res.steps ?? [], people, suggestion: res.suggestion ?? null }]);
+      setTurns((t) => [...t, { question, answer, replayed: false, steps: res.steps ?? [],
+                               people, suggestion: res.suggestion ?? null }]);
       if (res.conversation_id !== undefined) onConversationId(res.conversation_id ?? null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't answer that follow-up — try rephrasing.");
@@ -118,9 +168,26 @@ export function AskChat({
       {turns.length > 0 && (
         <div className="ask-turns">
           {turns.map((t, i) => (
-            <div className="ask-turn" key={i}>
+            <div className={`ask-turn ${t.replayed ? "ask-turn-replayed" : ""}`} key={i}>
               <p className="ask-query-text">{t.question}</p>
-              <p className="ai-overview-answer">{t.answer}</p>
+              {t.replayed ? (
+                // No answer exists for this turn -- the server stored the
+                // plan, not the result. Offer to run it rather than print
+                // a placeholder where a sentence about people belongs.
+                <p className="ask-replayed-row">
+                  <span className="ask-replayed-note">Asked earlier</span>
+                  <button
+                    type="button"
+                    className="ask-again"
+                    disabled={loading}
+                    onClick={() => void ask(t.question)}
+                  >
+                    Ask again
+                  </button>
+                </p>
+              ) : (
+                <p className="ai-overview-answer">{t.answer}</p>
+              )}
 
               {t.people.length > 0 && (
                 <div className="results-grid">
