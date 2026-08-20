@@ -140,7 +140,7 @@ export function WorkforceIntelligence({
   }
 
   return (
-    <section className="card dashboard-card wi">
+    <section className="card dashboard-card wi" data-help="workforce-intelligence">
       <div className="card-head">
         <div>
           <h2>Workforce intelligence</h2>

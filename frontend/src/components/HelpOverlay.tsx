@@ -10,6 +10,9 @@ interface Props {
   onExit: () => void;
   /** Tour steps can live on another tab; the host switches before showing. */
   onRequestMode: (mode: HelpMode) => void;
+  /** Capabilities whose targets are conditionally rendered. A topic
+   *  declaring one is skipped when it is false — see HelpTopic.capability. */
+  capabilities: { build_team: boolean };
   /**
    * Which tabs actually exist for the current identity. Supplied by the
    * host rather than derived here, so the role rules live in exactly one
@@ -48,14 +51,14 @@ function placeCard(box: Box | null, cardHeight: number): { top: number; left: nu
   return { top, left };
 }
 
-export function HelpOverlay({ state, onExit, onRequestMode, availableModes }: Props) {
+export function HelpOverlay({ state, onExit, onRequestMode, availableModes, capabilities }: Props) {
   const [stepIndex, setStepIndex] = useState(0);
   const [inspected, setInspected] = useState<HelpTopic | null>(null);
   const [box, setBox] = useState<Box | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [cardHeight, setCardHeight] = useState(180);
 
-  // Two skip rules, and both are load-bearing:
+  // Three skip rules, and all of them are load-bearing:
   //
   //   no mode   the target must be on screen NOW (filters and results only
   //             exist after a search).
@@ -65,9 +68,17 @@ export function HelpOverlay({ state, onExit, onRequestMode, availableModes }: Pr
   //             never appears: an HR user got a "Review (IT)" step, and
   //             requesting that tab blanked the page, because App renders
   //             nothing for a mode the role can't open.
-  const visibleSteps = TOUR_STEPS.filter((t) =>
-    t.mode === undefined ? isTargetPresent(t) : availableModes.includes(t.mode),
-  );
+  //   capability the tab exists but the CONTROL inside it does not. Build
+  //             Team sits on the Graphs tab, which everyone has, behind a
+  //             server-resolved gate -- so the mode rule passes and the
+  //             target is still absent. Same failure as the row above,
+  //             one level further in, and found the same way: walking the
+  //             tour as an ordinary employee and watching a step land on
+  //             nothing.
+  const visibleSteps = TOUR_STEPS.filter((t) => {
+    if (t.capability && !capabilities[t.capability]) return false;
+    return t.mode === undefined ? isTargetPresent(t) : availableModes.includes(t.mode);
+  });
   const step: HelpTopic | undefined = state === "tour" ? visibleSteps[stepIndex] : undefined;
   const active: HelpTopic | null = state === "tour" ? step ?? null : inspected;
 
@@ -75,6 +86,12 @@ export function HelpOverlay({ state, onExit, onRequestMode, availableModes }: Pr
   useEffect(() => {
     if (state === "tour" && step?.mode) onRequestMode(step.mode);
   }, [state, step, onRequestMode]);
+
+  // The ladder's timers must see the step that is current when they FIRE,
+  // not the one captured when they were scheduled -- otherwise clicking
+  // Next mid-ladder measures the previous step's target.
+  const activeRef = useRef<HelpTopic | null>(null);
+  activeRef.current = active;
 
   const measure = useCallback(() => {
     if (!active) { setBox(null); return; }
@@ -87,12 +104,31 @@ export function HelpOverlay({ state, onExit, onRequestMode, availableModes }: Pr
   useLayoutEffect(() => { measure(); }, [measure]);
 
   useEffect(() => {
-    // A tab switch re-renders asynchronously, so one measure isn't enough.
-    const t = window.setTimeout(measure, 60);
+    // A tab switch re-renders asynchronously AND THEN FETCHES, so a single
+    // deferred measure isn't enough. One 60ms retry was what this had, and
+    // it is enough for a tab that renders synchronously and not for one
+    // that waits on the network -- Dashboard, Continuity, Review and Admin
+    // all landed with no spotlight, the card floating over an unlit page.
+    // Found by walking the whole tour as HR and recording which steps drew
+    // a ring; the four that missed were exactly the four that fetch.
+    //
+    // A ladder rather than one longer timeout: a synchronous tab still
+    // lights up on the first rung, so nothing gets slower to make the slow
+    // case work. Each rung only ever UPGRADES a miss into a hit -- it never
+    // clears a box it already found, so a target that legitimately isn't
+    // there still ends on "Nothing to show here".
+    const rungs = [60, 160, 320, 640, 1100];
+    const timers = rungs.map((delay) =>
+      window.setTimeout(() => {
+        if (!activeRef.current) return;
+        const el = document.querySelector(`[data-help="${activeRef.current.key}"]`);
+        if (el) setBox(boxOf(el));
+      }, delay),
+    );
     window.addEventListener("resize", measure);
     window.addEventListener("scroll", measure, true);
     return () => {
-      window.clearTimeout(t);
+      timers.forEach(window.clearTimeout);
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
