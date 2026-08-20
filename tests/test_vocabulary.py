@@ -79,6 +79,16 @@ def test_order_by_none_is_always_valid():
     assert result.valid is True
 
 
+def test_order_by_hire_date_is_structurally_valid():
+    # hire_date is filterable=True specifically so search_people can rank
+    # by tenure ("who has the most experience") -- structurally legal here
+    # regardless of caller; app.policy.enforce()'s INVARIANT 6 is what
+    # actually gates WHO may use it (hr only), a separate question from
+    # whether the plan itself is well-formed.
+    result = validate(PeopleQuery(select=["id"], order_by="hire_date"))
+    assert result.valid is True
+
+
 def test_multiple_errors_are_all_reported_not_just_the_first():
     result = validate(PeopleQuery(
         select=["personal_mobile"],

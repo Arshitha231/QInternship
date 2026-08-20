@@ -6,10 +6,13 @@ office="Test HQ"/Testville, "Satellite Office"/"Satellite City", org units
 "Rory Restricted" (availability_status=restricted), "Taylor Cloud" /
 "Jordan Ledger" (Terraform), "Jordan Ledger" also speaks French.
 """
+from datetime import date
+
 import pytest
 
 from app.auth import AuthenticatedUser
-from app.models import Employee
+from app.models import Employee, Office, OrgUnit
+from app.models.enums import AvailabilityStatus, EmploymentType
 from app.policy import PolicyDecision, enforce
 from app.query_compiler import UnsupportedFilterError, compile_query, enforced_person_ref
 from app.query_plan import Filter, PeopleQuery
@@ -138,6 +141,75 @@ def test_order_by_full_name_is_alphabetical(db_session):
     ))
     # Morgan Manager, Riley Report, Rory Restricted -- alphabetical by full_name
     assert result == ["mgr-1", "report-1", "restricted-1"]
+
+
+@pytest.fixture
+def tenure_trio(db_session):
+    # Every conftest.py fixture employee shares the identical default
+    # hire_date (2020-01-01, tests/conftest.py's mkemp) -- meaningless to
+    # sort by. A dedicated org unit/office keeps this trio the only members
+    # of anything a filter here could match, same isolation precedent as
+    # tests/test_community_links.py's new_hire_team fixture.
+    #
+    # Idempotent on purpose: this fixture (function-scoped, no rollback) is
+    # requested by more than one test against the same session-scoped db,
+    # so a second call must not re-INSERT the same ids/emails.
+    ids = ["tenure-oldest", "tenure-middle", "tenure-newest"]
+    if db_session.get(Employee, ids[0]) is not None:
+        return ids
+
+    org_unit = OrgUnit(name="Tenure Trio Team", parent_id=None, unit_type="team")
+    db_session.add(org_unit)
+    office = Office(name="Tenure Trio Office", city="Tenureville", country="Testland", timezone="UTC")
+    db_session.add(office)
+    db_session.flush()
+
+    def mk(id_, full_name, hired) -> Employee:
+        emp = Employee(
+            id=id_, directory_object_id=None, full_name=full_name, preferred_name=None,
+            job_title="Software Engineer", org_unit_id=org_unit.id, office_id=office.id, manager_id=None,
+            work_email=f"{id_}@example.test", work_phone=None, slack_handle=None, timezone=None,
+            employment_type=EmploymentType.fte, hire_date=hired, cost_centre=None,
+            personal_mobile=None, availability_status=AvailabilityStatus.available,
+            away_until=None, delegate_id=None, bio=None, photo_url=None, is_active=True,
+        )
+        db_session.add(emp)
+        return emp
+
+    mk("tenure-oldest", "Oldest Hire", date(2015, 6, 1))
+    mk("tenure-middle", "Middle Hire", date(2019, 3, 15))
+    mk("tenure-newest", "Newest Hire", date(2023, 11, 1))
+    db_session.commit()
+    return ids
+
+
+def _tenure_plan(ids, order_dir) -> PeopleQuery:
+    return PeopleQuery(
+        select=["id"], filters=[Filter(field="id", op="in", value=ids)],
+        order_by="hire_date", order_dir=order_dir,
+    )
+
+
+def test_order_by_hire_date_ascending_ranks_the_earliest_hire_first(db_session, tenure_trio):
+    # "who has the most experience" -- earliest hire_date first.
+    result = _run(db_session, _tenure_plan(tenure_trio, "asc"))
+    assert result == ["tenure-oldest", "tenure-middle", "tenure-newest"]
+
+
+def test_order_by_hire_date_descending_ranks_the_most_recent_hire_first(db_session, tenure_trio):
+    # "who joined most recently" -- latest hire_date first.
+    result = _run(db_session, _tenure_plan(tenure_trio, "desc"))
+    assert result == ["tenure-newest", "tenure-middle", "tenure-oldest"]
+
+
+def test_order_by_hire_date_is_denied_for_a_non_hr_caller(db_session, tenure_trio):
+    # INVARIANT 6 (app/policy.py): sorting on a restricted field is a hard
+    # denial, same as filtering on one -- unchanged by this field becoming
+    # orderable, and covered directly by tests/test_policy.py; this just
+    # confirms the same rule holds end to end through compile_query too.
+    plan = _tenure_plan(tenure_trio, "asc")
+    decision = enforce(plan, EMPLOYEE)
+    assert decision.allow is False
 
 
 def test_max_rows_from_policy_decision_actually_caps_the_query(db_session):

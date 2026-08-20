@@ -322,7 +322,21 @@ TOOLS = [
                         },
                     },
                 },
-                "order_by": {"type": "string", "enum": sorted(ORDERABLE_FIELDS)},
+                "order_by": {
+                    "type": "string", "enum": sorted(ORDERABLE_FIELDS),
+                    "description": (
+                        "hire_date ranks by tenure -- see the tenure/seniority guidance above for "
+                        "which direction to use."
+                    ),
+                },
+                "order_dir": {
+                    "type": "string", "enum": ["asc", "desc"],
+                    "description": (
+                        "Ignored unless order_by is set. \"asc\" (default) = earliest/most first "
+                        "for hire_date (most tenure). \"desc\" = latest/most recent first (most "
+                        "recently hired)."
+                    ),
+                },
                 "limit": {"type": "integer", "description": "Hint only, never widens the server-side cap."},
                 "needs_followup": NEEDS_FOLLOWUP_PROPERTY,
             },
@@ -351,6 +365,14 @@ truly an OR between different fields; each group is its own AND list, and the gr
 against each other. Don't reach for filter_groups just because a request has the word "or" in \
 it — "Bangalore or Singapore" is still one field, one `filters` entry with op="in", not \
 filter_groups.
+
+A question about TENURE — "who has the most experience", "who's the most senior", "who's \
+been here the longest", "who joined most recently", "who's the newest hire" — is search_people \
+with order_by="hire_date": order_dir="asc" for most-experienced/longest-tenure (earliest hire \
+date first), order_dir="desc" for most-recently-joined/newest-hire (latest hire date first). \
+This is a factual date comparison, not a judgment call — do not confuse it with the \
+performance/ambition questions ("who's the best", "who's most promotable") that stay \
+out of scope below; tenure is answerable, performance is not.
 
 Use find_experts when the caller DESCRIBES A PROBLEM they're facing rather than naming what \
 they want to filter on — "our nightly ETL keeps falling over", "I'm stuck debugging a memory \
@@ -491,6 +513,17 @@ FEW_SHOT_EXAMPLES: list[FewShot] = [
          [{"field": "languages", "op": "contains", "value": "French"}],
          [{"field": "office", "op": "eq", "value": "Bangalore"}],
      ]}),
+    # Tenure ranking: order_by="hire_date", direction carries the meaning
+    # ("asc" = earliest hire first = most experience; "desc" = latest hire
+    # first = most recent). A factual date sort, not the "who's the best"
+    # performance judgment the out-of-scope examples below cover.
+    ("who has the most experience", "search_people",
+     {"filters": [], "order_by": "hire_date", "order_dir": "asc"}),
+    ("who's the most senior person on the design team", "search_people",
+     {"filters": [{"field": "org_unit", "op": "eq", "value": "Design Team"}],
+      "order_by": "hire_date", "order_dir": "asc"}),
+    ("who joined most recently", "search_people",
+     {"filters": [], "order_by": "hire_date", "order_dir": "desc"}),
     # Out-of-scope / off-topic — no tool call, exact fallback wording.
     ("what's the weather like in Seattle today", None, None),
     ("can you tell me who's the worst performer on the team", None, None),
@@ -1206,9 +1239,22 @@ _PHRASING_SYSTEM_PROMPT = (
     "level, or whatever else is there). Never rank them or call one 'the best' "
     "unless the data itself ranks them -- if every entry matches the same filter "
     "equally, say what each one has in common with the request, not that one "
-    "beats another. If more than 5 entries exist, say how many more there are. "
-    "Write it as flowing prose in one paragraph -- no bullets, no numbered list, "
-    "no line breaks.\n\n"
+    "beats another.\n\n"
+    "One exception: if `arguments.order_by` is set, `result` IS already ranked by "
+    "that field -- the data itself ranking them, not you inferring it. Order is "
+    "ascending unless `arguments.order_dir` is \"desc\"; the first entries are "
+    "whichever end of that field ranks highest (e.g. order_by=\"hire_date\" "
+    "ascending means the first entries have been here longest -- the most "
+    "tenure/experience/seniority; \"desc\" means they joined most recently). Say "
+    "so using that relative language -- 'has been here the longest', 'joined most "
+    "recently' -- even when the field's actual value isn't itself a key in "
+    "`result`; position in the list is the fact, not the value behind it. Never "
+    "state a specific date, a number of years, or any duration -- if it isn't a "
+    "literal value in `result`, it isn't grounded, no matter how the list is "
+    "ordered.\n\n"
+    "If more than 5 entries exist, say how many more there are. Write it as "
+    "flowing prose in one paragraph -- no bullets, no numbered list, no line "
+    "breaks.\n\n"
     "Otherwise -- a single result, or a `result` that isn't a list of candidates "
     "-- answer directly in one or two sentences.\n\n"
     "If `result` is null, an empty list, or otherwise shows nothing matched, say "
@@ -1501,6 +1547,7 @@ def execute_tool_call(
             filters=[Filter(**f) for f in args.get("filters", [])],
             filter_groups=[[Filter(**f) for f in group] for group in args.get("filter_groups", [])],
             order_by=args.get("order_by"),
+            order_dir=args.get("order_dir") or "asc",
             limit=args.get("limit"),
         )
         return search_people_by_plan(db, caller, plan, view_mode)
@@ -2049,6 +2096,35 @@ def answer(
         return {"message": turn.message or OUT_OF_SCOPE_MESSAGE, "tool_call": None, "arguments": None, "result": None}
 
     if turn.tool_call.needs_followup:
-        return execute_chain(db, caller, turn.tool_call, message, view_mode, history_messages)
+        raw = execute_chain(db, caller, turn.tool_call, message, view_mode, history_messages)
+    else:
+        raw = execute_with_retry(db, caller, turn.tool_call, message, view_mode)
 
-    return execute_with_retry(db, caller, turn.tool_call, message, view_mode)
+    # Same phrasing app.unified_search._build_assisted() already applies to
+    # the main search bar's assisted-mode answer -- this endpoint (the
+    # follow-up chat box) called execute_chain/execute_with_retry directly
+    # and returned their raw dict unphrased, so a successful follow-up call
+    # rendered as "N people match." (AskChat.tsx's own generic fallback)
+    # instead of an actual answer to the question asked. No _phrase()
+    # fallback tier here (that helper lives in unified_search.py, which
+    # already imports FROM this module — importing it back would be
+    # circular): when phrase_answer has no real model to ask or its output
+    # fails grounding, raw["message"] stays None and the frontend's own
+    # generic fallback covers it, same as it always has.
+    if raw.get("tool_call") is not None:
+        arguments = raw.get("arguments") or {}
+        result = raw.get("result")
+        if raw.get("truncated") is not None:
+            # Phrase the result FIRST and append the budget note (mirrors
+            # _build_assisted): the note describes the chain running out of
+            # steps, not who was found, so it can only ever supplement a
+            # real answer, never stand in for one.
+            phrased = phrase_answer(message, raw["tool_call"], arguments, result)
+            if phrased is not None:
+                raw["message"] = f"{phrased} {raw['message']}" if raw.get("message") else phrased
+        elif raw.get("message") is None:
+            phrased = phrase_answer(message, raw["tool_call"], arguments, result)
+            if phrased is not None:
+                raw["message"] = phrased
+
+    return raw

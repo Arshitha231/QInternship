@@ -5,14 +5,17 @@ OpenAI call.
 """
 import json
 import time
+from datetime import date
 from types import SimpleNamespace
 
+import pytest
 from openai import OpenAIError
 
 import app.tool_calling as tool_calling
 from app.auth import AuthenticatedUser
 from app.chain_budgets import CEILING, DEFAULT_PLAN_CLASS, PLAN_CLASS_BUDGETS, ChainBudget
-from app.models import AuditLog
+from app.models import AuditLog, Employee, Office, OrgUnit
+from app.models.enums import AvailabilityStatus, EmploymentType
 from app.schemas import HistoryTurn
 from app.tool_calling import (
     MAX_ROUTING_RETRIES,
@@ -427,6 +430,83 @@ def test_execute_tool_call_search_people_threads_view_mode(db_session):
     employee_mode_result = execute_tool_call(db_session, hr_caller, tool_call, view_mode="employee")
     assert [p.id for p in work_result] == ["restricted-1"]
     assert employee_mode_result == []
+
+
+# ---------------------------------------------------------------------------
+# search_people order_by="hire_date" / order_dir -- the real fix for "who
+# has the most experience" (no tool had ANY way to rank by tenure before
+# this; hire_date was filterable=False in app/registry.py). compile_query's
+# own asc/desc behaviour is covered directly in tests/test_query_compiler.py
+# -- these confirm the dispatch actually threads order_dir through rather
+# than silently dropping it before PeopleQuery construction.
+# ---------------------------------------------------------------------------
+
+def _seed_dispatch_tenure_trio(db_session) -> list[str]:
+    # Every conftest.py fixture employee shares one default hire_date --
+    # dedicated rows, dedicated org unit/office, same isolation precedent
+    # as tests/test_community_links.py's new_hire_team fixture. Idempotent
+    # on purpose -- called from more than one test against the same
+    # session-scoped db, so a second call must not re-INSERT the same ids.
+    ids = ["dispatch-tenure-oldest", "dispatch-tenure-newest"]
+    if db_session.get(Employee, ids[0]) is not None:
+        return ids
+
+    org_unit = OrgUnit(name="Dispatch Tenure Team", parent_id=None, unit_type="team")
+    db_session.add(org_unit)
+    office = Office(name="Dispatch Tenure Office", city="Tenureville", country="Testland", timezone="UTC")
+    db_session.add(office)
+    db_session.flush()
+
+    def mk(id_, full_name, hired) -> Employee:
+        emp = Employee(
+            id=id_, directory_object_id=None, full_name=full_name, preferred_name=None,
+            job_title="Software Engineer", org_unit_id=org_unit.id, office_id=office.id, manager_id=None,
+            work_email=f"{id_}@example.test", work_phone=None, slack_handle=None, timezone=None,
+            employment_type=EmploymentType.fte, hire_date=hired, cost_centre=None,
+            personal_mobile=None, availability_status=AvailabilityStatus.available,
+            away_until=None, delegate_id=None, bio=None, photo_url=None, is_active=True,
+        )
+        db_session.add(emp)
+        return emp
+
+    mk("dispatch-tenure-oldest", "Dispatch Oldest", date(2015, 6, 1))
+    mk("dispatch-tenure-newest", "Dispatch Newest", date(2023, 11, 1))
+    db_session.commit()
+    return ids
+
+
+def test_execute_tool_call_search_people_order_by_hire_date_defaults_ascending(db_session):
+    ids = _seed_dispatch_tenure_trio(db_session)
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [{"field": "id", "op": "in", "value": ids}], "order_by": "hire_date"},
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [p.id for p in result] == ["dispatch-tenure-oldest", "dispatch-tenure-newest"]
+
+
+def test_execute_tool_call_search_people_order_dir_desc_reverses_it(db_session):
+    ids = _seed_dispatch_tenure_trio(db_session)
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={
+            "filters": [{"field": "id", "op": "in", "value": ids}],
+            "order_by": "hire_date", "order_dir": "desc",
+        },
+    )
+    result = execute_tool_call(db_session, CALLER, tool_call)
+    assert [p.id for p in result] == ["dispatch-tenure-newest", "dispatch-tenure-oldest"]
+
+
+def test_execute_tool_call_search_people_order_by_hire_date_denied_for_non_hr(db_session):
+    ids = _seed_dispatch_tenure_trio(db_session)
+    tool_call = ResolvedToolCall(
+        name="search_people",
+        arguments={"filters": [{"field": "id", "op": "in", "value": ids}], "order_by": "hire_date"},
+    )
+    employee_caller = AuthenticatedUser(id="tenure-dispatch-emp", role="employee")
+    with pytest.raises(ValueError):
+        execute_tool_call(db_session, employee_caller, tool_call)
 
 
 def test_execute_with_retry_recovers_from_an_unknown_field_in_a_plan(db_session, monkeypatch):
@@ -1019,6 +1099,87 @@ def test_answer_threads_replayed_history_into_the_model_call(db_session, monkeyp
     # can build it in isolation.
     assert captured["history_messages"] is not None
     assert captured["history_messages"][0] == {"role": "user", "content": "who knows Terraform?"}
+
+
+# ---------------------------------------------------------------------------
+# answer() now phrases a successful call, the same way
+# unified_search._build_assisted() already phrases the main search bar's
+# assisted-mode answer. Before this, POST /ask (the follow-up chat box)
+# called execute_chain/execute_with_retry directly and returned their raw
+# dict untouched -- a successful follow-up rendered as AskChat.tsx's own
+# generic "N people match." fallback instead of an actual answer, even with
+# a real model configured. Mocks resolve_intent/execute_with_retry/
+# execute_chain/phrase_answer directly (matching this file's existing style
+# for isolating answer()'s own orchestration) rather than exercising a real
+# model call.
+# ---------------------------------------------------------------------------
+
+def test_answer_phrases_a_successful_call(db_session, monkeypatch):
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
+    monkeypatch.setattr(
+        tool_calling, "execute_with_retry",
+        lambda db, caller, tool_call, message, view_mode="work": {
+            "message": None, "tool_call": "search_people", "arguments": {"order_by": "hire_date"}, "result": ["ok"],
+        })
+    monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: "Jordan Diaz has the most tenure.")
+
+    result = answer(db_session, CALLER, "who has the most experience?")
+    assert result["message"] == "Jordan Diaz has the most tenure."
+
+
+def test_answer_leaves_message_none_when_phrase_answer_has_nothing(db_session, monkeypatch):
+    # No real model configured, or its output failed grounding -- either
+    # way phrase_answer degrades to None, and the frontend's own generic
+    # fallback ("N people match.") covers it exactly as it always has.
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
+    monkeypatch.setattr(
+        tool_calling, "execute_with_retry",
+        lambda db, caller, tool_call, message, view_mode="work": {
+            "message": None, "tool_call": "search_people", "arguments": {}, "result": ["ok"],
+        })
+    monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: None)
+
+    result = answer(db_session, CALLER, "who has the most experience?")
+    assert result["message"] is None
+
+
+def test_answer_does_not_override_a_procedural_message_with_phrasing(db_session, monkeypatch):
+    # raw["message"] here is a specific procedural message (disambiguation
+    # prompt, broadening explanation) the model has no way to reconstruct
+    # from the result alone -- kept verbatim, same as _build_assisted().
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="find_people", arguments={"name": "X"})))
+    monkeypatch.setattr(
+        tool_calling, "execute_with_retry",
+        lambda db, caller, tool_call, message, view_mode="work": {
+            "message": "Did you mean Xavier or Ximena?", "tool_call": "find_people", "arguments": {}, "result": [],
+        })
+    monkeypatch.setattr(
+        tool_calling, "phrase_answer",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not phrase over a procedural message")))
+
+    result = answer(db_session, CALLER, "find X")
+    assert result["message"] == "Did you mean Xavier or Ximena?"
+
+
+def test_answer_phrases_before_the_truncation_note_not_instead_of_it(db_session, monkeypatch):
+    # Mirrors _build_assisted's truncated branch exactly: the budget note
+    # describes the CHAIN running out of steps, not who was found, so it
+    # can only ever supplement a real answer -- phrase first, append after.
+    monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
+        tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []}, needs_followup=True)))
+    monkeypatch.setattr(
+        tool_calling, "execute_chain",
+        lambda db, caller, tool_call, message, view_mode="work", history_messages=None: {
+            "message": "Stopped after running out of reasoning steps.", "tool_call": "search_people",
+            "arguments": {}, "result": ["ok"], "truncated": "steps",
+        })
+    monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: "Jordan Diaz has the most tenure.")
+
+    result = answer(db_session, CALLER, "who has the most experience?")
+    assert result["message"] == "Jordan Diaz has the most tenure. Stopped after running out of reasoning steps."
 
 
 def test_execute_chain_threads_history_into_its_own_followup_resolution(db_session, monkeypatch):
