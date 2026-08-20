@@ -26,6 +26,12 @@ interface Props {
   identity: Identity;
   viewMode: ViewMode;
   onSelect: (id: string, name: string) => void;
+  /** Nest under the assisted overview instead of a separate distant section. */
+  compact?: boolean;
+  /** Soften copy when the primary answer had no people cards. */
+  emptyResults?: boolean;
+  /** Seed from the primary /search turn so "which of those…" has context. */
+  seedHistory?: AskHistoryTurn[];
 }
 
 function isPersonSummary(value: unknown): value is PersonSummary {
@@ -35,13 +41,20 @@ function isPersonSummary(value: unknown): value is PersonSummary {
   );
 }
 
-export function AskChat({ identity, viewMode, onSelect }: Props) {
+export function AskChat({
+  identity, viewMode, onSelect, compact = false, emptyResults = false, seedHistory = [],
+}: Props) {
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [history, setHistory] = useState<AskHistoryTurn[]>([]);
+  const [history, setHistory] = useState<AskHistoryTurn[]>(() => seedHistory);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openTraceIndex, setOpenTraceIndex] = useState<number | null>(null);
+  const placeholder = turns.length > 0
+    ? "Ask another follow-up…"
+    : emptyResults
+      ? "Ask another way — or try a different name…"
+      : "Ask a follow-up about these results…";
 
   async function send(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -53,15 +66,12 @@ export function AskChat({ identity, viewMode, onSelect }: Props) {
     try {
       const res = await askAssistant(identity, question, viewMode, history);
       const people = Array.isArray(res.result) ? res.result.filter(isPersonSummary) : [];
-      const answer = res.message ?? (
+      const answer = (res.message && res.message.trim()) || (
         people.length > 0
           ? `${people.length} ${people.length === 1 ? "person matches" : "people match"}.`
-          : "Done."
+          : "Couldn't answer that follow-up — try rephrasing."
       );
       setTurns((t) => [...t, { question, answer, steps: res.steps ?? [], people }]);
-      // Next turn's history entry -- the PLAN this turn resolved to, never
-      // its result. A turn with no tool call (a clarifying question, an
-      // out-of-scope reply) carries its text instead; see HistoryTurn.
       setHistory((h) => [...h, {
         message: question,
         tool_call: res.tool_call,
@@ -76,11 +86,13 @@ export function AskChat({ identity, viewMode, onSelect }: Props) {
   }
 
   return (
-    <div className="ask-followup" data-help="ask-followup">
-      <div className="ai-overview-head">
-        <Sparkles size={14} />
-        <span>Ask a follow-up</span>
-      </div>
+    <div className={`ask-followup${compact ? " ask-followup--compact" : ""}`} data-help="ask-followup">
+      {!compact && (
+        <div className="ai-overview-head">
+          <Sparkles size={14} />
+          <span>Ask a follow-up</span>
+        </div>
+      )}
 
       {turns.length > 0 && (
         <div className="ask-turns">
@@ -154,12 +166,13 @@ export function AskChat({ identity, viewMode, onSelect }: Props) {
       <form className="ask-input-row" onSubmit={send}>
         <input
           type="text"
-          placeholder={turns.length > 0 ? "Ask another follow-up…" : "Ask a follow-up about these results…"}
+          placeholder={placeholder}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={loading}
+          aria-label={compact ? "Continue the conversation" : "Ask a follow-up"}
         />
-        <button type="submit" className="btn" disabled={loading || !input.trim()}>
+        <button type="submit" className="btn btn-primary" disabled={loading || !input.trim()}>
           <Send size={14} /> Ask
         </button>
       </form>

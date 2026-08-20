@@ -1199,20 +1199,52 @@ def test_answer_phrases_a_successful_call(db_session, monkeypatch):
 
 
 def test_answer_leaves_message_none_when_phrase_answer_has_nothing(db_session, monkeypatch):
-    # No real model configured, or its output failed grounding -- either
-    # way phrase_answer degrades to None, and the frontend's own generic
-    # fallback ("N people match.") covers it exactly as it always has.
+    # When the real model can't phrase, fall back to deterministic _phrase
+    # (same templates /search assisted mode uses) so follow-up chat isn't
+    # stuck on AskChat's generic "N people match." / empty answer.
     monkeypatch.setattr(tool_calling, "resolve_intent", lambda message, db, history_messages=None: AssistantTurn(
         tool_call=ResolvedToolCall(name="search_people", arguments={"filters": []})))
     monkeypatch.setattr(
         tool_calling, "execute_with_retry",
         lambda db, caller, tool_call, message, view_mode="work": {
-            "message": None, "tool_call": "search_people", "arguments": {}, "result": ["ok"],
+            "message": None, "tool_call": "search_people", "arguments": {}, "result": [],
         })
     monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: None)
 
     result = answer(db_session, CALLER, "who has the most experience?")
-    assert result["message"] is None
+    assert result["message"] == "No one in the directory matched those criteria."
+
+
+def test_answer_phrases_get_org_chain_unknown_person_without_model(db_session, monkeypatch):
+    # In mock mode, phrase_answer() returns None, but /ask must still
+    # return safe deterministic prose for org-chain name-resolution failures
+    # so the UI doesn't fall back to "Done."
+    from app.schemas import UnknownPerson
+
+    monkeypatch.setattr(
+        tool_calling,
+        "resolve_intent",
+        lambda message, db, history_messages=None: AssistantTurn(
+            tool_call=ResolvedToolCall(
+                name="get_org_chain",
+                arguments={"person": "Aditya Chaudhry", "direction": "down", "depth": 1},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        tool_calling,
+        "execute_with_retry",
+        lambda db, caller, tool_call, message, view_mode="work": {
+            "message": None,
+            "tool_call": "get_org_chain",
+            "arguments": tool_call.arguments,
+            "result": UnknownPerson(query="Aditya Chaudhry"),
+        },
+    )
+    monkeypatch.setattr(tool_calling, "phrase_answer", lambda *a, **kw: None)
+
+    result = answer(db_session, CALLER, "Who reports to Aditya Chaudhry?", "work")
+    assert result["message"] == 'No active employee matches "Aditya Chaudhry".'
 
 
 def test_answer_does_not_override_a_procedural_message_with_phrasing(db_session, monkeypatch):
@@ -1644,6 +1676,19 @@ def test_ordinary_project_owner_questions_still_route():
     turn = tool_calling._deterministic_resolve("who owns the Billing API")
     assert turn.tool_call.name == "find_project_owner"
     assert turn.tool_call.arguments == {"name": "Billing API"}
+
+
+def test_greedy_owner_phrase_does_not_route_as_person():
+    # Relationship extractors must defer when the "name" is really an object
+    # phrase — project-owner routing handles "who owns the Billing API".
+    assert tool_calling._deterministic_resolve("the owner of the Billing API") is None
+
+
+def test_unknown_person_org_chain_still_routes_deterministically(db_session):
+    turn = tool_calling._deterministic_resolve("Who reports to Nobody McFakeface?")
+    assert turn.tool_call == ResolvedToolCall(
+        name="get_org_chain", arguments={"person": "Nobody McFakeface", "direction": "down", "depth": 1})
+    assert tool_calling.names_a_real_person(db_session, turn) is True
 
 
 def test_is_clean_subject_rejects_sentences_and_accepts_names():

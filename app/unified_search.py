@@ -41,6 +41,9 @@ from app.schemas import (
     AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary,
     PersonWithProjects, ProblemExpert, ProjectOwnerResult, UnknownPerson,
 )
+from app.agent_tools import (
+    CoverageResult, EscalationResult, PersonBrief, SkillTraineeCandidate, TrainingRecommendResult,
+)
 from app.vocabulary import snap_tool_arguments
 from app.tool_calling import (
     OUT_OF_SCOPE_MESSAGE,
@@ -215,6 +218,11 @@ _TOOL_REASONS = {
     "skill_scarcity": "Checked how rare that skill is across the company.",
     "find_experts": "Matched the problem against what our projects actually did, "
                     "then found the people who worked on them.",
+    "find_coverage": "Checked who is covering for that person.",
+    "find_escalation": "Walked the escalation path for that person or project.",
+    "recommend_training": "Checked outstanding required training.",
+    "find_skill_trainees": "Found people whose project work suggests learning those skills next.",
+    "brief_person": "Built a short profile brief.",
     "get_people_with_projects": "Looked up recent project history for that group of people.",
 }
 
@@ -571,6 +579,17 @@ def _people_and_citations(
         ]
         return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
 
+    if tool_name == "find_skill_trainees":
+        trainees = [t for t in result if isinstance(t, SkillTraineeCandidate)]
+        summaries = [
+            PersonSummary(
+                id=t.id, full_name=t.full_name, job_title=t.job_title,
+                org_unit=t.org_unit, availability_status=t.availability_status,
+            )
+            for t in trainees
+        ]
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
     if tool_name == "get_people_with_projects":
         # Cards show the same standard summary shape every other tool's
         # cards do -- recent_projects is real, extra context (see
@@ -610,6 +629,38 @@ def _people_and_citations(
             job_title="", org_unit="", availability_status="available",
         )
         return [summary], [PersonRef(id=summary.id, full_name=summary.full_name)]
+
+    if tool_name == "find_coverage" and isinstance(result, CoverageResult):
+        pairs = [(result.subject.id, result.subject.full_name)]
+        if result.cover is not None:
+            pairs.append((result.cover.id, result.cover.full_name))
+        summaries = _resolve_summaries(db, caller, pairs, view_mode)
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
+    if tool_name == "find_escalation" and isinstance(result, EscalationResult):
+        pairs = [(s.person.id, s.person.full_name) for s in result.steps]
+        summaries = _resolve_summaries(db, caller, pairs, view_mode)
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
+    if tool_name == "recommend_training" and isinstance(result, TrainingRecommendResult):
+        summaries = _resolve_summaries(
+            db, caller, [(result.person.id, result.person.full_name)], view_mode)
+        return summaries, [PersonRef(id=s.id, full_name=s.full_name) for s in summaries]
+
+    if tool_name == "brief_person" and isinstance(result, PersonBrief):
+        detail = result.person
+        summary = PersonSummary(
+            id=detail.id, full_name=detail.full_name, preferred_name=detail.preferred_name,
+            job_title=detail.job_title or "", org_unit=detail.org_unit or "", office=detail.office,
+            availability_status=detail.availability_status or "available",
+            manager=detail.manager, delegate=detail.delegate,
+        )
+        citations = [PersonRef(id=summary.id, full_name=summary.full_name)]
+        for n in result.managers_above:
+            citations.append(PersonRef(id=n.id, full_name=n.full_name))
+        extras = _resolve_summaries(
+            db, caller, [(n.id, n.full_name) for n in result.managers_above], view_mode)
+        return [summary, *extras], citations
 
     # skill_gap / skill_scarcity: pure skill statistics, no people to show.
     return [], []
@@ -700,6 +751,24 @@ def _phrase_experts(experts: list[ProblemExpert]) -> str:
 
     return " ".join(parts)
 
+
+def _phrase_skill_trainees(trainees: list[SkillTraineeCandidate]) -> str:
+    """Who should learn skill X next — person + related project + why."""
+    top = trainees[0]
+    bits = [
+        f"{top.full_name} is a strong next trainee for {top.skill}: {top.reason}.",
+    ]
+    if len(trainees) > 1:
+        others = ", ".join(
+            f"{t.full_name}" + (f" ({t.skill})" if t.skill != top.skill else "")
+            for t in trainees[1:4]
+        )
+        more = f" (+{len(trainees) - 4} more)" if len(trainees) > 4 else ""
+        bits.append(f"Also consider: {others}{more}.")
+    if top.excerpt:
+        bits.append(f'Related project work: "{top.excerpt}"')
+    return " ".join(bits)
+
     # Lifted verbatim from the project's own description (see
     # app/project_search.py's _project_excerpts) -- appended, never blended
     # into the sentence above, so it stays visibly a quotation rather than
@@ -762,6 +831,12 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         if not people:
             return "No one in the directory matched those criteria."
         return _phrase_people_matches(people)
+
+    if tool_name == "find_skill_trainees":
+        trainees = [t for t in (result or []) if isinstance(t, SkillTraineeCandidate)]
+        if not trainees:
+            return "No strong upskill candidates from related project work right now."
+        return _phrase_skill_trainees(trainees)
 
     if tool_name == "find_people":
         people = result or []
@@ -849,6 +924,60 @@ def _phrase(tool_name: str, args: dict, result: Any) -> str:
         if result is None:
             return "Couldn't find an owner for that."
         return f"{result.owner_name} owns {result.project_name} ({result.project_type})."
+
+    if tool_name == "find_coverage":
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
+        if isinstance(result, CoverageResult):
+            return result.note
+        return "Couldn't find coverage for that person."
+
+    if tool_name == "find_escalation":
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
+        if isinstance(result, AmbiguousProjectMatch):
+            shown = ", ".join(result.matches)
+            return (f'"{result.query}" matches several projects — {shown}. '
+                    f"Which one did you mean?")
+        if isinstance(result, EscalationResult):
+            if not result.steps:
+                return result.note
+            path = " → ".join(
+                f"{s.person.full_name}" + (f" ({s.via})" if s.via == "delegate" else "")
+                for s in result.steps[:4]
+            )
+            return f"{result.note} Path: {path}."
+        return "Couldn't build an escalation path."
+
+    if tool_name == "recommend_training":
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
+        if isinstance(result, TrainingRecommendResult):
+            if not result.recommendations:
+                return result.note
+            listed = "; ".join(
+                f"{r.course_name} ({r.display_label})" for r in result.recommendations[:5]
+            )
+            return f"{result.note} Outstanding: {listed}."
+        return "Couldn't load training recommendations."
+
+    if tool_name == "brief_person":
+        if isinstance(result, UnknownPerson):
+            return f'No active employee matches "{result.query}".'
+        if isinstance(result, AmbiguousPersonMatch):
+            return _phrase_ambiguous_person(result)
+        if isinstance(result, PersonBrief):
+            if result.managers_above:
+                above = ", ".join(n.full_name for n in result.managers_above[:3])
+                return f"{result.note} Above them: {above}."
+            return result.note
+        return "Couldn't build that brief."
 
     if tool_name == "find_mentor":
         candidates = result or []

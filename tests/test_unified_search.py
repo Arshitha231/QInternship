@@ -383,6 +383,23 @@ async def test_named_third_party_possessive_manager_query_returns_the_manager(cl
     assert [r["id"] for r in body["results"]] == ["mgr-1"]
 
 
+async def test_unknown_person_downward_org_query_returns_no_fuzzy_cards(client):
+    """A name that doesn't resolve must not fall back to unrelated fuzzy
+    people cards — the answer is UnknownPerson prose only."""
+    resp = await client.get(
+        "/search", params={"q": "Who reports to Nobody McFakeface?"},
+        headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    trace = body["overview"]["trace"]
+    assert trace[0]["tool"] == "get_org_chain"
+    assert trace[0]["args"]["person"] == "Nobody McFakeface"
+    assert body["results"] == []
+    assert 'No active employee matches "Nobody McFakeface"' in body["overview"]["answer"]
+
+
 # ---------------------------------------------------------------------------
 # Skill-miss escalation: a filter-style skill query that misses exactly
 # still stays honest and zero-chat-model-cost — it broadens via
