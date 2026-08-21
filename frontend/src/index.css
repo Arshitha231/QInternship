@@ -487,6 +487,9 @@ button { font: inherit; }
 .profile-header { display: flex; gap: 18px; align-items: flex-start; }
 .profile-header .avatar { width: 60px; height: 60px; font-size: var(--fs-lg); border-radius: var(--radius-card); }
 .profile-hr-actions { display: flex; flex-direction: column; gap: 8px; }
+/* Wraps the org-chart button (everyone) above the HR write actions (hr/work
+   only) so the two render as one column whether one or both are present. */
+.profile-header-actions { display: flex; flex-direction: column; gap: 8px; }
 .p-name-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
 .p-name { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.018em; margin: 0; }
 .pronunciation-btn {

@@ -1,0 +1,254 @@
+/* ===========================================================================
+   Mel reskin — token overrides only.
+
+   This file redefines the VALUES of index.css's existing custom properties
+   plus a handful of new --mel-* tokens. It never restates index.css's
+   structural rules (layout, spacing, component shapes) — those stay put.
+   Imported after index.css in main.tsx, so these values win by cascade
+   order without a single line of index.css being touched. See
+   MEL_FEATURE_SPEC.md §8 for why this is the deliberate merge-conflict
+   -avoidance strategy, not an oversight that two files define the same
+   properties.
+
+   One deliberate deviation from the Mel reference: --radius-pill is NOT
+   blown out to a 20px lozenge globally. index.css's own original comment
+   ("Tags, not lozenges... square-ish tags read as data") is a considered
+   call this file agrees with for DENSE existing screens (skill tags,
+   status badges) — a giant pill there reads as decoration, not data. New
+   Mel-specific chrome (buttons, search bar, landing chips) gets its own
+   fully-rounded treatment via .mel-* classes below instead of widening the
+   shared token everything else also uses.
+   =========================================================================== */
+
+:root {
+  --page: #F3EFFA;
+  --surface-sunk: #EAE1F7;
+  --border: #DCCFEF;
+
+  --white: #FFFFFF;
+  --ink: #231A3D;
+  --muted: #6E6483;
+
+  --purple: #6B3FA0;
+  --purple-hover: #5A3286;
+  --purple-100: #EDE3F7;
+  --purple-800: #4A2470;
+
+  --accent-ring: rgba(107, 63, 160, .16);
+  --shadow-sm: 0 1px 2px rgba(35, 26, 61, .06);
+  --shadow-md: 0 6px 20px rgba(35, 26, 61, .12);
+
+  /* New tokens the Mel components reach for directly. */
+  --mel-accent-pink: #C4258A;
+  --mel-gradient: linear-gradient(135deg, #4C5FD6 0%, #9C4FD1 100%);
+  --mel-gradient-hover: linear-gradient(135deg, #4152C4 0%, #8A44BE 100%);
+  --mel-glow: rgba(155, 79, 209, .30);
+  --mel-chip-bg: #EDE3F7;
+  --mel-chip-ink: #4A2470;
+  --mel-hero-bg: linear-gradient(135deg, #2A1B4D 0%, #17193B 60%, #141127 100%);
+  --mel-hero-ink: #F5F2FC;
+  --mel-hero-muted: #C9BEE0;
+
+  --font-display: "Michroma", "Orbitron", ui-sans-serif, system-ui, sans-serif;
+
+  --radius: 8px;
+  --radius-card: 12px;
+}
+
+:root[data-theme="dark"] {
+  --page: #141127;
+  --surface-sunk: #1B1638;
+  --border: #2E2652;
+
+  --white: #1E1A3B;
+  --ink: #EDE8F7;
+  --muted: #B3A8CE;
+
+  --purple: #B98FE0;
+  --purple-hover: #C9A4EC;
+  --purple-100: #2B2350;
+  --purple-800: #D8C7F0;
+
+  --accent-ring: rgba(185, 143, 224, .25);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-md: 0 6px 24px rgba(0, 0, 0, .5);
+
+  --mel-accent-pink: #F059B6;
+  --mel-glow: rgba(185, 143, 224, .40);
+  --mel-chip-bg: #2B2350;
+  --mel-chip-ink: #D8C7F0;
+  --mel-hero-bg: linear-gradient(135deg, #241539 0%, #141639 60%, #0E0C1E 100%);
+  --mel-hero-ink: #F5F2FC;
+  --mel-hero-muted: #B3A8CE;
+}
+
+/* ---------- Mel primary button ----------
+   New class, not a redefinition of .btn-primary -- existing screens keep
+   the flat --purple fill (still correct, still on-brand with the new
+   token values above); the gradient+glow treatment is reserved for the
+   landing page and Home's hero actions, where it's meant to read as the
+   one big "do this" affordance rather than one of many buttons on a dense
+   data screen. */
+.mel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-weight: 600;
+  font-size: var(--fs-md);
+  letter-spacing: .02em;
+  padding: 11px 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .35);
+  background: var(--mel-gradient);
+  background-size: 160% 160%;
+  background-position: 0% 50%;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 10px var(--mel-glow);
+  transition: background-position .18s ease-out, transform .15s ease-out, box-shadow .15s ease-out;
+}
+.mel-btn:hover {
+  background-position: 100% 50%;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 18px var(--mel-glow);
+}
+.mel-btn:active { transform: scale(.98); }
+@media (prefers-reduced-motion: reduce) {
+  .mel-btn { transition: box-shadow .15s ease-out; }
+  .mel-btn:hover { background-position: 0% 50%; transform: none; }
+}
+
+.mel-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--mel-chip-bg);
+  color: var(--mel-chip-ink);
+}
+
+/* ---------- login: the gradient band, one of exactly two surfaces that
+   render it (the other is Home's hero, below). Not re-themed -- see
+   --mel-hero-bg's own definition above for why the dark block doesn't
+   override it. The card floating on top of it is an ordinary --white
+   surface, so its form fields need nothing special; only the theme toggle
+   sits directly on the band and needs a light-on-dark treatment. ---------- */
+.login-page { background: var(--mel-hero-bg); }
+.login-theme { color: var(--mel-hero-ink); }
+.login-theme:hover { background: rgba(255, 255, 255, .14); color: var(--mel-hero-ink); }
+.login-theme:focus-visible { outline: 2px solid var(--mel-hero-ink); outline-offset: 2px; }
+
+/* ---------- app shell: sidebar + main column, replacing the old .tabs row.
+   New rules, not a rewrite of .app/.content -- those keep their existing
+   job (page frame, content max-width) unchanged. ---------- */
+.mel-shell { display: flex; align-items: flex-start; flex: 1; width: 100%; min-height: 0; }
+.mel-shell-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.mel-sidebar {
+  width: 220px; flex-shrink: 0; align-self: stretch;
+  background: var(--white); border-right: 1px solid var(--border);
+  padding: 16px 10px;
+}
+.mel-sidebar-list { list-style: none; margin: 0; padding: 0; position: relative; display: flex; flex-direction: column; gap: 4px; }
+.mel-sidebar-item {
+  position: relative; z-index: 1; width: 100%; height: 40px;
+  display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: none; border: none; border-radius: var(--radius);
+  font: inherit; font-size: var(--fs-body); font-weight: 500; color: var(--muted);
+  cursor: pointer; transition: color .12s ease, background .12s ease;
+}
+.mel-sidebar-item:hover { color: var(--ink); background: var(--surface-sunk); }
+.mel-sidebar-item.active { color: var(--purple-800); font-weight: 600; }
+.mel-sidebar-item svg { flex-shrink: 0; }
+/* One shared bar that moves to the active row, rather than each item
+   fading in/out -- matches the spec's "accent bar translateY, not per-item
+   fade" and the codebase's own stated preference for short, container-level
+   transitions over per-element ones (see index.css's .tree-children-row). */
+.mel-sidebar-accent-bar {
+  position: absolute; left: -10px; top: 0; width: 3px; height: 40px;
+  border-radius: 0 3px 3px 0; background: var(--mel-gradient);
+  transition: transform .15s ease; z-index: 0; pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) { .mel-sidebar-accent-bar { transition: none; } }
+
+/* ---------- Home ---------- */
+.mel-home { display: flex; flex-direction: column; gap: 28px; }
+
+.mel-home-hero {
+  background: var(--mel-hero-bg); border-radius: var(--radius-card);
+  padding: 48px 40px; display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: 18px; color: var(--mel-hero-ink);
+}
+.mel-home-greeting {
+  margin: 0; font-family: var(--font-display); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .03em;
+  font-size: var(--fs-xl); color: var(--mel-hero-ink);
+}
+
+.mel-home-search { position: relative; width: 100%; max-width: 640px; }
+.mel-home-search input {
+  width: 100%; font: inherit; font-size: var(--fs-lg); color: var(--ink);
+  padding: 15px 44px 15px 46px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .3);
+  background: var(--white); box-shadow: 0 8px 30px rgba(0, 0, 0, .25);
+  transition: box-shadow .18s ease-out, border-color .18s ease-out;
+}
+.mel-home-search input::placeholder { color: var(--muted); }
+.mel-home-search input:focus {
+  outline: none; border-color: var(--purple);
+  box-shadow: 0 0 0 4px var(--mel-glow), 0 8px 30px rgba(0, 0, 0, .25);
+}
+@media (prefers-reduced-motion: reduce) { .mel-home-search input { transition: border-color .18s ease-out; } }
+.mel-home-search-icon { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.mel-home-search .clear-btn {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 50%;
+}
+.mel-home-search .clear-btn:hover { background: var(--page); }
+/* Rotating example, shown only while the box is empty -- overlaid rather
+   than the input's own placeholder so the "Try:" text can cross-fade
+   between examples independently of the (static) placeholder attribute. */
+.mel-home-search-example {
+  position: absolute; left: 46px; top: 50%; transform: translateY(-50%); pointer-events: none;
+  color: var(--muted); font-size: var(--fs-md);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: calc(100% - 90px);
+}
+.mel-home-search-example-text { display: inline-block; animation: mel-example-fade .25s ease-out; }
+@keyframes mel-example-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .mel-home-search-example-text { animation: none; } }
+
+.mel-home-hint { margin: 0; font-size: var(--fs-sm); color: var(--mel-hero-muted); }
+.mel-home-hint kbd {
+  background: rgba(255, 255, 255, .14); border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 4px; padding: 1px 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.mel-home-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
+.mel-stat-tile {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius-card);
+  padding: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+}
+.mel-stat-icon { color: var(--purple); display: flex; }
+.mel-stat-value { font-size: var(--fs-2xl); font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.mel-stat-label { font-size: var(--fs-sm); color: var(--muted); }
+.mel-stat-tile-skel { height: 96px; }
+
+.mel-home-examples { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.mel-home-examples-label {
+  display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--fs-sm); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+}
+.mel-home-example-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+
+.mel-home-recent h2 { margin: 0 0 12px; font-size: var(--fs-xs); font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.mel-home-recent-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.mel-home-recent-card {
+  display: flex; align-items: center; gap: 10px; background: var(--white); border: 1px solid var(--border);
+  border-radius: 999px; padding: 6px 16px 6px 6px; cursor: pointer; font: inherit; color: var(--ink);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.mel-home-recent-card:hover { border-color: var(--purple); box-shadow: var(--shadow-sm); }
+.mel-home-recent-card .avatar { width: 30px; height: 30px; font-size: var(--fs-xs); }
+.mel-home-recent-name { font-size: var(--fs-body); font-weight: 500; }

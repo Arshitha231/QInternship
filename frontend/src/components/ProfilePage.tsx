@@ -15,7 +15,7 @@ import type {
 } from "../types";
 import {
   AlertCircle, Briefcase, Building, Cake, Check, ChevronLeft, Clock, GraduationCap, Mail,
-  LinkIcon, MapPin, Phone, Slack, UserReports, Users, Volume,
+  LinkIcon, MapPin, Network, Phone, Slack, UserReports, Users, Volume,
 } from "../icons";
 import { EmployeeSearchPicker } from "./ReviewPage";
 import { SaveToggle } from "./SaveToggle";
@@ -34,6 +34,11 @@ interface Props {
   onBack: () => void;
   onBreadcrumb: (index: number) => void;
   onBackToSearch?: () => void;
+  /** Drops this person into the org chart -- see App.tsx's onOpenGraph for
+   *  the identical two-line body DashboardPage's own "Open in graph"
+   *  control already uses. Optional so a caller without a graph view
+   *  (there is none today, but nothing here should assume one) can omit it. */
+  onOpenOrgChart?: (id: string, name: string) => void;
 }
 
 function initials(name: string): string {
@@ -457,7 +462,7 @@ function SkillsEditor({
 
 
 export function ProfilePage({
-  personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch,
+  personId, identity, viewMode, stack, onNavigate, onBack, onBreadcrumb, onBackToSearch, onOpenOrgChart,
 }: Props) {
   const [detail, setDetail] = useState<PersonDetail | null | undefined>(undefined);
   const [reports, setReports] = useState<OrgChainNode[]>([]);
@@ -512,6 +517,11 @@ export function ProfilePage({
   // visible half of that second rule — an HR person looking at their own
   // profile sees no edit controls at all, rather than buttons that 403.
   const canEditProjectHistory = identity.role === "hr" && viewMode === "work" && !isOwnProfile;
+  // Someone with neither a manager nor any reports is an isolated node in
+  // the org chart -- the department graph would open on a drawing of
+  // exactly one person, which is a worse answer than not offering the
+  // button. Both flags are already in state from the page's own load.
+  const canOpenOrgChart = Boolean(onOpenOrgChart) && Boolean(detail?.manager || reports.length > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -841,29 +851,41 @@ export function ProfilePage({
             )}
           </ul>
         </div>
-        {canEditEmployee && !editingEmployee && (
-          <div className="profile-hr-actions" style={{ alignSelf: "flex-start", flexShrink: 0 }}>
-            <button className="btn" onClick={startEditingEmployee}>
-              Edit profile
-            </button>
-            {detail.availability_status === "restricted" ? (
-              <button className="btn" disabled={restrictBusy} onClick={handleUnrestrict}>
-                {restrictBusy ? "Working…" : "Unrestrict profile"}
-              </button>
-            ) : (
-              <button
-                className="btn btn-danger-outline" disabled={restrictBusy || !!restrictRequest}
-                onClick={handleRequestRestrict}
-              >
-                {restrictBusy ? "Working…" : restrictRequest ? "Restriction requested" : "Restrict profile"}
+        {(canOpenOrgChart || (canEditEmployee && !editingEmployee)) && (
+          <div className="profile-header-actions" style={{ alignSelf: "flex-start", flexShrink: 0 }}>
+            {/* A read action (look at this person in context) sits above the
+                write actions below it, rather than being buried under a row
+                of edit/restrict/deactivate controls. */}
+            {canOpenOrgChart && (
+              <button className="btn" onClick={() => onOpenOrgChart!(personId, detail.full_name)}>
+                <Network size={15} /> View in org chart
               </button>
             )}
-            <button
-              className="btn btn-danger-outline" disabled={deactivateBusy || !!deactivateRequest}
-              onClick={handleRequestDeactivate}
-            >
-              {deactivateBusy ? "Working…" : deactivateRequest ? "Deactivation requested" : "Deactivate employee"}
-            </button>
+            {canEditEmployee && !editingEmployee && (
+              <div className="profile-hr-actions">
+                <button className="btn" onClick={startEditingEmployee}>
+                  Edit profile
+                </button>
+                {detail.availability_status === "restricted" ? (
+                  <button className="btn" disabled={restrictBusy} onClick={handleUnrestrict}>
+                    {restrictBusy ? "Working…" : "Unrestrict profile"}
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-danger-outline" disabled={restrictBusy || !!restrictRequest}
+                    onClick={handleRequestRestrict}
+                  >
+                    {restrictBusy ? "Working…" : restrictRequest ? "Restriction requested" : "Restrict profile"}
+                  </button>
+                )}
+                <button
+                  className="btn btn-danger-outline" disabled={deactivateBusy || !!deactivateRequest}
+                  onClick={handleRequestDeactivate}
+                >
+                  {deactivateBusy ? "Working…" : deactivateRequest ? "Deactivation requested" : "Deactivate employee"}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1251,7 +1273,14 @@ export function ProfilePage({
             <section className="card">
               <div className="card-head">
                 <h2><Users size={15} className="reports-icon" />Direct reports</h2>
-                <span className="link-sm" style={{ color: "var(--muted)", fontSize: "var(--fs-sm)" }}>{reports.length}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="link-sm" style={{ color: "var(--muted)", fontSize: "var(--fs-sm)" }}>{reports.length}</span>
+                  {canOpenOrgChart && (
+                    <button className="link-btn" style={{ fontSize: "var(--fs-sm)" }} onClick={() => onOpenOrgChart!(personId, detail.full_name)}>
+                      View in org chart
+                    </button>
+                  )}
+                </span>
               </div>
               <ul className="reports-list">
                 {reports.map((r) => (

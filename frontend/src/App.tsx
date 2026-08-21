@@ -14,13 +14,16 @@ import { HelpMenu } from "./components/HelpMenu";
 import { LoginPage } from "./components/LoginPage";
 import { HelpOverlay } from "./components/HelpOverlay";
 import type { HelpState } from "./components/HelpOverlay";
+import { Sidebar, type SidebarItem } from "./components/mel/Sidebar";
+import { HomePage } from "./components/mel/HomePage";
 import { useDebouncedValue, useFocusHistory } from "./hooks";
 import { ApiError, UNAUTHORIZED_EVENT, unifiedSearch, type SearchFilters } from "./api";
 import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
 import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
+import { Briefcase, Building, Check, Clock, Home as HomeIcon, Network, SearchIcon, UserReports } from "./icons";
 
-type Mode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin";
+type Mode = "home" | "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin";
 
 function initialQuery(): string {
   return new URLSearchParams(window.location.search).get("q") ?? "";
@@ -88,7 +91,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
   const [viewMode, setViewMode] = useState<ViewMode>(
     WORK_MODE_ROLES.includes(identity.role) ? "work" : "employee",
   );
-  const [mode, setMode] = useState<Mode>("profile");
+  const [mode, setMode] = useState<Mode>("home");
   const [help, setHelp] = useState<HelpState>("off");
   const [query, setQuery] = useState(initialQuery);
   const [filters, setFilters] = useState<SearchFilters>({});
@@ -228,6 +231,64 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
     window.setTimeout(() => setFlashId((cur) => (cur === id ? null : cur)), 1200);
   }
 
+  function openProfile(id: string, name: string) {
+    resetProfile(id, name);
+    setMode("profile");
+  }
+
+  // Recorded as a navigation, not a reset: arriving in the graph from a
+  // profile drill-down should still be reversible with Back -- the same
+  // reasoning DashboardPage's identical onOpenGraph call already carries.
+  function openOrgChart(id: string) {
+    graphFocus.go(id);
+    setMode("graphs");
+  }
+
+  // "People" has no Mode of its own -- typing into either search box shows
+  // results regardless of `mode` (see the ternary below), so its sidebar
+  // entry is a shortcut into that experience rather than a page swap.
+  const activeSidebarKey = hasQuery ? "people" : mode;
+
+  const sidebarItems: SidebarItem[] = [
+    {
+      key: "home", label: "Home", icon: <HomeIcon size={17} />, active: activeSidebarKey === "home",
+      onClick: () => { setMode("home"); setQuery(""); },
+    },
+    {
+      key: "people", label: "People", icon: <SearchIcon size={17} />, active: activeSidebarKey === "people",
+      onClick: () => document.getElementById("q")?.focus(),
+    },
+    {
+      key: "profile", label: "My Profile", icon: <UserReports size={17} />, active: activeSidebarKey === "profile",
+      onClick: () => {
+        setMode("profile");
+        setQuery("");
+        setSavedSearch(null);
+        resetProfile(identity.id, identity.name);
+      },
+    },
+    {
+      key: "graphs", label: "Organization", icon: <Network size={17} />, active: activeSidebarKey === "graphs",
+      onClick: () => { setMode("graphs"); setQuery(""); },
+    },
+    ...(canSeeDashboard ? [{
+      key: "dashboard", label: "Dashboard", icon: <Briefcase size={17} />, active: activeSidebarKey === "dashboard",
+      onClick: () => { setMode("dashboard"); setQuery(""); },
+    }] : []),
+    ...(identity.role === "hr" && viewMode === "work" ? [{
+      key: "continuity", label: "Continuity", icon: <Clock size={17} />, active: activeSidebarKey === "continuity",
+      onClick: () => { setMode("continuity"); setQuery(""); },
+    }] : []),
+    ...(identity.role === "hr" && viewMode === "work" ? [{
+      key: "review", label: "Review", icon: <Check size={17} />, active: activeSidebarKey === "review",
+      onClick: () => { setMode("review"); setQuery(""); },
+    }] : []),
+    ...(identity.role === "hr" && viewMode === "work" ? [{
+      key: "admin", label: "Admin", icon: <Building size={17} />, active: activeSidebarKey === "admin",
+      onClick: () => { setMode("admin"); setQuery(""); },
+    }] : []),
+  ];
+
   return (
     <div className="app">
       <TopBar
@@ -271,86 +332,10 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
         }
       />
 
+      <div className="mel-shell">
+        <Sidebar items={sidebarItems} />
+        <div className="mel-shell-main">
       <PendingApprovals identity={identity} viewMode={viewMode} />
-
-      <div className="tabs" role="tablist" aria-label="Section" data-help="tabs">
-        <button
-          role="tab"
-          aria-selected={mode === "profile"}
-          className={`tab ${mode === "profile" ? "active" : ""}`}
-          onClick={() => {
-            setMode("profile");
-            setQuery("");
-            setSavedSearch(null);
-            resetProfile(identity.id, identity.name);
-          }}
-        >
-          Profile
-        </button>
-        <button
-          role="tab"
-          aria-selected={mode === "graphs"}
-          className={`tab ${mode === "graphs" ? "active" : ""}`}
-          onClick={() => {
-            setMode("graphs");
-            setQuery("");
-          }}
-        >
-          Graphs
-        </button>
-        {canSeeDashboard && (
-          <button
-            role="tab"
-            aria-selected={mode === "dashboard"}
-            className={`tab ${mode === "dashboard" ? "active" : ""}`}
-            onClick={() => {
-              setMode("dashboard");
-              setQuery("");
-            }}
-          >
-            Dashboard
-          </button>
-        )}
-        {identity.role === "hr" && viewMode === "work" && (
-          <button
-            role="tab"
-            aria-selected={mode === "continuity"}
-            className={`tab ${mode === "continuity" ? "active" : ""}`}
-            onClick={() => {
-              setMode("continuity");
-              setQuery("");
-            }}
-          >
-            Continuity
-          </button>
-        )}
-        {identity.role === "hr" && viewMode === "work" && (
-          <button
-            role="tab"
-            aria-selected={mode === "review"}
-            className={`tab ${mode === "review" ? "active" : ""}`}
-            onClick={() => {
-              setMode("review");
-              setQuery("");
-            }}
-          >
-            Review
-          </button>
-        )}
-        {identity.role === "hr" && viewMode === "work" && (
-          <button
-            role="tab"
-            aria-selected={mode === "admin"}
-            className={`tab ${mode === "admin" ? "active" : ""}`}
-            onClick={() => {
-              setMode("admin");
-              setQuery("");
-            }}
-          >
-            Admin
-          </button>
-        )}
-      </div>
 
       <main className="content">
         {hasQuery ? (
@@ -396,6 +381,16 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             )}
             </div>
           </>
+        ) : mode === "home" ? (
+          <HomePage
+            identity={identity}
+            viewMode={viewMode}
+            canSeeDashboard={canSeeDashboard}
+            query={query}
+            onQueryChange={setQuery}
+            stack={profileStack}
+            onOpenPerson={openProfile}
+          />
         ) : mode === "profile" ? (
           <div data-help="profile">
           <ProfilePage
@@ -407,6 +402,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
             onBack={backOneProfile}
             onBreadcrumb={jumpToProfileIndex}
             onBackToSearch={savedSearch ? backToSearch : undefined}
+            onOpenOrgChart={openOrgChart}
           />
           </div>
         ) : mode === "graphs" ? (
@@ -455,6 +451,8 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
           </div>
         ) : null}
       </main>
+        </div>
+      </div>
 
       <HelpOverlay
         state={help}

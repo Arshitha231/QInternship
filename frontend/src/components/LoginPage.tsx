@@ -81,7 +81,7 @@ export function LoginPage({ onLogin }: Props) {
 
           {error && <p className="login-error" role="alert">{error}</p>}
 
-          <button type="submit" className="btn btn-primary login-submit" disabled={submitting}>
+          <button type="submit" className="mel-btn login-submit" disabled={submitting}>
             {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
