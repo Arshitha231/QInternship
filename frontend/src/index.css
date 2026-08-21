@@ -403,6 +403,17 @@ button { font: inherit; }
 .status-away { background: var(--amber); }
 .status-restricted { background: var(--muted); }
 
+/* Query match (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 5) -- a subtle
+   bar, not a leaderboard rank: it explains one card's own fit against the
+   query, never compares it to the cards around it. */
+.result-match { margin: 8px 0 0; display: flex; align-items: center; gap: 8px; }
+.result-match-bar {
+  width: 36px; height: 4px; border-radius: 2px; background: var(--purple-100);
+  overflow: hidden; flex-shrink: 0;
+}
+.result-match-bar-fill { display: block; height: 100%; background: var(--purple); border-radius: 2px; }
+.result-match-label { font-size: var(--fs-xs); color: var(--muted); }
+
 .state-block {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 60px 20px; text-align: center; color: var(--muted); gap: 10px;
@@ -1080,6 +1091,26 @@ button { font: inherit; }
 .overview-arg-empty { font-size: var(--fs-xs); color: var(--muted); font-style: italic; }
 
 .overview-note { font-size: var(--fs-sm); color: var(--muted); margin: 0 0 12px; font-style: italic; }
+
+/* Removable interpretation chips (direct-mode "we read your search as...")
+   -- same visual language as .overview-arg-chip, but each carries its own
+   remove button instead of being a read-only trace of a call already made. */
+.interpretation-row { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
+.interpretation-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.interpretation-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs);
+  background: var(--white); border: 1px solid var(--border); border-radius: 5px;
+  padding: 3px 4px 3px 8px; color: var(--ink);
+}
+.interpretation-chip b { font-weight: 600; color: var(--muted); font-family: inherit; }
+.interpretation-chip button {
+  background: none; border: none; color: var(--muted); cursor: pointer; display: flex; padding: 2px;
+  border-radius: 50%;
+}
+.interpretation-chip button:hover { background: var(--purple-100); color: var(--purple-800); }
+.interpretation-unparsed, .interpretation-weights {
+  font-size: var(--fs-xs); color: var(--muted); margin: 0; font-style: italic;
+}
 
 /* Follow-up chat, below the primary result -- same ask-turn/overview-trace
    vocabulary as the single-shot AI Overview above, so a follow-up reads as

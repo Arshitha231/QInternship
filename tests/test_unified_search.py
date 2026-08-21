@@ -569,6 +569,65 @@ async def test_statement_shaped_attribute_query_is_answered_without_the_model(cl
     assert all("Engineer" in p["job_title"] for p in body["results"])
 
 
+async def test_interpretation_is_attached_for_the_headline_multi_entity_query(client, monkeypatch):
+    """"senior data engineer" is exactly the case SEARCH_RANKING_PROPOSAL.md
+    exists for -- a role entity ("Data Engineer") and a separate seniority
+    entity ("senior"), not one job_title-contains-"engineer" filter. Once
+    text_filters resolves it to real people, the response must carry the
+    typed Interpretation behind that plan, for the removable-chip row."""
+    monkeypatch.setattr(
+        "app.unified_search.resolve_intent",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("model must not be called")),
+    )
+    resp = await client.get(
+        "/search", params={"q": "senior data engineer"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "direct"
+    assert body["results"], "a role+seniority query that names a real job title must not come back empty"
+    entities = body["interpretation"]["entities"]
+    assert {"label": "role", "text": "data engineer", "value": "Data Engineer"} in entities
+    assert {"label": "seniority", "text": "senior", "value": "senior"} in entities
+    assert body["interpretation"]["unparsed"] == []
+    # A role entity is present, so this now runs through app.people_ranking
+    # (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 4) -- the weights
+    # breakdown must be present and sum to 100.
+    assert body["interpretation"]["weights"] == {"skills": 45, "role": 30, "seniority": 15, "recency": 10}
+    # step 5: every card on a ranked response explains its own score --
+    # a real object with the fields MatchExplanation defines, not null.
+    for person in body["results"]:
+        assert set(person["match"]) == {"score_pct", "matched", "missing"}
+        assert isinstance(person["match"]["score_pct"], int)
+
+
+async def test_interpretation_is_absent_when_the_direct_path_already_has_results(client):
+    """A structured filter hit answers on the FIRST branch, never falling
+    into the "empty + free text" rescue path that builds an Interpretation
+    -- the response must not carry a stale or irrelevant one."""
+    resp = await client.get(
+        "/search", params={"skill": "Site Reliability Engineering"}, headers=auth_headers("employee"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "direct"
+    assert body["results"]
+    assert "interpretation" not in body
+
+
+async def test_interpretation_is_absent_in_assisted_mode(client):
+    """The chip row is a direct-mode-only concept -- an assisted answer has
+    its own trace/overview, not a second, competing explanation of the
+    query."""
+    resp = await client.get(
+        "/search", params={"q": "Riley Report's manager"}, headers=auth_headers("hr"),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "assisted"
+    assert "interpretation" not in body
+
+
 async def test_a_name_that_matches_nobody_is_not_reread_as_filters(client, monkeypatch):
     """The re-read only fires on an already-empty result, so it must not
     turn a genuine "no such person" into some loosely-related list. Nothing

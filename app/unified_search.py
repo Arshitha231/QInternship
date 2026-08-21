@@ -32,12 +32,13 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app import people_ranking, query_entities
 from app.assistant_conversations import append_turn, open_or_continue
 from app.assistant_context import facts_context_message, requirements_gap_suggestion
 from app.auth import AuthenticatedUser
 from app.models import Employee
-from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
-from app.text_filters import plan_from_text
+from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan, search_people_ranked
+from app.text_filters import plan_from_interpretation
 from app.permissions import ViewMode
 from app.schemas import (
     AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary,
@@ -298,17 +299,89 @@ def _unified_search_core(
     # so empty there means "that person exists but you may not see them",
     # an honest flat empty that no amount of re-reading improves.
     if not results and text and not _is_exact_identifier(db, text):
-        plan = plan_from_text(db, text, select_fields=sorted(SUMMARY_FIELDS), limit=MAX_RESULTS)
+        # Parsed once here rather than inside plan_from_text, so the same
+        # Interpretation backs both the query plan below and the
+        # `interpretation` chip payload -- text_filters.plan_from_interpretation
+        # takes the already-parsed result instead of re-scanning the text.
+        interpretation = query_entities.parse(db, text)
+        plan = plan_from_interpretation(interpretation, select_fields=sorted(SUMMARY_FIELDS), limit=MAX_RESULTS)
         if plan is not None:
+            ranked = _wants_ranking(interpretation)
+            note: str | None = None
             try:
-                results = search_people_by_plan(db, caller, plan, view_mode)
+                if ranked:
+                    results, all_skills_held = search_people_ranked(db, caller, plan, interpretation, view_mode)
+                    skill_values = [e.value for e in interpretation.entities if e.label == "skill"]
+                    if len(skill_values) >= 2 and not all_skills_held:
+                        note = _zero_overlap_note(skill_values)
+                else:
+                    results = search_people_by_plan(db, caller, plan, view_mode)
             except ValueError:
                 # enforce()/validate() refused this plan for this caller.
                 # Invariant 5 (ARCHITECTURE_2.md §1): degrade, don't error
                 # -- the flat empty result below is still a correct answer.
-                pass
+                results = []
+            if results:
+                # Only attached once the plan actually resolved to someone --
+                # an interpretation nobody matched has nothing to show a chip
+                # row for, and the caller already gets the flat empty result
+                # below.
+                payload = {
+                    "mode": "direct",
+                    "results": results,
+                    "interpretation": _interpretation_payload(interpretation, ranked=ranked),
+                }
+                if note:
+                    payload["note"] = note
+                return payload
 
     return {"mode": "direct", "results": results}
+
+
+def _wants_ranking(interpretation: query_entities.Interpretation) -> bool:
+    """Whether this Interpretation carries anything beyond a plain
+    office/org_unit scope -- role, seniority, or 2+ skills -- which is
+    exactly the set app.people_ranking.score_candidate has a term for
+    (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 4). A lone office/org_unit
+    filter, or a single skill on its own, has nothing to rank and keeps
+    search_people_by_plan's plain retrieval order -- same "single-criterion
+    queries are unchanged" rule app.text_filters.plan_from_interpretation
+    follows for the filter shape itself.
+    """
+    labels = [e.label for e in interpretation.entities]
+    return "role" in labels or "seniority" in labels or labels.count("skill") >= 2
+
+
+def _zero_overlap_note(skill_values: list[str]) -> str:
+    """SEARCH_RANKING_PROPOSAL.md §6.4: turns "this search is broken" into
+    "this is a correct answer to an impossible question" when nobody in
+    the pool holds every requested skill together."""
+    if len(skill_values) == 2:
+        return f"Nobody holds both {skill_values[0]} and {skill_values[1]} — showing people who hold either."
+    names = f"{', '.join(skill_values[:-1])} and {skill_values[-1]}"
+    return f"Nobody holds all of {names} — showing people who hold at least one."
+
+
+def _interpretation_payload(interpretation: query_entities.Interpretation, *, ranked: bool) -> dict:
+    """The response-side shape for the removable-chip row (see
+    SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 3). Plain dicts, not a
+    schemas.py model -- /search has no response_model (it's a discriminated
+    union), so every key on this response is already a plain dict key.
+
+    `weights` only appears once ranking actually ran (step 4) -- an
+    unranked plan (office/org_unit only, or a single skill) has nothing to
+    weight.
+    """
+    payload: dict = {
+        "entities": [
+            {"label": e.label, "text": e.text, "value": e.value}
+            for e in interpretation.entities
+        ],
+        "unparsed": interpretation.unparsed,
+    }
+    if ranked:
+        payload["weights"] = {k: round(v * 100) for k, v in people_ranking.SEARCH_WEIGHTS.items()}
+    return payload
 
 
 def unified_search(

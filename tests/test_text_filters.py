@@ -25,8 +25,12 @@ def _plan(db_session, text):
     return plan_from_text(db_session, text, select_fields=SELECT, limit=MAX_RESULTS)
 
 
-def _filters(plan) -> set[tuple[str, str, str]]:
-    return {(f.field, f.op, f.value) for f in plan.filters}
+def _filters(plan) -> set[tuple[str, str, str | frozenset[str]]]:
+    # frozenset, not tuple: an "in" filter's value list is unordered from
+    # the caller's perspective (apply_filter ORs every value regardless of
+    # order), and _match_all's own order is an implementation detail
+    # (longest value first) that these tests shouldn't pin down.
+    return {(f.field, f.op, frozenset(f.value) if isinstance(f.value, list) else f.value) for f in plan.filters}
 
 
 # ---------------------------------------------------------------------------
@@ -39,9 +43,14 @@ def test_title_and_office_are_both_read_out_of_one_phrase(db_session):
     fallback can match -- hence the zero results this exists to fix."""
     plan = _plan(db_session, "engineers in Testville")
     assert plan is not None
+    # "Engineer", real-cased -- app/query_entities.py's role candidates are
+    # job-title n-grams spelled the way a real job_title spells them, not
+    # a lowercased single word. Functionally identical under ilike; a
+    # different literal string than this test asserted before that module
+    # existed.
     assert _filters(plan) == {
         ("office", "contains", "Testville"),
-        ("job_title", "contains", "engineer"),
+        ("job_title", "contains", "Engineer"),
     }
 
 
@@ -50,7 +59,7 @@ def test_plural_resolves_to_the_singular_the_titles_actually_use(db_session):
     singular or the most natural phrasing matches nothing."""
     plan = _plan(db_session, "analysts in Satellite City")
     assert plan is not None
-    assert ("job_title", "contains", "analyst") in _filters(plan)
+    assert ("job_title", "contains", "Analyst") in _filters(plan)  # real-cased, see above
     assert ("office", "contains", "Satellite City") in _filters(plan)
 
 
@@ -60,6 +69,44 @@ def test_a_bare_skill_name_is_recognised(db_session):
     plan = _plan(db_session, "Terraform")
     assert plan is not None
     assert _filters(plan) == {("skills", "contains", "Terraform")}
+
+
+def test_two_skills_become_one_in_filter(db_session):
+    """"Terraform, Kubernetes" names two real skills that nobody in the
+    fixture holds together. This must still produce one OR-of-both filter
+    (apply_filter's skills branch ORs every value in an "in" list
+    regardless of op) rather than only the first or the longest match --
+    that's the fix for multi-skill queries like "react, java"."""
+    plan = _plan(db_session, "Terraform, Kubernetes")
+    assert plan is not None
+    assert _filters(plan) == {("skills", "in", frozenset({"Terraform", "Kubernetes"}))}
+
+
+# ---------------------------------------------------------------------------
+# role + skill(s) together -- a UNION for app.people_ranking (step 4) to
+# score and reorder, not an AND that could go to zero. Design decision 1.
+# ---------------------------------------------------------------------------
+
+def test_role_and_skill_together_become_a_filter_group_not_an_and(db_session):
+    """"data analyst with terraform" names a role AND a skill -- two
+    separate PREFERRED criteria, not a hard AND requiring a Data Analyst
+    who also holds Terraform. The pool must be their UNION (filter_groups),
+    not the single ANDed `filters` entry this module produced before
+    ranking existed."""
+    plan = _plan(db_session, "data analyst with terraform")
+    assert plan is not None
+    assert plan.filters == []
+    groups = [{(f.field, f.op, f.value) for f in group} for group in plan.filter_groups]
+    assert {("job_title", "contains", "Data Analyst")} in groups
+    assert {("skills", "contains", "Terraform")} in groups
+
+
+def test_a_lone_role_still_stays_a_plain_filter(db_session):
+    """No skill named alongside it -- single-criterion shape is unchanged."""
+    plan = _plan(db_session, "data analyst")
+    assert plan is not None
+    assert plan.filter_groups == []
+    assert ("job_title", "contains", "Data Analyst") in _filters(plan)
 
 
 # ---------------------------------------------------------------------------

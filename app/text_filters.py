@@ -30,101 +30,95 @@ Scope note, which is what keeps this safe: app.unified_search only calls
 this AFTER the direct path has already come back empty. It can therefore
 never change the answer to a query that currently works -- only supply one
 where there is currently nothing.
+
+This module is now a thin adapter over app.query_entities.parse: the
+vocabulary scan (offices, org units, skills, job-title n-grams, seniority
+bands, and the non-overlapping-span rule that lets a real multi-word title
+win its words before a generic one gets a turn) all live there, shared with
+the ranked/chip path (SEARCH_RANKING_PROPOSAL.md steps 2-4). What's left
+here is purely the translation from typed entities to this module's own
+PeopleQuery shape: office/org_unit entities become required Filters the
+same way they always did, and seniority entities are dropped here -- they
+only matter to the ranked path, which reads them from query_entities.parse
+directly rather than through this adapter.
+
+role and skill(s) are different once both are present. A lone role or a
+lone skill still becomes one plain `filters` entry, same shape as always
+(op="contains" for one skill, op="in" for two-plus -- app/query_compiler.py's
+skills branch ORs every value in an "in" list regardless of op, so
+multi-skill text widens the candidate pool rather than narrowing it to
+zero). But a role named ALONGSIDE skill(s) is two separate PREFERRED
+criteria (SEARCH_RANKING_PROPOSAL.md design decision 1), not a hard AND
+that can go to zero the moment nobody holding the skill(s) also carries
+that exact title -- "senior data engineer with react, java" must not
+require a Data Engineer who also holds React or Java when the fix's whole
+point is that no such person may exist. So role+skill(s) together compile
+to `filter_groups`: a UNION of "matches the role" and "holds a requested
+skill", widening the pool for app.people_ranking (step 4) to score and
+reorder afterward instead of narrowing it structurally.
 """
 from __future__ import annotations
 
-import re
-
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Employee, Office, OrgUnit, Skill
+from app import query_entities
 from app.query_plan import Filter, PeopleQuery
 
-# Words that appear in real job titles but carry no filtering signal --
-# they'd match almost everyone ("team" is in 51 of 124 distinct titles) or
-# are pure grammar. Kept deliberately short: this is a stoplist for noise,
-# not a hand-tuned relevance list, and every word NOT here still has to
-# occur in an actual job_title to match anything.
-_TITLE_NOISE = {
-    "and", "for", "the", "team", "with", "unit", "group", "department",
-}
 
-# A title word has to be this long to count. Filters out the "A"/"B"/"C"
-# team suffixes and two-letter grammar without needing to enumerate them.
-_MIN_TITLE_WORD = 4
+def plan_from_interpretation(
+    interpretation: query_entities.Interpretation, *, select_fields: list[str], limit: int,
+) -> PeopleQuery | None:
+    """A PeopleQuery built from an already-parsed Interpretation, or None
+    when it names no filterable entity.
 
-_WORD = re.compile(r"[a-z]+")
-
-
-def _tokens(text: str) -> set[str]:
-    return set(_WORD.findall(text.lower()))
-
-
-def _singular_forms(word: str) -> set[str]:
-    """Both forms, so a vocabulary holding the singular ("Engineer") is
-    still reachable from the plural the user typed ("engineers"). Not a
-    stemmer -- two suffix rules, applied only to produce candidates that
-    then still have to match a real database value to survive.
+    Split out from plan_from_text so a caller that also needs the
+    Interpretation itself (app.unified_search's `interpretation` response
+    payload, SEARCH_RANKING_PROPOSAL.md step 3) can call query_entities.parse
+    once and reuse the same result here, instead of parsing the text twice.
     """
-    forms = {word}
-    if word.endswith("ies") and len(word) > 4:
-        forms.add(word[:-3] + "y")
-    elif word.endswith("es") and len(word) > 3:
-        forms.add(word[:-2])
-    if word.endswith("s") and len(word) > 3:
-        forms.add(word[:-1])
-    return forms
+    filters: list[Filter] = []
+    skills: list[str] = []
+    role_value: str | None = None
+    for entity in interpretation.entities:
+        if entity.label == "office":
+            filters.append(Filter(field="office", op="contains", value=entity.value))
+        elif entity.label == "org_unit":
+            filters.append(Filter(field="org_unit", op="eq", value=entity.value))
+        elif entity.label == "role":
+            role_value = entity.value
+        elif entity.label == "skill":
+            skills.append(entity.value)
+        # seniority entities carry no Filter of their own here -- they only
+        # feed the ranking layer and the chip payload (steps 3-4).
 
+    skill_filter: Filter | None = None
+    if len(skills) == 1:
+        skill_filter = Filter(field="skills", op="contains", value=skills[0])
+    elif skills:
+        skill_filter = Filter(field="skills", op="in", value=skills)
+    role_filter = Filter(field="job_title", op="contains", value=role_value) if role_value else None
 
-def _contains_phrase(text_lower: str, phrase: str) -> bool:
-    """Whole-phrase, word-boundary match. Substring alone would let the
-    office "New York" match "New Yorker" and the skill "Go" match half the
-    sentences in English.
-    """
-    return re.search(rf"(?<![a-z0-9]){re.escape(phrase.lower())}(?![a-z0-9])", text_lower) is not None
+    if role_filter is not None and skill_filter is not None:
+        # Both preferred criteria present -- see the module docstring for
+        # why this is a UNION (filter_groups), not an AND. office/org_unit
+        # (already collected into `filters` above) stay a required,
+        # unconditional AND constraint layered on top of this OR.
+        return PeopleQuery(
+            select=list(select_fields), filters=filters,
+            filter_groups=[[role_filter], [skill_filter]], limit=limit,
+        )
 
+    # Single-criterion case, unchanged: whichever of role/skill(s) is
+    # actually present (if either) joins `filters` as a plain AND term,
+    # same shape this module has always produced.
+    if role_filter is not None:
+        filters.append(role_filter)
+    elif skill_filter is not None:
+        filters.append(skill_filter)
 
-def _match_longest(text_lower: str, values: list[str]) -> str | None:
-    """The longest real value present in the text, or None.
-
-    Longest-first matters: "Backend Team A" and "Backend Team" are both
-    real org units, and the more specific one is the one the user named.
-    """
-    for value in sorted(values, key=len, reverse=True):
-        if _contains_phrase(text_lower, value):
-            return value
-    return None
-
-
-def _title_word(db: Session, tokens: set[str]) -> str | None:
-    """A word that genuinely occurs in some employee's job_title.
-
-    Built from the live column rather than a hardcoded list of professions,
-    so a title the seed data grows tomorrow is matchable today, and a word
-    that sounds like a job but isn't one here ("plumber") matches nothing
-    instead of producing a confidently empty filter.
-    """
-    candidates = {
-        form
-        for token in tokens
-        if len(token) >= _MIN_TITLE_WORD
-        for form in _singular_forms(token)
-        if len(form) >= _MIN_TITLE_WORD and form not in _TITLE_NOISE
-    }
-    if not candidates:
+    if not filters:
         return None
-
-    title_words: set[str] = set()
-    for (title,) in db.execute(select(Employee.job_title).where(Employee.job_title.is_not(None)).distinct()):
-        title_words.update(_WORD.findall(title.lower()))
-
-    matched = candidates & title_words
-    if not matched:
-        return None
-    # Longest wins: "engineering" is a more specific ask than "engineer",
-    # and both being present means the user typed the longer one.
-    return max(matched, key=len)
+    return PeopleQuery(select=list(select_fields), filters=filters, limit=limit)
 
 
 def plan_from_text(db: Session, text: str, *, select_fields: list[str], limit: int) -> PeopleQuery | None:
@@ -137,33 +131,7 @@ def plan_from_text(db: Session, text: str, *, select_fields: list[str], limit: i
     which fields they may see. This module is inert on its own, exactly
     like app/query_plan.py's docstring says a plan should be.
     """
-    text_lower = text.lower().strip()
-    if not text_lower:
+    if not text.strip():
         return None
-
-    filters: list[Filter] = []
-
-    # Office: city first -- "Austin" is how people refer to the office, and
-    # "Austin Office" contains it, so matching the city covers both without
-    # needing the formal name to appear.
-    offices = [name for (name,) in db.execute(select(Office.city).where(Office.city.is_not(None)))]
-    offices += [name for (name,) in db.execute(select(Office.name).where(Office.name.is_not(None)))]
-    office = _match_longest(text_lower, offices)
-    if office:
-        filters.append(Filter(field="office", op="contains", value=office))
-
-    unit = _match_longest(text_lower, [n for (n,) in db.execute(select(OrgUnit.name))])
-    if unit:
-        filters.append(Filter(field="org_unit", op="eq", value=unit))
-
-    skill = _match_longest(text_lower, [n for (n,) in db.execute(select(Skill.name))])
-    if skill:
-        filters.append(Filter(field="skills", op="contains", value=skill))
-
-    title = _title_word(db, _tokens(text_lower))
-    if title:
-        filters.append(Filter(field="job_title", op="contains", value=title))
-
-    if not filters:
-        return None
-    return PeopleQuery(select=list(select_fields), filters=filters, limit=limit)
+    interpretation = query_entities.parse(db, text)
+    return plan_from_interpretation(interpretation, select_fields=select_fields, limit=limit)

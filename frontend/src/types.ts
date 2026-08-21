@@ -21,6 +21,20 @@ export interface PersonRef {
   full_name: string;
 }
 
+// Why a ranked search result (GET /search, app.people.search_people_ranked)
+// scored where it did -- SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 5.
+// `matched`/`missing` are already-phrased evidence strings the backend
+// built from the same values that produced score_pct (e.g. "React
+// (Expert)", "title matches Data Engineer"), not raw field names to
+// template client-side. Render this as "Query match", never "Rank" /
+// "Score" / "Best" -- the system compares and surfaces, it does not rank
+// people against each other (CLAUDE.md §7).
+export interface MatchExplanation {
+  score_pct: number;
+  matched: string[];
+  missing: string[];
+}
+
 export interface PersonSummary {
   id: string;
   full_name: string;
@@ -37,6 +51,10 @@ export interface PersonSummary {
   // app/schemas.py's PersonSummary. TeamGraph uses it to decide which
   // roster cards get an expand control.
   has_reports?: boolean;
+  // Set only on a result app.people.search_people_ranked produced -- absent
+  // (not null) on every other PersonSummary, same convention has_reports
+  // already follows.
+  match?: MatchExplanation;
 }
 
 export interface SkillOut {
@@ -213,6 +231,26 @@ export interface FollowUpSuggestion {
   minimum_level?: string | null;
 }
 
+// A typed reading of the free-text search box (app.query_entities.parse /
+// SEARCH_RANKING_PROPOSAL.md) -- what the direct path decided "senior data
+// engineer" meant, as removable chips instead of a silent guess. `value` is
+// the real database value the chip resolved to (e.g. "Data Engineer"),
+// `text` is the exact substring of the query it came from -- what a chip's
+// × button excises from the search box.
+export interface InterpretationEntity {
+  label: "office" | "org_unit" | "skill" | "role" | "seniority";
+  text: string;
+  value: string | null;
+}
+
+export interface Interpretation {
+  entities: InterpretationEntity[];
+  unparsed: string[];
+  // Only present once ranking actually ran (SEARCH_RANKING_PROPOSAL.md step
+  // 4) -- an unranked plan (office/org_unit only) has nothing to weight.
+  weights?: Record<string, number>;
+}
+
 export interface UnifiedSearchResponse {
   mode: "direct" | "assisted";
   results: PersonSummary[];
@@ -225,6 +263,10 @@ export interface UnifiedSearchResponse {
   // Present (a real suggestion or null) only in assisted mode -- direct
   // mode has no answer prose to attach one alongside.
   suggestion?: FollowUpSuggestion | null;
+  // Direct-mode-only, and only once the "empty + free text" rescue path
+  // (app.unified_search) actually resolved to real people -- see
+  // Interpretation above.
+  interpretation?: Interpretation;
 }
 
 export type Role = "employee" | "manager" | "hr" | "it";

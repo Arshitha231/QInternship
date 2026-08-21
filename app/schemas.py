@@ -99,6 +99,32 @@ class TrainingStatusItem(BaseModel):
     source: str  # which provider answered: "synthetic" | "training_api"
 
 
+class MatchExplanation(BaseModel):
+    """Why a ranked search result (app.people.search_people_ranked) scored
+    where it did — built directly from app.people_ranking.RankedCandidate,
+    never recomputed from raw rows, so the number on the card and the
+    number that decided the sort order can never drift apart.
+
+    Set only on a result search_people_ranked produced; every other
+    PersonSummary (find_people, search_people_by_plan, get_person's
+    PersonDetail) leaves `match` unset, so the route's exclude_unset
+    serialization drops the key entirely rather than emitting null —
+    the same absent-not-null convention every other conditional field on
+    PersonSummary already follows.
+
+    Copy discipline (SEARCH_RANKING_PROPOSAL.md §6.5, CLAUDE.md §7): this
+    is a match against the QUERY, not a comparison between people. Render
+    it as "Query match", never "Rank"/"Score"/"Best" — the model compares
+    and surfaces, it does not rank people against each other.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    score_pct: int
+    matched: list[str]
+    missing: list[str]
+
+
 class PersonSummary(BaseModel):
     """find_people results. The base fields are always the same always-visible
     set — no ABAC/RBAC gated data — so a bulk list can never leak more than a
@@ -139,6 +165,10 @@ class PersonSummary(BaseModel):
     # advertises would come back empty there anyway. Advertising an expand
     # that expands to nothing is worse than not advertising it.
     has_reports: bool | None = None
+    # Set only by search_people_ranked -- see MatchExplanation's own
+    # docstring for the absent-not-null convention every other conditional
+    # field here already follows.
+    match: MatchExplanation | None = None
 
 
 class PersonWithProjects(BaseModel):
