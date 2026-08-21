@@ -1,7 +1,8 @@
-import type { PersonSummary, UnifiedSearchResponse } from "../types";
+import type { InterpretationEntity, PersonSummary, UnifiedSearchResponse } from "../types";
 import { PersonCard } from "./PersonCard";
 import { AIOverview } from "./AIOverview";
 import { SuggestionChip } from "./SuggestionChip";
+import { InterpretationChips } from "./InterpretationChips";
 import { SearchIcon } from "../icons";
 
 const STRUCTURED_EXAMPLES = ["Terraform", "Naomi Lewis"];
@@ -18,10 +19,12 @@ interface Props {
   onExampleClick: (text: string) => void;
   onRetry: () => void;
   onAddToFilter: (skill: string, level?: string | null) => void;
+  onRemoveEntity: (entity: InterpretationEntity) => void;
 }
 
 export function UnifiedResults({
   loading, error, response, hasQuery, flashId, onSelect, onJumpToCard, onExampleClick, onRetry, onAddToFilter,
+  onRemoveEntity,
 }: Props) {
   if (error) {
     return (
@@ -78,7 +81,7 @@ export function UnifiedResults({
     );
   }
 
-  const { mode, results, overview, note, suggestion } = response;
+  const { mode, results, overview, note, suggestion, interpretation } = response;
 
   // Truly nothing happened -- only possible in direct mode. Assisted mode
   // always has something to show (the overview's answer), even when
@@ -116,6 +119,10 @@ export function UnifiedResults({
           touched the model, so it must never get the Sparkles/"AI
           Overview"/reasoning-trace treatment above. */}
       {mode === "direct" && note && <p className="overview-note">{note}</p>}
+
+      {mode === "direct" && interpretation && (
+        <InterpretationChips interpretation={interpretation} onRemoveEntity={onRemoveEntity} />
+      )}
 
       {results.length > 0 ? (
         <>

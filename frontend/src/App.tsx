@@ -19,7 +19,7 @@ import { useDebouncedValue, useFocusHistory } from "./hooks";
 import { ApiError, UNAUTHORIZED_EVENT, getConversation, getMyCapabilities, unifiedSearch, type SearchFilters } from "./api";
 import { clearSession, loadSession, saveSession } from "./session";
 import { WORK_MODE_ROLES } from "./types";
-import type { Identity, UnifiedSearchResponse, ViewMode } from "./types";
+import type { Identity, InterpretationEntity, UnifiedSearchResponse, ViewMode } from "./types";
 
 type Mode = "profile" | "graphs" | "dashboard" | "continuity" | "review" | "admin" | "prds";
 
@@ -34,6 +34,18 @@ function profileIdFromPath(): string | null {
 
 function profileUrl(id: string): string {
   return `/profile/${encodeURIComponent(id)}${window.location.search}`;
+}
+
+// Removing a chip edits the search box's text and re-searches -- no
+// per-entity removal endpoint, see SEARCH_RANKING_IMPLEMENTATION_PLAN.md
+// step 3's design note. `entity.text` is the exact substring the backend
+// matched, so it's excised verbatim rather than re-derived; the only
+// cleanup is collapsing the double space a middle-of-sentence removal
+// would otherwise leave behind.
+function removeEntityText(query: string, entityText: string): string {
+  const idx = query.indexOf(entityText);
+  if (idx === -1) return query;
+  return (query.slice(0, idx) + query.slice(idx + entityText.length)).replace(/ {2,}/g, " ").trim();
 }
 
 // Nothing below the gate ever sees a null identity, and <Directory> is
@@ -437,6 +449,7 @@ function Directory({ identity, onSignOut }: DirectoryProps) {
               onExampleClick={(text) => setQuery(text)}
               onRetry={() => setRetryToken((t) => t + 1)}
               onAddToFilter={(skill, level) => setFilters((f) => ({ ...f, skill, level: level ?? f.level }))}
+              onRemoveEntity={(entity: InterpretationEntity) => setQuery((q) => removeEntityText(q, entity.text))}
             />
             {/* Available under every search, direct or assisted -- a bare
                 name/skill match still deserves a way to ask a follow-up

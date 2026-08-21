@@ -32,12 +32,13 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app import query_entities
 from app.assistant_conversations import append_turn, open_or_continue
 from app.assistant_context import facts_context_message, requirements_gap_suggestion
 from app.auth import AuthenticatedUser
 from app.models import Employee
 from app.people import MAX_RESULTS, SUMMARY_FIELDS, find_people, search_people_by_plan
-from app.text_filters import plan_from_text
+from app.text_filters import plan_from_interpretation
 from app.permissions import ViewMode
 from app.schemas import (
     AmbiguousPersonMatch, AmbiguousProjectMatch, MentorCandidate, OrgChainNode, PersonDetail, PersonRef, PersonSummary,
@@ -298,7 +299,12 @@ def _unified_search_core(
     # so empty there means "that person exists but you may not see them",
     # an honest flat empty that no amount of re-reading improves.
     if not results and text and not _is_exact_identifier(db, text):
-        plan = plan_from_text(db, text, select_fields=sorted(SUMMARY_FIELDS), limit=MAX_RESULTS)
+        # Parsed once here rather than inside plan_from_text, so the same
+        # Interpretation backs both the query plan below and the
+        # `interpretation` chip payload -- text_filters.plan_from_interpretation
+        # takes the already-parsed result instead of re-scanning the text.
+        interpretation = query_entities.parse(db, text)
+        plan = plan_from_interpretation(interpretation, select_fields=sorted(SUMMARY_FIELDS), limit=MAX_RESULTS)
         if plan is not None:
             try:
                 results = search_people_by_plan(db, caller, plan, view_mode)
@@ -307,8 +313,34 @@ def _unified_search_core(
                 # Invariant 5 (ARCHITECTURE_2.md §1): degrade, don't error
                 # -- the flat empty result below is still a correct answer.
                 pass
+            if results:
+                # Only attached once the plan actually resolved to someone --
+                # an interpretation nobody matched has nothing to show a chip
+                # row for, and the caller already gets the flat empty result
+                # below. No `weights` key yet: that only appears once ranking
+                # (SEARCH_RANKING_PROPOSAL.md step 4) actually runs.
+                return {
+                    "mode": "direct",
+                    "results": results,
+                    "interpretation": _interpretation_payload(interpretation),
+                }
 
     return {"mode": "direct", "results": results}
+
+
+def _interpretation_payload(interpretation: query_entities.Interpretation) -> dict:
+    """The response-side shape for the removable-chip row (see
+    SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 3). Plain dicts, not a
+    schemas.py model -- /search has no response_model (it's a discriminated
+    union), so every key on this response is already a plain dict key.
+    """
+    return {
+        "entities": [
+            {"label": e.label, "text": e.text, "value": e.value}
+            for e in interpretation.entities
+        ],
+        "unparsed": interpretation.unparsed,
+    }
 
 
 def unified_search(

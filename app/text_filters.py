@@ -53,21 +53,17 @@ from app import query_entities
 from app.query_plan import Filter, PeopleQuery
 
 
-def plan_from_text(db: Session, text: str, *, select_fields: list[str], limit: int) -> PeopleQuery | None:
-    """A PeopleQuery built from whatever real vocabulary `text` names, or
-    None when it names none.
+def plan_from_interpretation(
+    interpretation: query_entities.Interpretation, *, select_fields: list[str], limit: int,
+) -> PeopleQuery | None:
+    """A PeopleQuery built from an already-parsed Interpretation, or None
+    when it names no filterable entity.
 
-    Returns a plan, not results -- app.people.search_people_by_plan runs it
-    through the same validate -> snap -> enforce -> compile pipeline every
-    other retrieval uses, so nothing here needs to know what a caller is or
-    which fields they may see. This module is inert on its own, exactly
-    like app/query_plan.py's docstring says a plan should be.
+    Split out from plan_from_text so a caller that also needs the
+    Interpretation itself (app.unified_search's `interpretation` response
+    payload, SEARCH_RANKING_PROPOSAL.md step 3) can call query_entities.parse
+    once and reuse the same result here, instead of parsing the text twice.
     """
-    if not text.strip():
-        return None
-
-    interpretation = query_entities.parse(db, text)
-
     filters: list[Filter] = []
     skills: list[str] = []
     for entity in interpretation.entities:
@@ -90,3 +86,19 @@ def plan_from_text(db: Session, text: str, *, select_fields: list[str], limit: i
     if not filters:
         return None
     return PeopleQuery(select=list(select_fields), filters=filters, limit=limit)
+
+
+def plan_from_text(db: Session, text: str, *, select_fields: list[str], limit: int) -> PeopleQuery | None:
+    """A PeopleQuery built from whatever real vocabulary `text` names, or
+    None when it names none.
+
+    Returns a plan, not results -- app.people.search_people_by_plan runs it
+    through the same validate -> snap -> enforce -> compile pipeline every
+    other retrieval uses, so nothing here needs to know what a caller is or
+    which fields they may see. This module is inert on its own, exactly
+    like app/query_plan.py's docstring says a plan should be.
+    """
+    if not text.strip():
+        return None
+    interpretation = query_entities.parse(db, text)
+    return plan_from_interpretation(interpretation, select_fields=select_fields, limit=limit)

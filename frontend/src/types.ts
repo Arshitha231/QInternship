@@ -213,6 +213,26 @@ export interface FollowUpSuggestion {
   minimum_level?: string | null;
 }
 
+// A typed reading of the free-text search box (app.query_entities.parse /
+// SEARCH_RANKING_PROPOSAL.md) -- what the direct path decided "senior data
+// engineer" meant, as removable chips instead of a silent guess. `value` is
+// the real database value the chip resolved to (e.g. "Data Engineer"),
+// `text` is the exact substring of the query it came from -- what a chip's
+// × button excises from the search box.
+export interface InterpretationEntity {
+  label: "office" | "org_unit" | "skill" | "role" | "seniority";
+  text: string;
+  value: string | null;
+}
+
+export interface Interpretation {
+  entities: InterpretationEntity[];
+  unparsed: string[];
+  // Only present once ranking actually ran (SEARCH_RANKING_PROPOSAL.md step
+  // 4) -- an unranked plan (office/org_unit only) has nothing to weight.
+  weights?: Record<string, number>;
+}
+
 export interface UnifiedSearchResponse {
   mode: "direct" | "assisted";
   results: PersonSummary[];
@@ -225,6 +245,10 @@ export interface UnifiedSearchResponse {
   // Present (a real suggestion or null) only in assisted mode -- direct
   // mode has no answer prose to attach one alongside.
   suggestion?: FollowUpSuggestion | null;
+  // Direct-mode-only, and only once the "empty + free text" rescue path
+  // (app.unified_search) actually resolved to real people -- see
+  // Interpretation above.
+  interpretation?: Interpretation;
 }
 
 export type Role = "employee" | "manager" | "hr" | "it";
