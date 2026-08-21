@@ -8,6 +8,12 @@ plus its job titles that matter here specifically: "Data Engineer"
 first word with a real seniority band word ("staff", "vp") or would
 otherwise be read as a single generic title word ("engineer").
 """
+from datetime import date
+
+import pytest
+
+from app.models import Employee, Office, OrgUnit
+from app.models.enums import AvailabilityStatus, EmploymentType
 from app.query_entities import parse
 
 SENIORITY = "seniority"
@@ -52,6 +58,58 @@ def test_multiword_title_claims_its_seniority_look_alike_word(db_session):
     interpretation = parse(db_session, "who is the VP of Engineering")
     assert _labelled(interpretation, ROLE) == {"VP of Engineering"}
     assert _labelled(interpretation, SENIORITY) == set()
+
+
+# ---------------------------------------------------------------------------
+# A length tie between a bare role word and the seniority word it's spelled
+# identically to -- confidence, not insertion order, must break it
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def senior_consultant(db_session):
+    """A second real title starting with the bare word "Senior" --
+    deliberately NOT "Senior Data Engineer", which would let the whole
+    three-word phrase win outright as one longer, more specific title
+    match and mask the actual bug. "Senior Consultant" only contributes a
+    bare "Senior" role candidate (confidence 0.5, from the 1-word n-gram)
+    that is exactly as long as the "senior" seniority band word
+    (confidence 1.0) once "Data Engineer" has already claimed its own two
+    words -- the tie query_entities.parse must resolve toward the
+    higher-confidence reading, not toward whichever list happened to be
+    built first.
+    """
+    db = db_session
+    unit = db.query(OrgUnit).first()
+    office = db.query(Office).first()
+    emp = Employee(
+        id="qe-fixture-senior-consultant", directory_object_id=None,
+        full_name="QE Fixture Senior Consultant", preferred_name=None,
+        job_title="Senior Consultant", org_unit_id=unit.id, office_id=office.id,
+        manager_id=None, work_email="qe-fixture-senior-consultant@example.test",
+        work_phone=None, slack_handle=None, timezone=None,
+        employment_type=EmploymentType.fte, hire_date=date(2020, 1, 1), cost_centre=None,
+        personal_mobile=None, availability_status=AvailabilityStatus.available,
+        away_until=None, delegate_id=None, bio=None, photo_url=None, is_active=True,
+    )
+    db.add(emp)
+    db.commit()
+    yield emp
+    db.query(Employee).filter(Employee.id == emp.id).delete(synchronize_session=False)
+    db.commit()
+
+
+def test_a_bare_role_word_does_not_win_a_tie_against_the_identical_seniority_word(
+    db_session, senior_consultant,
+):
+    """On a directory where some real title starts with "Senior", the bare
+    "Senior" role candidate this produces must not preempt the seniority
+    band word of the same length -- "senior data engineer" still has to
+    split into role="Data Engineer" + seniority="senior", not collapse
+    into two role entities ("Senior" and "Data Engineer") and zero
+    seniority entities, which is what a plain length-only sort produced."""
+    interpretation = parse(db_session, "senior data engineer")
+    assert _labelled(interpretation, ROLE) == {"Data Engineer"}
+    assert _labelled(interpretation, SENIORITY) == {"senior"}
 
 
 # ---------------------------------------------------------------------------

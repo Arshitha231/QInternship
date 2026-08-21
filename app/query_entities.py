@@ -222,11 +222,23 @@ def parse(db: Session, text: str) -> Interpretation:
     per label) -- see the module docstring for why that ordering, not a
     per-field pass, is what makes "Staff Engineer" and "VP of Engineering"
     win their words before "staff"/"vp" get a turn at the same letters.
+
+    Ties in length also need a tiebreak, not just a stable-sort accident.
+    A bare one-word job-title candidate ("Senior", confidence 0.5, from
+    any real title that happens to start with a seniority band word) is
+    exactly as long as the seniority band word itself ("senior",
+    confidence 1.0) -- and on any real directory where titles commonly
+    start with "Senior"/"Staff"/"Lead", that tie comes up constantly.
+    Sorting ties by confidence descending, not by insertion order, is what
+    lets the certain reading (a closed, exact seniority band word) win
+    over the merely-plausible one (a title n-gram this module only ever
+    trusts at half confidence) instead of the two-role-entities,
+    zero-seniority reading it would otherwise get.
     """
     text_lower = text.lower()
     claimed: list[tuple[int, int]] = []
     entities: list[Entity] = []
-    for candidate in sorted(_candidates(db), key=lambda c: len(c.value), reverse=True):
+    for candidate in sorted(_candidates(db), key=lambda c: (len(c.value), c.confidence), reverse=True):
         span = _first_unclaimed_span(text_lower, candidate, claimed)
         if span is None:
             continue
