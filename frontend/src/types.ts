@@ -21,6 +21,20 @@ export interface PersonRef {
   full_name: string;
 }
 
+// Why a ranked search result (GET /search, app.people.search_people_ranked)
+// scored where it did -- SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 5.
+// `matched`/`missing` are already-phrased evidence strings the backend
+// built from the same values that produced score_pct (e.g. "React
+// (Expert)", "title matches Data Engineer"), not raw field names to
+// template client-side. Render this as "Query match", never "Rank" /
+// "Score" / "Best" -- the system compares and surfaces, it does not rank
+// people against each other (CLAUDE.md §7).
+export interface MatchExplanation {
+  score_pct: number;
+  matched: string[];
+  missing: string[];
+}
+
 export interface PersonSummary {
   id: string;
   full_name: string;
@@ -37,6 +51,10 @@ export interface PersonSummary {
   // app/schemas.py's PersonSummary. TeamGraph uses it to decide which
   // roster cards get an expand control.
   has_reports?: boolean;
+  // Set only on a result app.people.search_people_ranked produced -- absent
+  // (not null) on every other PersonSummary, same convention has_reports
+  // already follows.
+  match?: MatchExplanation;
 }
 
 export interface SkillOut {

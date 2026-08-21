@@ -403,6 +403,17 @@ button { font: inherit; }
 .status-away { background: var(--amber); }
 .status-restricted { background: var(--muted); }
 
+/* Query match (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 5) -- a subtle
+   bar, not a leaderboard rank: it explains one card's own fit against the
+   query, never compares it to the cards around it. */
+.result-match { margin: 8px 0 0; display: flex; align-items: center; gap: 8px; }
+.result-match-bar {
+  width: 36px; height: 4px; border-radius: 2px; background: var(--purple-100);
+  overflow: hidden; flex-shrink: 0;
+}
+.result-match-bar-fill { display: block; height: 100%; background: var(--purple); border-radius: 2px; }
+.result-match-label { font-size: var(--fs-xs); color: var(--muted); }
+
 .state-block {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 60px 20px; text-align: center; color: var(--muted); gap: 10px;
