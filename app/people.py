@@ -56,8 +56,8 @@ from app.policy import can_see_direct_reports, compute_visible_fields, enforce, 
 from app.query_compiler import apply_filter, compile_query, enforced_person_ref
 from app.query_plan import PeopleQuery
 from app.schemas import (
-    OfficeOut, PersonComparison, PersonDetail, PersonRef, PersonSummary, PersonWithProjects, ProjectHistoryItem,
-    SkillOut,
+    MatchExplanation, OfficeOut, PersonComparison, PersonDetail, PersonRef, PersonSummary, PersonWithProjects,
+    ProjectHistoryItem, SkillOut,
 )
 from app.search_reindex import reindex_employee
 from app.search_client import search_people
@@ -755,6 +755,13 @@ def search_people_ranked(
             job_title=e.job_title, org_unit=_org_unit_name(db, e.org_unit_id),
             office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
             availability_status=e.availability_status.value,
+            # Built straight from the RankedCandidate that decided this
+            # row's position -- never recomputed, so the number on the
+            # card and the number that produced the sort order agree by
+            # construction (step 5).
+            match=MatchExplanation(
+                score_pct=candidate.score_pct, matched=candidate.matched, missing=candidate.missing,
+            ),
         ))
 
     query_text = plan.model_dump_json()

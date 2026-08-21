@@ -594,6 +594,11 @@ async def test_interpretation_is_attached_for_the_headline_multi_entity_query(cl
     # (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 4) -- the weights
     # breakdown must be present and sum to 100.
     assert body["interpretation"]["weights"] == {"skills": 45, "role": 30, "seniority": 15, "recency": 10}
+    # step 5: every card on a ranked response explains its own score --
+    # a real object with the fields MatchExplanation defines, not null.
+    for person in body["results"]:
+        assert set(person["match"]) == {"score_pct", "matched", "missing"}
+        assert isinstance(person["match"]["score_pct"], int)
 
 
 async def test_interpretation_is_absent_when_the_direct_path_already_has_results(client):
