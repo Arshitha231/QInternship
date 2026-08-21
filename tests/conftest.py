@@ -252,7 +252,12 @@ def _seed() -> None:
         power_bi = Skill(name="Power BI", category=SkillCategory.technical, canonical_id=None)
         terraform = Skill(name="Terraform", category=SkillCategory.technical, canonical_id=None)
         french = Skill(name="French", category=SkillCategory.language, canonical_id=None)
-        db.add_all([power_bi, terraform, french])
+        # A second technical skill nobody holds alongside Terraform or Power
+        # BI -- lets a two-skill free-text query ("Terraform, Kubernetes")
+        # exercise text_filters._match_all's op="in" path without implying
+        # any employee actually holds both.
+        kubernetes = Skill(name="Kubernetes", category=SkillCategory.technical, canonical_id=None)
+        db.add_all([power_bi, terraform, french, kubernetes])
         db.flush()
 
         # Plain name target for fuzzy-matching tests — no distinguishing skill.
