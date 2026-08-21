@@ -37,13 +37,25 @@ bands, and the non-overlapping-span rule that lets a real multi-word title
 win its words before a generic one gets a turn) all live there, shared with
 the ranked/chip path (SEARCH_RANKING_PROPOSAL.md steps 2-4). What's left
 here is purely the translation from typed entities to this module's own
-PeopleQuery shape: office/org_unit/role entities become Filters the same
-way they always did, skill entities become one op="contains" or op="in"
-Filter (app/query_compiler.py's skills branch ORs every value in an "in"
-list regardless of op, so multi-skill text widens the candidate pool rather
-than narrowing it to zero), and seniority entities are dropped here --
-they only matter to the ranked path, which reads them from
-query_entities.parse directly rather than through this adapter.
+PeopleQuery shape: office/org_unit entities become required Filters the
+same way they always did, and seniority entities are dropped here -- they
+only matter to the ranked path, which reads them from query_entities.parse
+directly rather than through this adapter.
+
+role and skill(s) are different once both are present. A lone role or a
+lone skill still becomes one plain `filters` entry, same shape as always
+(op="contains" for one skill, op="in" for two-plus -- app/query_compiler.py's
+skills branch ORs every value in an "in" list regardless of op, so
+multi-skill text widens the candidate pool rather than narrowing it to
+zero). But a role named ALONGSIDE skill(s) is two separate PREFERRED
+criteria (SEARCH_RANKING_PROPOSAL.md design decision 1), not a hard AND
+that can go to zero the moment nobody holding the skill(s) also carries
+that exact title -- "senior data engineer with react, java" must not
+require a Data Engineer who also holds React or Java when the fix's whole
+point is that no such person may exist. So role+skill(s) together compile
+to `filter_groups`: a UNION of "matches the role" and "holds a requested
+skill", widening the pool for app.people_ranking (step 4) to score and
+reorder afterward instead of narrowing it structurally.
 """
 from __future__ import annotations
 
@@ -66,22 +78,43 @@ def plan_from_interpretation(
     """
     filters: list[Filter] = []
     skills: list[str] = []
+    role_value: str | None = None
     for entity in interpretation.entities:
         if entity.label == "office":
             filters.append(Filter(field="office", op="contains", value=entity.value))
         elif entity.label == "org_unit":
             filters.append(Filter(field="org_unit", op="eq", value=entity.value))
         elif entity.label == "role":
-            filters.append(Filter(field="job_title", op="contains", value=entity.value))
+            role_value = entity.value
         elif entity.label == "skill":
             skills.append(entity.value)
         # seniority entities carry no Filter of their own here -- they only
         # feed the ranking layer and the chip payload (steps 3-4).
 
+    skill_filter: Filter | None = None
     if len(skills) == 1:
-        filters.append(Filter(field="skills", op="contains", value=skills[0]))
+        skill_filter = Filter(field="skills", op="contains", value=skills[0])
     elif skills:
-        filters.append(Filter(field="skills", op="in", value=skills))
+        skill_filter = Filter(field="skills", op="in", value=skills)
+    role_filter = Filter(field="job_title", op="contains", value=role_value) if role_value else None
+
+    if role_filter is not None and skill_filter is not None:
+        # Both preferred criteria present -- see the module docstring for
+        # why this is a UNION (filter_groups), not an AND. office/org_unit
+        # (already collected into `filters` above) stay a required,
+        # unconditional AND constraint layered on top of this OR.
+        return PeopleQuery(
+            select=list(select_fields), filters=filters,
+            filter_groups=[[role_filter], [skill_filter]], limit=limit,
+        )
+
+    # Single-criterion case, unchanged: whichever of role/skill(s) is
+    # actually present (if either) joins `filters` as a plain AND term,
+    # same shape this module has always produced.
+    if role_filter is not None:
+        filters.append(role_filter)
+    elif skill_filter is not None:
+        filters.append(skill_filter)
 
     if not filters:
         return None

@@ -590,9 +590,10 @@ async def test_interpretation_is_attached_for_the_headline_multi_entity_query(cl
     assert {"label": "role", "text": "data engineer", "value": "Data Engineer"} in entities
     assert {"label": "seniority", "text": "senior", "value": "senior"} in entities
     assert body["interpretation"]["unparsed"] == []
-    # No ranking has run yet (that's step 4) -- an interpretation with
-    # nothing to weight must not claim a weights breakdown it doesn't have.
-    assert "weights" not in body["interpretation"]
+    # A role entity is present, so this now runs through app.people_ranking
+    # (SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 4) -- the weights
+    # breakdown must be present and sum to 100.
+    assert body["interpretation"]["weights"] == {"skills": 45, "role": 30, "seniority": 15, "recency": 10}
 
 
 async def test_interpretation_is_absent_when_the_direct_path_already_has_results(client):

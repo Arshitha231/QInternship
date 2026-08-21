@@ -83,6 +83,33 @@ def test_two_skills_become_one_in_filter(db_session):
 
 
 # ---------------------------------------------------------------------------
+# role + skill(s) together -- a UNION for app.people_ranking (step 4) to
+# score and reorder, not an AND that could go to zero. Design decision 1.
+# ---------------------------------------------------------------------------
+
+def test_role_and_skill_together_become_a_filter_group_not_an_and(db_session):
+    """"data analyst with terraform" names a role AND a skill -- two
+    separate PREFERRED criteria, not a hard AND requiring a Data Analyst
+    who also holds Terraform. The pool must be their UNION (filter_groups),
+    not the single ANDed `filters` entry this module produced before
+    ranking existed."""
+    plan = _plan(db_session, "data analyst with terraform")
+    assert plan is not None
+    assert plan.filters == []
+    groups = [{(f.field, f.op, f.value) for f in group} for group in plan.filter_groups]
+    assert {("job_title", "contains", "Data Analyst")} in groups
+    assert {("skills", "contains", "Terraform")} in groups
+
+
+def test_a_lone_role_still_stays_a_plain_filter(db_session):
+    """No skill named alongside it -- single-criterion shape is unchanged."""
+    plan = _plan(db_session, "data analyst")
+    assert plan is not None
+    assert plan.filter_groups == []
+    assert ("job_title", "contains", "Data Analyst") in _filters(plan)
+
+
+# ---------------------------------------------------------------------------
 # Getting out of the way -- the half that keeps this safe
 # ---------------------------------------------------------------------------
 

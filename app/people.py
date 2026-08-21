@@ -37,6 +37,7 @@ from datetime import date, datetime
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app import people_ranking, query_entities
 from app.auth import AuthenticatedUser
 from app.certifications import employee_training_status
 from app.models import (
@@ -652,25 +653,7 @@ def search_people_by_plan(
     a richer "did you mean X?" surfaced back to the caller is a real future
     enhancement, not built in this pass.
     """
-    # Local import: app.vocabulary imports app.org_chart (for
-    # FUZZY_MATCH_THRESHOLD), and app.org_chart imports app.people (for
-    # MAX_RESULTS) -- a module-level import here would be a real circular
-    # import. Same fix app.permissions.training_extra_fields already uses
-    # for the identical shape of cycle.
-    from app.vocabulary import snap, validate
-
-    validation = validate(plan)
-    if not validation.valid:
-        raise ValueError("; ".join(validation.errors))
-
-    snapped_plan, notes = snap(db, plan)
-
-    decision = enforce(snapped_plan, caller, view_mode)
-    if not decision.allow:
-        raise ValueError("that request can't be answered as asked")
-
-    stmt = compile_query(db, snapped_plan, decision)
-    ids = db.execute(stmt).scalars().all()
+    ids, notes = _compile_plan_ids(db, caller, plan, view_mode)
     rows = db.execute(select(Employee).where(Employee.id.in_(ids))).scalars().all()
     by_id = {e.id: e for e in rows}
     ordered = [by_id[i] for i in ids if i in by_id]
@@ -692,6 +675,95 @@ def search_people_by_plan(
     _write_audit(db, caller, "search_people_by_plan", query_text, len(results), SUMMARY_FIELDS)
 
     return results
+
+
+def _compile_plan_ids(
+    db: Session, caller: AuthenticatedUser, plan: PeopleQuery, view_mode: ViewMode = "work",
+) -> tuple[list[str], list]:
+    """validate -> snap -> enforce -> compile_query, shared by
+    search_people_by_plan and search_people_ranked (SEARCH_RANKING_
+    IMPLEMENTATION_PLAN.md step 4) so the two retrieval-order-vs-ranked-order
+    paths can never disagree about which ids a plan resolves to or which
+    obligations applied getting there. Returns the compiled id order (as
+    compile_query/Search would return it -- ranking discards this order,
+    the unranked caller keeps it) plus snap()'s SnapNotes, for the audit
+    trail either caller writes.
+
+    Raises ValueError on a validation/policy failure -- see
+    search_people_by_plan's own docstring for why the two failure modes
+    (validate()'s vs enforce()'s) get different message treatment;
+    unchanged by this refactor.
+    """
+    # Local import: app.vocabulary imports app.org_chart (for
+    # FUZZY_MATCH_THRESHOLD), and app.org_chart imports app.people (for
+    # MAX_RESULTS) -- a module-level import here would be a real circular
+    # import. Same fix app.permissions.training_extra_fields already uses
+    # for the identical shape of cycle.
+    from app.vocabulary import snap, validate
+
+    validation = validate(plan)
+    if not validation.valid:
+        raise ValueError("; ".join(validation.errors))
+
+    snapped_plan, notes = snap(db, plan)
+
+    decision = enforce(snapped_plan, caller, view_mode)
+    if not decision.allow:
+        raise ValueError("that request can't be answered as asked")
+
+    stmt = compile_query(db, snapped_plan, decision)
+    ids = db.execute(stmt).scalars().all()
+    return list(ids), notes
+
+
+def search_people_ranked(
+    db: Session, caller: AuthenticatedUser, plan: PeopleQuery,
+    interpretation: query_entities.Interpretation, view_mode: ViewMode = "work",
+) -> tuple[list[PersonSummary], bool]:
+    """Like search_people_by_plan, but the compiled id set is scored and
+    reordered by app.people_ranking instead of returned in compile_query's
+    own order -- SEARCH_RANKING_IMPLEMENTATION_PLAN.md step 4 (step 6's cap
+    folds into people_ranking.rank_candidates itself, per that plan's
+    design decision 4).
+
+    `plan` and `interpretation` are two views of the same parsed text --
+    app.text_filters.plan_from_interpretation built `plan` FROM
+    `interpretation`, so the caller (app.unified_search) passes both rather
+    than this function re-deriving one from the other. `plan` decides WHICH
+    ids are even in the running (retrieval, permission-filtered exactly
+    like search_people_by_plan); `interpretation` decides how to SCORE them
+    -- ranking is a pure function over ids compile_query already resolved,
+    so it cannot admit anyone a caller couldn't already see.
+
+    Returns (results, any_holds_all_requested_skills) -- the second value
+    is people_ranking.rank_candidates' own return, passed straight through
+    so app.unified_search can decide whether the "nobody holds every
+    requested skill" note (SEARCH_RANKING_PROPOSAL.md §6.4) applies,
+    without a second scoring pass over the same pool.
+    """
+    ids, notes = _compile_plan_ids(db, caller, plan, view_mode)
+    pool = people_ranking.load_pool(db, frozenset(ids))
+    ranked, any_holds_all = people_ranking.rank_candidates(pool, frozenset(ids), interpretation)
+
+    results: list[PersonSummary] = []
+    for candidate in ranked:
+        e = pool.employees.get(candidate.employee_id)
+        if e is None:
+            continue
+        results.append(PersonSummary(
+            id=e.id, full_name=e.full_name, preferred_name=e.preferred_name,
+            job_title=e.job_title, org_unit=_org_unit_name(db, e.org_unit_id),
+            office=_office_out(db.get(Office, e.office_id) if e.office_id else None),
+            availability_status=e.availability_status.value,
+        ))
+
+    query_text = plan.model_dump_json()
+    unresolved = "; ".join(f"{n.field}={n.original!r} unresolved" for n in notes if n.resolved is None)
+    if unresolved:
+        query_text = f"{query_text} [{unresolved}]"
+    _write_audit(db, caller, "search_people_ranked", query_text, len(results), SUMMARY_FIELDS)
+
+    return results, any_holds_all
 
 
 # ---------------------------------------------------------------------------
