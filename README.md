@@ -1,7 +1,7 @@
 # Employee Directory with Smart Search
 
 Internship project at Quadrant Technologies — Project 4 of 11 in the AI internship
-programme. Deploy and present by **20 August 2026**.
+programme. Deployed and presented **20 August 2026**. The in-app name is **Mel**.
 
 An internal employee directory with natural-language search: find people by name,
 skill, team, or a plain-English description ("who knows Power BI in Bangalore"),
@@ -11,6 +11,10 @@ Search runs on Azure AI Search hybrid retrieval; a language model turns messy
 queries into typed function calls but never touches the database directly —
 permission filtering happens in Python, between retrieval and the model.
 
+Around that core sit the org graphs, workforce dashboards, team building, the
+document review queue and PRD requirement capture. Every question-shaped one of
+them is served by the same bounded agent — see [The assistants](#the-assistants).
+
 **Live:** [tempest34.azurewebsites.net](https://tempest34.azurewebsites.net) ·
 [API docs](https://tempest34.azurewebsites.net/docs)
 
@@ -18,18 +22,30 @@ permission filtering happens in Python, between retrieval and the model.
 
 | Area | Owner |
 |---|---|
-| Backend & AI layer + Team Lead (this repo) | Arshitha |
-| Features | Shreyas |
-| Embeddings & indexing | Aarya |
-| Search quality | Nikhil |
+| Team lead — backend & the AI layer (this repo) | Arshitha |
+| AI layer, security & AI features | Aarya |
+| AI features on top of the agent layer | Shreyas |
+| Search quality & evaluation | Nikhil |
 | Infrastructure & Terraform | Abhinav |
-| Security & QA | Deeptha |
-| Frontend | Sathwik |
+| Backend, testing & QA | Deeptha |
+| Data & frontend | Sathwik |
+
+## What it does
+
+| Surface | What it answers |
+|---|---|
+| **Search and ask** | One box for both a name and a question. A name or a skill goes straight to retrieval — no model, no routing call; a real question is routed to one of the search assistant's eleven tools and answered with the people it came from |
+| **Org graphs** | Four views of the same organisation — Department, Team, Skills, and each person's private Community graph. Clicking anyone recentres the whole graph on them |
+| **Workforce dashboards** | Skill supply against project demand, training compliance, project coverage, concentration risk. HR sees the whole org and can narrow to a department; everyone else sees their own reporting line and nothing else |
+| **Build Team** | A project brief in plain language becomes roles, a ranked candidate per role, a coverage percentage and the skill gaps behind it. The model reads the brief into roles and skills — it selects nobody and computes none of the numbers |
+| **Find a Team** | The opposite question: rank the teams that already exist for a described problem, with Expert/Working/Learning counts and the manager's contact details |
+| **Document review** | Uploaded documents are parsed into proposed changes; nothing reaches an employee record until a human accepts it, field by field |
+| **PRD requirement capture** | HR uploads a project's requirements document; extracted skills and notes are previewed, edited and confirmed, then a second HR-only assistant answers questions about them |
 
 ## Hard constraints
 
 - **No real Quadrant employee data.** Everything runs on a generated synthetic
-  dataset (`seed.py`, ~500 records). Microsoft Graph is an interface spec only —
+  dataset (`seed.py`, 545 employees across 134 projects). Microsoft Graph is an interface spec only —
   never connected. There is no live directory sync.
 - **Runs without Azure OpenAI credentials.** Semantic search degrades to keyword +
   fuzzy matching, and the app still starts, when `EMBEDDING_ENDPOINT` / `EMBEDDING_KEY`
@@ -45,9 +61,12 @@ permission filtering happens in Python, between retrieval and the model.
 
 ## Stack
 
-Python 3.14, FastAPI, SQLAlchemy 2.x, Alembic · SQLite (local) / Azure SQL
-(deployed) · Azure AI Search · Azure OpenAI · Microsoft Entra ID · Azure App
-Service.
+Python 3.14, FastAPI, SQLAlchemy 2.x, Alembic (31 migrations, 26 tables) ·
+SQLite (local) / Azure SQL (deployed) · Azure AI Search · Azure OpenAI (`gpt-5`
+for routing and phrasing, `text-embedding-3-small` for project vectors, which
+live in the application database rather than a vector store) · Microsoft Entra
+ID · Azure App Service, provisioned by Terraform · React + TypeScript + Vite,
+served from the same origin as the API.
 
 ## Local development
 
@@ -59,7 +78,7 @@ pip install -r requirements.txt
 cp .env.example .env          # DATABASE_URL defaults to sqlite:///directory.db
 
 alembic upgrade head          # create the schema
-python seed.py                # generate ~500 synthetic employees + verification report
+python seed.py                # generate 545 synthetic employees + verification report
 
 uvicorn app.main:app --reload --port 8000   # http://127.0.0.1:8000/docs
 ```
@@ -104,8 +123,8 @@ These four are the ones worth demoing, one per role:
 
 | Role | Email | What they get |
 |---|---|---|
-| `hr` | `naomi.lewis@example.com` | Salary fields, Continuity, Admin, work/employee toggle |
-| `it` | `shaun.iyer@example.com` | Review queue, work/employee toggle, no salary access |
+| `hr` | `naomi.lewis@example.com` | Salary fields, Dashboard, Continuity, Review, Admin, PRDs, work/employee toggle |
+| `it` | `shaun.iyer@example.com` | Nothing an `employee` doesn't get — which is the point of demoing it (see [Roles and view modes](#roles-and-view-modes)) |
 | `manager` | `sean.wilson@example.com` | Real direct reports, so the downward org chart renders |
 | `employee` | `joshua.liu@example.com` | Plain IC — the restricted view |
 
@@ -193,16 +212,56 @@ npm run dev:live                          # same UI, talks to the deployed Azure
 |---|---|
 | `GET /health` | liveness check, used by the deploy pipeline |
 | `GET /auth/whoami` | resolves the caller's identity/role from the active auth mode |
+| `GET /me/capabilities` | which team features this caller can actually use, answered by running the real gate (`analytics.resolve_scope`) rather than re-deriving the rule client-side. Advisory only — every endpoint still enforces for itself |
 | `POST /auth/login` | dev-mode only. Any active employee's work email + the shared password → `{id, role, name}`, role derived from the org tree; 404s once Entra is configured (see [Signing in](#signing-in)) |
 | `GET /people` | filtered directory listing, permission-filtered per caller |
 | `GET /people/{id}` | one person's detail, restricted fields genuinely absent (not null) for callers without access |
 | `PATCH /people/{id}/bio` | self-service edit of your own "About" text |
+| `PATCH /people/{id}/pronunciation` | self-service edit of your own name pronunciation |
+| `POST` \| `PATCH` \| `DELETE /people/{id}/skills` | self-service skills: add, re-level or remove your own, recorded `self`-sourced |
+| `GET /people/{id}/skill-routes` | shortest chains from this person to somebody capable in a skill — yours to ask about yourself; HR in work mode may ask on anyone's behalf |
+| `GET /people/{id}/skill-suggestions` | skills worth asking about, drawn from what this person's current projects require and what the directory is thin on, each with the reason it was suggested |
 | `GET /people/{id}/org-chart` | manager chain + direct reports, both directions |
 | `GET /me/notifications` | your own notifications, newest first — no person-id parameter exists, so no role can read anyone else's |
 | `POST /people/{id}/training/{course_code}` | hr-only. Records a course status change and fires both notification triggers; stands in for the training system pushing us an event (409 once `ENABLE_TRAINING_API_SYNC` is on) |
 | `POST /notifications/date-milestones` | hr-only, optional `?on=YYYY-MM-DD`. Sweeps for birthdays and milestone service anniversaries and notifies HR. Idempotent per date — what a daily cron would call, since nothing in the database changes on someone's birthday |
 | `GET /search` | **the unified search+ask surface.** Classifies `q` deterministically (trailing `?` or an interrogative opener) into `direct` (plain filtered results) or `assisted` (also runs the tool-calling layer and returns an `overview` with a prose answer + citations + reasoning trace) |
-| `POST /ask` | the older direct entry point to the tool-calling layer; `/search` is what the frontend actually uses now, this is kept as a lower-level API |
+| `POST /ask` | the older direct entry point to the tool-calling layer; `/search` is what the frontend actually uses now, this is kept as a lower-level API. Every call opens or continues the caller's `search` conversation and records the turn |
+| `GET /conversations/{surface}` | the caller's most recent `search` or `prd` thread plus its turns — how a page reload rehydrates. `prd` is scoped per project and HR-only |
+
+Dashboards, workforce intelligence and team building. Every one of these is
+scoped by `analytics.resolve_scope`, which **discards** a requested scope rather
+than validating it — see [The assistants](#the-assistants):
+
+| Route | Purpose |
+|---|---|
+| `GET /analytics/overview` | headline dashboard counts for the caller's scope |
+| `GET /analytics/org-units` | the departments this caller may narrow to (HR gets all; everyone else, their own line) |
+| `GET /analytics/skills`, `GET /analytics/skills/{id}` | skill supply against project demand, and one skill's detail |
+| `GET /analytics/training`, `/training/roster`, `POST /analytics/training/reminders` | course compliance, who is outstanding, and a reminder sweep |
+| `GET /analytics/projects` | per-project skill coverage |
+| `GET /analytics/insights` | the computed findings behind the dashboard's narrative |
+| `POST /analytics/report` | a natural-language workforce question answered as a structured report — the model chooses the analyses and writes the summary, never the figures |
+| `POST /team/build` | a project brief becomes roles, ranked candidates, a coverage percentage and the gaps behind it, drawn only from people the caller may already see. The model reads the brief into roles and skills; every number is computed in `app/team_builder.py` |
+| `POST /team/find` | ranks existing teams and departments for a technical problem, with Expert/Working/Learning counts and the unit head's contact details. Creates nothing |
+
+Projects and requirements:
+
+| Route | Purpose |
+|---|---|
+| `GET /projects` | the project list behind the PRD and requirement pickers |
+| `PUT` \| `DELETE /projects/{id}/description` | hr-only, work mode |
+| `PUT` \| `DELETE /people/{id}/projects/{project_id}` | project-membership writes |
+| `GET` \| `PUT /projects/{id}/required-skills` | the skills, at a minimum level, a project's delivery needs — also the confirm path for a PRD preview |
+| `GET` \| `POST /projects/{id}/requirement-notes` | free-text requirements lifted from a PRD. Readable and writable by **HR or the project's owner only**, a narrower rule than the skill rows, which stay broadly readable as ordinary org facts |
+
+Community links — each person's private "who to ask for what" graph:
+
+| Route | Purpose |
+|---|---|
+| `GET` \| `POST` \| `PATCH` \| `DELETE /community_links` | your own links |
+| `GET /suggested_official_links`, `POST .../generate`, `POST .../{id}/confirm` \| `/reject` | HR's queue for confirming official links |
+| `POST /community_links/auto_assign_mentors` | HR's mentor sweep |
 
 Employee lifecycle — all hr-only, work mode. See **HR employee lifecycle** below:
 
@@ -218,7 +277,7 @@ Employee lifecycle — all hr-only, work mode. See **HR employee lifecycle** bel
 | `POST /employee_action_requests/{id}/approve` \| `/reject` | only the request's own resolved approver may call these — 403 for anyone else, whatever role they hold |
 | `GET /org_units`, `GET /offices` | flat lookups behind the create-employee pickers. Any authenticated caller: both are already `BASE_FIELDS` on every profile |
 
-Document extraction and review — all it-only, work mode. See **Document extraction and review** below:
+Document extraction and review — all hr-only, work mode. See **Document extraction and review** below:
 
 | Route | Purpose |
 |---|---|
@@ -228,7 +287,16 @@ Document extraction and review — all it-only, work mode. See **Document extrac
 | `GET /proposed_changes` | the review queue, grouped by employee |
 | `POST /proposed_changes/{id}/accept` \| `edit` \| `reassign` \| `correct` \| `reject` | per-field review actions; only `accept`/`edit` ever write to a real table |
 | `POST /proposed_changes/{id}/undo` | reverses an accept/edit, while the source document is still under review |
+| `POST /proposed_changes/bulk_accept` \| `/bulk_reject` | the same per-field decisions over a whole selection |
 | `POST /docs/{id}/finalize` | the "Update" action: accept the listed ids, dismiss the rest, then clear the document's own text for good |
+
+PRD requirement capture and its assistant — hr-only, work mode. See
+[PRD requirement capture](#prd-requirement-capture) below:
+
+| Route | Purpose |
+|---|---|
+| `POST /projects/{id}/prd` | upload a project's requirements document and get back a **preview** of the skills and notes extracted from it. Saves nothing — the caller edits the preview and confirms it through the ordinary `required-skills` / `requirement-notes` write paths |
+| `POST /prd/ask` | the PRD assistant: its own endpoint, profile, two tools and chain budget. `project_id` selects the thread when starting a new conversation |
 
 ## Project structure
 
@@ -253,6 +321,13 @@ app/
     service.py          joins expectations to reported status; records status changes
   people.py           find_people / get_person + the full filter pipeline, language-family
                        and skill-miss fallbacks for "no exact match" queries
+  query_entities.py   types a free-text query into role / seniority / skill / office /
+                       org_unit, using only vocabulary that exists in this database, so
+                       "senior data engineer with react, java" is read as more than one
+                       job_title-contains-word guess
+  people_ranking.py   scores an already permission-filtered pool against that typed
+                       interpretation, and explains each score from the same values that
+                       produced it. Cannot admit an id that wasn't already in the pool
   writes.py           every write path plus the employee lifecycle: update_employee,
                        create_employee, the restrict/deactivate maker-checker
                        (request → _resolve_approver → approve/reject), reactivate,
@@ -276,16 +351,47 @@ app/
                        (embeddings + keyword) fused with RRF. Confidential projects are
                        never embedded, so no query can reach one
   project_skills.py   which skills, at what minimum level, a project's delivery needs
+  project_requirements.py  requirement notes: HR or the project's owner only, through the
+                       same visible_project check the write path uses
+  prd_extraction.py   a PRD's text -> typed skill/note proposals for preview. Structurally
+                       separate from doc_extraction: a PRD names no person to disambiguate,
+                       only what a project needs, and it writes nothing
+  analytics.py        the dashboards, and resolve_scope: the scope gate every workforce
+                       surface starts from. A requested scope is DISCARDED, not validated
+  workforce_reports.py  a workforce question as a structured report; the model picks the
+                       analyses and writes the summary, never the figures
+  insight_narrative.py  prose over already-computed dashboard findings
+  team_builder.py     brief -> roles -> ranked candidates + coverage. Candidates come only
+                       from resolve_scope's pool; every percentage is computed here
+  team_finder.py      ranks the teams that already exist for a described problem
+  skill_routes.py     shortest chains from one person to somebody capable in a skill
+  own_skills.py       self-service skill add/re-level/remove, always `self`-sourced
+  community_roles.py  who counts as a mentor/owner in the community graph
+  grounding.py        every numeral in generated prose checked against the rows it came
+                       from; an unsupported sentence is discarded for a computed one
   continuity.py       staffing continuity, hr + WORK mode only: work-authorization dates against
                        client engagements, severity from versioned config. No model calls
   community_links.py  each employee's private "who to contact for what" graph; official
                        links are HR-confirmed, personal ones are their own
   search_reindex.py   rule 6: every write to an indexed field re-indexes
   org_chart.py        recursive org chart (both directions), cycle-guarded
-  directory_tools.py  the 7-function tool-calling allowlist (find_people, get_person,
-                       get_org_chain, find_project_owner, find_mentor, skill_gap, skill_scarcity)
-  tool_calling.py      resolves a natural-language message to one of the 7 tools and runs it
-                       (mock resolver with no credentials, real Azure OpenAI tool-calling with them)
+  directory_tools.py  the tool-calling allowlist and the Python behind each tool —
+                       11 search tools + 2 PRD tools, see The assistants below
+  tool_calling.py      resolves a natural-language message to ONE tool and runs it (mock
+                       resolver with no credentials, real Azure OpenAI tool-calling with
+                       them). Holds AssistantProfile + SEARCH_PROFILE / PRD_PROFILE — one
+                       engine, two assistants — and _redact_for_phrasing, which strips
+                       self-authored free text (bio, contribution, note) before the model
+                       that writes the sentence ever sees it
+  chain_budgets.py    the per-plan-class budget a multi-step chain runs under (steps,
+                       distinct records, wall clock) and the absolute ceiling above it,
+                       asserted at startup
+  assistant_conversations.py  saved threads: a turn is stored as its PLAN (message, tool
+                       name, arguments), never a result, so replay re-runs every call
+                       through the permission gate. Someone else's id is a 404, not a 403
+  assistant_context.py  the cross-surface layer: extracted facts only, re-checked against
+                       the live database before use. Model prose and note text never cross
+  text_filters.py     deterministic routing rules, tried before any model call
   unified_search.py    GET /search: deterministic direct-vs-assisted classification, builds
                        the {mode, results, overview} response, permission-safe by construction
   search_client.py     Azure AI Search hybrid retrieval (keyword + prefix + fuzzy + vector) +
@@ -298,7 +404,9 @@ app/
                         TrainingCourse, EmployeeCourseStatus, CourseRequirement, Notification,
                         UploadedDoc, DocSubjectMatch, ProposedChange, CommunityLink,
                         WorkAuthorizationRecord, ProjectSkillRequirement, ProjectEmbedding,
-                        EmployeeActionRequest (staged restrict/deactivate awaiting approval)
+                        EmployeeActionRequest (staged restrict/deactivate awaiting approval),
+                        SuggestedOfficialLink, OrgSettings, ProjectRequirementNote,
+                        AssistantConversation, AssistantTurn (26 tables in all)
 alembic/              migrations (SQLite locally, Azure SQL in deployment — same DDL)
 seed.py               synthetic data generator + constraint verification summary.
                        Starts by DELETING every employee/project/skill/org unit —
@@ -343,10 +451,28 @@ frontend/src/
                                 applies the checked ones and clears the doc, an Undo on
                                 anything already accepted, and a ✕ to discard a whole
                                 wrong-file upload
+    AskChat.tsx                 the follow-up thread under an answer; rehydrates from
+                                GET /conversations/search on reload
+    DashboardPage.tsx, MetricCards.tsx, charts/   the workforce dashboard: skill supply
+                                vs. demand, training compliance, project coverage,
+                                concentration risk, scoped to whatever resolve_scope
+                                returned rather than to what the page asked for
+    WorkforceIntelligence.tsx   the dashboard's ask box: a workforce question in, a
+                                structured report out, every figure linked to its data
+    TeamBuilder.tsx, graphs/ProposedTeamGraph.tsx   Build Team: the brief, the proposed
+                                team, coverage and gaps, with the "technical
+                                recommendation only" notice the feature ships with
+    TeamFinder.tsx              Find a Team: ranked existing teams for a described problem
+    PRDsPage.tsx, PRDChat.tsx   the HR-only PRDs tab: upload a requirements document,
+                                edit the extracted preview, confirm it, then ask the PRD
+                                assistant about it. Its own thread, per project
+    SkillDetailModal.tsx        one skill's supply, demand and who holds it
+    LoginPage.tsx               the demo sign-in form (see Signing in)
     ContinuityPage.tsx          staffing continuity views; hr in work mode only
     CommunityPage.tsx, CommunityGraphCanvas.tsx   the personal "who to ask" graph
     HelpMenu.tsx, HelpOverlay.tsx   the guided tour and click-to-learn overlay
-    GraphPage.tsx               tab switcher for the three graph views below
+    GraphPage.tsx               tab switcher for the graph views below, plus Build Team
+                                and Find a Team
     graphs/
       DepartmentGraph.tsx        org hierarchy: manager above, direct reports below,
                                   expand/collapse per branch, recenter on click
@@ -364,7 +490,12 @@ terraform/            Azure infra as code — see Deployment below
 
 ## Deployment
 
-Pushing to `main` runs `.github/workflows/ci-cd.yml`, three jobs in sequence:
+Pushing to `main` runs `.github/workflows/ci-cd.yml`. `test` and `frontend`
+run on every pull request and push; `terraform` and `deploy` additionally run
+on a push to `main`, and `deploy` needs all three of the others. Concurrency is
+grouped per branch with **`cancel-in-progress: false`** on purpose: killing a
+deploy mid-way can leave a half-extracted site or a half-applied migration, so
+queueing costs minutes where a torn deploy costs an outage.
 
 1. **test** — `pytest`, always. If the push or PR touched AI/search-relevant
    files it also annotates the run with a reminder that the golden eval is
@@ -380,7 +511,10 @@ Pushing to `main` runs `.github/workflows/ci-cd.yml`, three jobs in sequence:
    PR, once for the merge) for a result that never gated anything. Run it
    when AI or search behaviour changed, and read it as a signal rather than
    a gate.
-2. **terraform** — `terraform/main.tf` provisions the App Service (plan +
+2. **frontend** — `tsc -b` then the production `npm run build`, the exact
+   command the deploy job runs rather than a bare `tsc --noEmit`, so a type
+   error stops the release instead of shipping.
+3. **terraform** — `terraform/main.tf` provisions the App Service (plan +
    web app), Azure SQL (server + database + firewall rule), and the storage
    account backing Terraform's own remote state. Azure AI Search
    (`internaisearch`) and Azure AI Foundry (`sharedfoundry`, chat +
@@ -398,16 +532,243 @@ depend on which IP the runner happened to get. Chained with `&&` on purpose:
 a failed migration stops the app, which fails the deploy's `/health` poll,
 rather than serving a green deploy that 500s on every profile page.
 
-3. **deploy** — builds the frontend, zips it with the backend, and deploys
-   via `az webapp deploy` (OneDeploy, `--clean true`). Ends with a health-check
-   poll against `/health` and `/` so a "successful" deploy that's actually
-   crash-looping fails the workflow instead of leaving a silent 503.
+4. **deploy** — builds the frontend, zips it with the backend, and deploys
+   via `az webapp deploy` (OneDeploy, `--clean true`). A guard waits for any
+   in-flight deployment rather than starting a second one on top of it. Ends
+   with a health-check poll against `/health` and `/` so a "successful" deploy
+   that's actually crash-looping fails the workflow instead of leaving a
+   silent 503.
 
 Required GitHub repo secrets: `ARM_CLIENT_ID` / `ARM_CLIENT_SECRET` /
 `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID` (deployment service principal),
 `DB_PASSWORD`, and three independent endpoint/key pairs for Quadrant's AI
 resources — `GROUP3_4OPENAI*` (chat), `GROUP3_4_TEXT_EMBEDDING_3_SMALL_*`
 (embeddings), `AISEARCH_*` (search).
+
+## The assistants
+
+Two assistants — search and PRD — run on **one engine under different
+profiles**. An `AssistantProfile` (`app/tool_calling.py`) carries a system
+prompt, few-shot examples, a tool set and a chain budget, and is threaded
+through every model call in a turn: the first resolve, a chain's re-prompt,
+and a failed-call retry alike. Adding the second assistant was a profile plus
+a budget-registry entry, not a change to the loop.
+
+| Profile | Endpoint | Tools | Budget | Gated to |
+|---|---|---|---|---|
+| `SEARCH_PROFILE` | `GET /search`, `POST /ask` | 11 | `assistant_chain` | everyone |
+| `PRD_PROFILE` | `POST /prd/ask` | 2 | `prd_chain` | hr, work mode |
+
+### What the model may and may not do
+
+The latitude is real: it picks the tool, fills the arguments itself, and plans
+one call at a time — seeing each result before choosing the next, rather than
+committing to a sequence up front. What it cannot do is the point:
+
+- it **never queries the database** — it holds no connection and no credentials;
+- it **never decides authorisation** — permissions are resolved before it is invoked;
+- it **never supplies identity** — caller id and view mode come from the session
+  and are overwritten server-side before any tool runs;
+- it **never selects a person or computes a statistic** — ranking and arithmetic
+  are Python (`app/people_ranking.py`, `app/team_builder.py`, `app/analytics.py`);
+- it **cannot invoke a tool outside its own profile** — the function schema is
+  what constrains the output, not an instruction asking it not to.
+
+If it writes a numeral the source rows do not support, `app/grounding.py`
+discards the sentence and substitutes a computed one.
+
+### The thirteen tools
+
+Eleven belong to the search assistant; the last two belong to the PRD
+assistant and are never offered to the search surface.
+
+| Tool | Answers |
+|---|---|
+| `find_people` / `search_people` | Who matches these filters or this description? |
+| `get_person` | Full profile for one named individual |
+| `get_org_chain` | Who is above or below this person? |
+| `find_project_owner` | Who owns this system or policy? |
+| `find_mentor` | Who could teach me this skill? |
+| `skill_gap` / `skill_scarcity` | Where are we thin, and who is a single point of failure? |
+| `find_experts` | I have this problem — who has solved it before? |
+| `get_people_with_projects` | Who worked on what? |
+| `compare_people` | How do two people differ? |
+| `get_project_requirements` | What does this project need? *(PRD, hr-only)* |
+| `list_project_requirements_summary` | Which projects have requirements on file? *(PRD, hr-only)* |
+
+Before the model is consulted at all, deterministic pattern rules
+(`app/text_filters.py`) attempt the routing themselves, and a direct search — a
+name, a skill — never reaches a reasoning model. A test proves that by
+patching the router to raise.
+
+### Three gates, because there are three different questions
+
+Using the wrong one is the most plausible way to introduce a security bug
+here, so they are named explicitly:
+
+| Gate | Question | Used by |
+|---|---|---|
+| `policy.enforce()` | Which rows and fields may this query return? | directory search, profile, org chart |
+| `is_record_visible()` | May this person be discovered at all? | skill statistics, expert finding, Find a Team |
+| `analytics.resolve_scope()` | Whose workforce is this caller responsible for? | dashboards, workforce reports, Build Team |
+
+`resolve_scope` does not validate a requested scope — it **discards** it. HR in
+work mode may choose any department; everyone else gets their own reporting
+line whatever parameters they send, and `substituted` in the response records
+that it happened. This is why it is safe to point a model at Build Team: the
+plan it produces has no scope field for one to land in, and a test asserts
+that absence directly.
+
+The three gates pair with the agent's three answer paths, each guarded the way
+its risk allows:
+
+- **A composed query** (`find_people` / `search_people`) is the only path that
+  becomes SQL, and its shape cannot be predicted — so the plan itself is
+  inspected: validated against the field registry, snapped onto real
+  vocabulary, stripped of fields the caller cannot read, and rejected outright
+  if it smuggles in a filter or sort.
+- **A named operation** runs a fixed method with open inputs, so each service
+  function carries its own role check.
+- **Semantic search** cannot be inspected at all — there is no field in a
+  similarity score to reject — so its guard moves to the corpus: confidential
+  projects are never embedded, and what was never indexed cannot be retrieved.
+
+### Bounded chains
+
+A question like "who on Priya's team knows Terraform and is free next month?"
+needs the team resolved before it can be searched. The model declares that
+itself by setting `needs_followup`, a typed boolean in every tool's schema —
+"this needs another step" arrives as a validated argument, never as prose the
+engine would have to interpret. Only then does a loop exist; an ordinary
+request costs exactly one call.
+
+The loop runs under a declared budget with three independent axes, and
+whichever runs out first ends the chain (`app/chain_budgets.py`):
+
+| Plan class | Budget | Used by |
+|---|---|---|
+| `assistant_chain` | 4 steps, 100 distinct records, 8 s | the search assistant |
+| `prd_chain` | 3 steps, 60 distinct records, 8 s | the PRD assistant — a requirements conversation is about one project, so a wide fan-out is a symptom, not a use case |
+
+Steps bound reasoning depth, distinct records bound how much a chain
+accumulates across steps, wall-clock bounds the caller's wait. An absolute
+`CEILING` (8 steps, 300 records, 20 s) caps every plan class however it is
+declared, and `assert_chain_budgets_within_ceiling()` fails the application at
+startup if a declared budget exceeds it — the same boot-time discipline
+`assert_registry_covers_schema()` uses. The budget is checked after every step,
+and when a limit ends a chain the response carries which axis tripped and the
+answer text says it may be incomplete.
+
+### Saved conversations store plans, never answers
+
+`assistant_turns` persists each turn as the plan it resolved to — the message,
+the tool name and its arguments — never the result. On a new turn the stored
+calls are **re-executed through the same permission-gated dispatcher** as a
+fresh request, so access revoked between one turn and the next is simply
+absent on replay. Persisting a conversation adds no second permission path to
+keep in sync.
+
+Ownership is absolute: a conversation id that exists but belongs to someone
+else returns **404, never 403**, so not even the id's existence is confirmed.
+PRD conversations are additionally scoped per project, so working on project B
+never rehydrates project A's thread.
+
+### What crosses between the two assistants
+
+Each assistant can read extracted facts from the caller's most recent
+conversation on the other surface — which projects and skills were discussed —
+and suggest a next step from them ("You captured 4 requirements for Meridian.
+Want to see who covers them?"). Three rules keep that safe, all structural, in
+`app/assistant_context.py`:
+
+- **Only turns that carry a tool call.** Model-written prose (`assistant_text`)
+  never crosses surfaces: inside its own conversation it is connective tissue,
+  injected into a different assistant's prompt it would be an unverified claim
+  laundered as context.
+- **Only controlled vocabulary.** The tool name plus argument values that
+  already passed vocabulary snapping, rendered into the receiving prompt as an
+  explicitly-labelled data block — facts, not instructions.
+- **Every fact re-checked against the live database before use.** A project
+  reclassified confidential, or a person deactivated, since the turn was stored
+  is dropped rather than surfaced.
+
+### Untrusted free text is removed, not distrusted
+
+Injection through *stored content* is handled separately from injection through
+the question. Text that people author themselves — a bio, a project
+contribution note, a PRD requirement note — is stripped from the payload the
+phrasing model receives (`_UNTRUSTED_FREE_TEXT_KEYS` in `app/tool_calling.py`)
+rather than merely surrounded by an instruction to ignore it. A prompt
+instruction is exactly what adversarial input is written to defeat; absent data
+cannot be leveraged. The text still reaches the human on screen — only the
+model is denied it, and there is a test for each half.
+
+The same idea is what protects semantic search: confidential projects are never
+embedded, so no query can reach one.
+
+### The cache key is a security decision
+
+Both model calls are pure functions of what is handed to them, which is what
+makes them cacheable at all: the router reads only the message text, and
+`phrase_answer` reads only the already-redacted, already-permission-filtered
+result. So the key is a hash of **the exact model input, never the question
+alone** — two callers entitled to different rows produce different payloads,
+therefore different keys, and neither can be served the other's phrasing. A
+cache keyed on question text would have precisely that bug.
+
+Bounded and in-process on purpose: a 512-entry LRU for the two model calls
+(`app/tool_calling.py`) and a 2,048-entry one for embeddings
+(`app/search_client.py`) — an LRU dict, not Redis, because there is one App
+Service instance and a cold cache is only ever as slow as today. Retries and
+multi-step chains skip the cache, since they carry state the message text does
+not describe.
+
+## PRD requirement capture
+
+HR picks a project and uploads its requirements document (`.docx`/`.pdf`) to
+`POST /projects/{id}/prd`. Extraction (`app/prd_extraction.py`) sends the
+document text to the model — the only step that ever sees it, and the
+strongest-authorised moment in the flow, since HR chose the file seconds
+earlier. The model may only emit typed proposals: a skill with a minimum
+level, or a free-text note. It has no write access and is instructed never to
+answer in prose.
+
+What comes back is a **preview**, not a save. HR corrects it on screen and
+confirms through the ordinary write paths — `PUT /projects/{id}/required-skills`
+and `POST /projects/{id}/requirement-notes` — the same routes a hand-authored
+requirement already goes through, so there is no second write path to keep in
+sync. Skills **replace** the project's requirement list; notes are
+**appended**, because a second PRD must never silently erase a note recorded
+months ago.
+
+On confirm the source document's extracted text is erased and
+`content_scrubbed_at` stamped, exactly as document review does it — the upload
+row survives for provenance, its content does not. The scrub touches only PRD
+uploads (rows carrying a project id), so ordinary document-review uploads are
+never affected.
+
+**Access rules**
+
+- The PRDs page, `POST /projects/{id}/prd`, `POST /prd/ask` and the `prd`
+  conversation surface are all gated to **hr in work mode**.
+- **Requirement notes** are readable and writable by **HR or the project's
+  owner**, nobody else — they are sentences lifted verbatim out of a planning
+  document, a different category from a skill-and-level row, which stays
+  broadly readable as an ordinary org fact. The asymmetry is deliberate.
+- The service function behind every PRD tool re-checks the caller's role
+  before any query runs. The route gate and the separate tool set are defence
+  in depth; **the service check is the enforcement boundary**.
+- Note text is in the redaction set above, so it never reaches the model call
+  that writes the final sentence. An uploaded document can be authored by
+  anyone, including someone outside the company, and a sentence inside it could
+  be an instruction aimed at the model.
+
+**Why a separate assistant rather than a filtered tool list.** The PRD
+assistant has no people-search tools, so even a wholly successful injection has
+nothing to pivot to — the defence is structural, not textual. The search
+assistant is byte-identical to its pre-PRD behaviour, and a coverage test
+drives a full PRD chain end to end, asserting that the PRD tool set is what
+reaches the model at every step.
 
 ## Certification tracking
 
@@ -730,7 +1091,8 @@ from a broken sweep.
 ## Architecture rules (non-negotiable)
 
 1. The language model never touches the database — it only emits typed function
-   calls (`find_people`, `get_person`, `get_org_chain`, …).
+   calls (`find_people`, `get_person`, `get_org_chain`, …), one at a time, from
+   the tool set its own profile offers. See [The assistants](#the-assistants).
 2. Permission filtering happens in Python: retrieve → filter records → filter
    fields → department check → cap results → audit → respond.
 3. Restricted fields are **absent** from the response body, not hidden client-side.
@@ -774,6 +1136,19 @@ from a broken sweep.
     its proposed employee in `employee_action_requests.payload` as JSON
     rather than an `employees` row with `is_active=false`, so no query that
     forgets to exclude it can surface a person nobody approved.
+13. Untrusted free text is removed from a prompt, never argued with. Bios,
+    project contributions and PRD requirement notes are stripped before the
+    phrasing call (`_UNTRUSTED_FREE_TEXT_KEYS`); an instruction to ignore
+    them is exactly what adversarial input is written to defeat.
+14. A scope is discarded, not validated. `analytics.resolve_scope` throws the
+    caller's requested scope away and derives one from who they are, so no
+    phrasing of a brief or a question can widen a workforce view.
+15. A conversation stores its plan, never its answer. Replay re-runs every
+    stored call through the same permission gate as a fresh request, so a
+    saved thread adds no second permission path to keep in sync.
+16. Every multi-step chain runs under a declared budget, and no declared
+    budget may exceed the absolute ceiling — asserted at startup, alongside
+    the registry/schema check.
 
 ## Roles and view modes
 
@@ -809,8 +1184,8 @@ Three things are worth knowing before changing any of this:
   supposed to be anonymous. The sharp edge: **HR loses its restricted-record
   exemption in employee mode**, so `restricted-1` 404s for them there too.
 - **Whole surfaces disappear in employee mode, not just fields.** Continuity
-  (HR), Review (HR), Admin (HR) and the official-link/mentor-sweep panels (HR)
-  are work-mode surfaces: an ordinary colleague has no work-authorization
+  (HR), Review (HR), Admin (HR), PRDs (HR) and the official-link/mentor-sweep
+  panels (HR) are work-mode surfaces: an ordinary colleague has no work-authorization
   review dates, no document review queue, no create-employee form and no
   bootstrapping queue, so neither does anyone previewing that lens. Several
   had to be retrofitted — their gates read `caller.role` alone, so an HR
@@ -1164,3 +1539,26 @@ cleared in one click, without having to reason about checkboxes first.
       stage a request for the requester's own manager (delegate-first when
       away, escalating up the chain) and apply only on approval
       (see HR employee lifecycle)
+- [x] 23. Self-service skills, community-graph roles, and the follow-up thread
+      under an answer
+- [x] 24. Workforce dashboards and workforce intelligence: skill supply vs.
+      demand, training compliance, project coverage and concentration risk,
+      all behind `analytics.resolve_scope` — the gate that discards a
+      requested scope rather than validating it
+- [x] 25. Multi-step chains, then the budget that bounds them: the flat
+      `MAX_CHAIN_STEPS` constant became a per-plan-class budget over steps,
+      distinct records and wall-clock, under an absolute ceiling asserted at
+      startup (see The assistants)
+- [x] 26. Build Team and Find a Team, plus the access gating both sit behind —
+      the model reads a brief into roles and skills and does nothing else
+- [x] 27. Renamed to **Mel**, with the new mark; guided tour extended to cover
+      every feature
+- [x] 28. PRD requirement capture and a second assistant: one `AssistantProfile`
+      threaded through every model call site, its own tool set, its own chain
+      budget, and no change to the loop (see PRD requirement capture)
+- [x] 29. Saved conversations for both surfaces — stored as plans, replayed
+      through the permission gate — and the cross-reference layer between them
+- [x] 30. Profiled the assisted path, then cached the three model call sites on
+      a key that includes the permission-filtered payload
+- [x] 31. Query-entity typing and ranked people search, so a multi-part query
+      ("senior data engineer with react, java") is ranked rather than flattened
